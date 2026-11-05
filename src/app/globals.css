@@ -1,26 +1,156 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-sans);
   --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-bricolage);
+  --color-highlight: var(--highlight);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/*
+  Palette: lecture-hall paper and ink, with one highlighter-yellow accent.
+  Text/background pairs below all meet WCAG AA (4.5:1).
+*/
+:root {
+  --background: #f7f8f5; /* paper */
+  --foreground: #1b2440; /* ink */
+  --card: #ffffff;
+  --card-foreground: #1b2440;
+  --popover: #ffffff;
+  --popover-foreground: #1b2440;
+  --primary: #1b2440;
+  --primary-foreground: #f7f8f5;
+  --secondary: #ebeee8;
+  --secondary-foreground: #1b2440;
+  --muted: #ebeee8;
+  --muted-foreground: #565f73;
+  --accent: #e4e9f3;
+  --accent-foreground: #1b2440;
+  --destructive: #b3261e;
+  --border: #d9ddd5;
+  --input: #d9ddd5;
+  --ring: #3b4f8f;
+  --highlight: #f5d547; /* marker yellow */
+  --chart-1: #3b4f8f;
+  --chart-2: #6f7fb5;
+  --chart-3: #a2aed3;
+  --chart-4: #c9a914;
+  --chart-5: #565f73;
+  --radius: 0.5rem;
+  --sidebar: #eef0ea;
+  --sidebar-foreground: #1b2440;
+  --sidebar-primary: #1b2440;
+  --sidebar-primary-foreground: #f7f8f5;
+  --sidebar-accent: #e1e5dc;
+  --sidebar-accent-foreground: #1b2440;
+  --sidebar-border: #d9ddd5;
+  --sidebar-ring: #3b4f8f;
+}
+
+.dark {
+  --background: #0f1526;
+  --foreground: #ecf0f8;
+  --card: #161d33;
+  --card-foreground: #ecf0f8;
+  --popover: #161d33;
+  --popover-foreground: #ecf0f8;
+  --primary: #ecf0f8;
+  --primary-foreground: #0f1526;
+  --secondary: #1f2742;
+  --secondary-foreground: #ecf0f8;
+  --muted: #1f2742;
+  --muted-foreground: #a6aec4;
+  --accent: #232c4b;
+  --accent-foreground: #ecf0f8;
+  --destructive: #f2877f;
+  --border: #2a3354;
+  --input: #2a3354;
+  --ring: #8fa2e0;
+  --highlight: #6b5a10; /* marker yellow, dimmed so light text stays readable */
+  --chart-1: #8fa2e0;
+  --chart-2: #6f7fb5;
+  --chart-3: #4a5a96;
+  --chart-4: #e3c43a;
+  --chart-5: #a6aec4;
+  --sidebar: #121a30;
+  --sidebar-foreground: #ecf0f8;
+  --sidebar-primary: #ecf0f8;
+  --sidebar-primary-foreground: #0f1526;
+  --sidebar-accent: #1f2742;
+  --sidebar-accent-foreground: #ecf0f8;
+  --sidebar-border: #2a3354;
+  --sidebar-ring: #8fa2e0;
+}
+
+/* The highlighter stripe: the one memorable detail of the look. */
+@utility marker {
+  background-image: linear-gradient(
+    transparent 58%,
+    var(--highlight) 58%,
+    var(--highlight) 94%,
+    transparent 94%
+  );
+  background-repeat: no-repeat;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
   }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-heading);
+    letter-spacing: -0.015em;
+  }
 }

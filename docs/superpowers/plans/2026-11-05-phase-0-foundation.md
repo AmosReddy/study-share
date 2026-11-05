@@ -16,6 +16,7 @@
 - Install current stable package versions with `@latest`; the lockfile pins them.
 - Supabase region Mumbai (`ap-south-1`). Vercel functions region `bom1`.
 - Secrets never enter git or chat. They live in `.env.local` (git-ignored), Vercel settings and GitHub Actions secrets. `.env.example` lists names only.
+- Code layout: `src/client/` (components, hooks, browser-only code), `src/server/` (database, permissions, env, email, storage; every file starts with `import "server-only"`), `src/shared/` (types and Zod schemas used by both), `src/app/` (thin routes only). Client and server never import each other, and shared imports neither. ESLint enforces this.
 - Row Level Security is enabled on every table in `public`, with no public access.
 - Layout has no sideways scrolling from 360px upward. Polish targets 1024px and up.
 - Light and dark themes, WCAG AA contrast, visible keyboard focus.
@@ -47,11 +48,11 @@ scripts/test-db-setup.sql            Stub of Supabase's auth schema for CI
 sentry.client.config.ts, sentry.server.config.ts, instrumentation.ts
 src/app/layout.tsx, page.tsx, globals.css
 src/app/api/health/route.ts
-src/components/app-shell/app-shell.tsx, group-sidebar.tsx, theme-toggle.tsx
-src/db/client.ts, schema.ts, rls.int.test.ts
-src/lib/env.ts, env.test.ts
-src/lib/health.ts, health.test.ts
-src/lib/permissions/index.ts, index.test.ts
+src/client/components/app-shell/app-shell.tsx, group-sidebar.tsx, theme-toggle.tsx
+src/server/db/client.ts, schema.ts, rls.int.test.ts
+src/server/env.ts, env.test.ts
+src/server/health.ts, health.test.ts
+src/server/permissions/index.ts, index.test.ts
 vercel.json, vitest.config.ts, .env.example, .nvmrc
 ```
 
@@ -60,7 +61,7 @@ vercel.json, vitest.config.ts, .env.example, .nvmrc
 ### Task 1: Project scaffold
 
 **Files:**
-- Create: Next.js scaffold, `.nvmrc`, `vitest.config.ts`, `src/lib/smoke.test.ts`, `.gitattributes`
+- Create: Next.js scaffold, `.nvmrc`, `vitest.config.ts`, `src/shared/smoke.test.ts`, `.gitattributes`
 - Modify: `package.json`, `.gitignore`
 
 **Interfaces:**
@@ -83,7 +84,7 @@ Expected: app created with `docs/` intact. If the tool refuses because the folde
 
 Set `package.json` `name` to the chosen product slug, `private: true`, and `engines.node` to `26.x`. Write `26` to `.nvmrc`. Add `* text=auto eol=lf` to `.gitattributes`. Confirm `.gitignore` ignores `.env*` except `!.env.example`. Add the scripts listed above. Install `vitest` and configure the `@/*` alias.
 
-- [ ] **Step 4: Write a smoke test in `src/lib/smoke.test.ts`**
+- [ ] **Step 4: Write a smoke test in `src/shared/smoke.test.ts`**
 
 ```ts
 import { expect, test } from "vitest";
@@ -110,7 +111,7 @@ git commit -m "chore: scaffold next.js app with typescript and vitest"
 ### Task 2: Design system and responsive app shell
 
 **Files:**
-- Create: `src/components/app-shell/app-shell.tsx`, `group-sidebar.tsx`, `theme-toggle.tsx`, `e2e/shell.spec.ts`, `playwright.config.ts`, shadcn components under `src/components/ui/`
+- Create: `src/client/components/app-shell/app-shell.tsx`, `group-sidebar.tsx`, `theme-toggle.tsx`, `e2e/shell.spec.ts`, `playwright.config.ts`, shadcn components under `src/client/components/ui/`
 - Modify: `src/app/layout.tsx`, `src/app/page.tsx`, `src/app/globals.css`
 
 **Interfaces:**
@@ -197,14 +198,14 @@ git commit -m "feat: add design tokens and responsive app shell"
 ### Task 3: Environment validation
 
 **Files:**
-- Create: `src/lib/env.ts`, `src/lib/env.test.ts`, `.env.example`
+- Create: `src/server/env.ts`, `src/server/env.test.ts`, `.env.example`
 
 **Interfaces:**
 - Produces: `parseServerEnv(source: Record<string, string | undefined>): ServerEnv`, and `getServerEnv(): ServerEnv` (parses `process.env` once and caches). Throws `EnvError`.
 - `ServerEnv` keys: `APP_ENV` (`"dev" | "production"`), `DATABASE_URL`, `DATABASE_MIGRATION_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `SMTP_USER`, `SMTP_APP_PASSWORD`, `NEXT_PUBLIC_SENTRY_DSN`.
 - `getServerEnv()` is read only when needed, never at import time, so `next build` works without secrets.
 
-- [ ] **Step 1: Write the failing tests in `src/lib/env.test.ts`**
+- [ ] **Step 1: Write the failing tests in `src/server/env.test.ts`**
 
 ```ts
 const valid = { /* every key above, with fake values */ };
@@ -235,22 +236,22 @@ test("refuses dev settings on a Production deployment", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `npx vitest run src/lib/env.test.ts`
+Run: `npx vitest run src/server/env.test.ts`
 Expected: FAIL, `parseServerEnv` not defined.
 
-- [ ] **Step 3: Implement `src/lib/env.ts` with Zod, and write `.env.example` with every key and blank values**
+- [ ] **Step 3: Implement `src/server/env.ts` with Zod, and write `.env.example` with every key and blank values**
 
 Report only the names of invalid variables.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `npx vitest run src/lib/env.test.ts`
+Run: `npx vitest run src/server/env.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/lib/env.ts src/lib/env.test.ts .env.example
+git add src/server/env.ts src/server/env.test.ts .env.example
 git commit -m "feat: validate server environment variables"
 ```
 
@@ -259,7 +260,7 @@ git commit -m "feat: validate server environment variables"
 ### Task 4: Permissions module
 
 **Files:**
-- Create: `src/lib/permissions/index.ts`, `src/lib/permissions/index.test.ts`
+- Create: `src/server/permissions/index.ts`, `src/server/permissions/index.test.ts`
 
 **Interfaces:**
 - Produces:
@@ -270,7 +271,7 @@ git commit -m "feat: validate server environment variables"
   - `type GroupContext = { membership: { role: Role; status: MemberStatus } | null }`
   - `can(user: Actor, action: Action, group: GroupContext): boolean`
 
-- [ ] **Step 1: Write the failing tests in `src/lib/permissions/index.test.ts`**
+- [ ] **Step 1: Write the failing tests in `src/server/permissions/index.test.ts`**
 
 ```ts
 const user = { id: "u1" };
@@ -295,7 +296,7 @@ test("unknown action is denied", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `npx vitest run src/lib/permissions`
+Run: `npx vitest run src/server/permissions`
 Expected: FAIL, `can` not defined.
 
 - [ ] **Step 3: Implement `can()`**
@@ -304,13 +305,13 @@ Deny by default. Look up the action in a `Record<Action, Role[]>` table, and all
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `npx vitest run src/lib/permissions`
+Run: `npx vitest run src/server/permissions`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/lib/permissions
+git add src/server/permissions
 git commit -m "feat: add deny-by-default permissions module"
 ```
 
@@ -319,17 +320,17 @@ git commit -m "feat: add deny-by-default permissions module"
 ### Task 5: Database foundation and health check
 
 **Files:**
-- Create: `drizzle.config.ts`, `src/db/schema.ts`, `src/db/client.ts`, `src/db/rls.int.test.ts`, `scripts/test-db-setup.sql`, `src/lib/health.ts`, `src/lib/health.test.ts`, `src/app/api/health/route.ts`, `vercel.json`, `.github/workflows/health-check.yml`, `drizzle/`
+- Create: `drizzle.config.ts`, `src/server/db/schema.ts`, `src/server/db/client.ts`, `src/server/db/rls.int.test.ts`, `scripts/test-db-setup.sql`, `src/server/health.ts`, `src/server/health.test.ts`, `src/app/api/health/route.ts`, `vercel.json`, `.github/workflows/health-check.yml`, `drizzle/`
 
 **Interfaces:**
 - Consumes: `getServerEnv()` from Task 3.
 - Produces:
-  - `getDb()` in `src/db/client.ts`: a lazily created Drizzle client using `postgres(DATABASE_URL, { prepare: false, max: 1 })`, because Supabase's transaction pooler doesn't support prepared statements.
+  - `getDb()` in `src/server/db/client.ts`: a lazily created Drizzle client using `postgres(DATABASE_URL, { prepare: false, max: 1 })`, because Supabase's transaction pooler doesn't support prepared statements.
   - `profiles` table: `id uuid primary key references auth.users(id) on delete cascade`, `display_name text not null`, `avatar_url text`, `age_confirmed_at timestamptz`, `terms_accepted_at timestamptz`, `terms_version text`, `created_at timestamptz not null default now()`.
   - `checkHealth(pingDatabase: () => Promise<void>): Promise<{ httpStatus: 200 | 503; body: { status: "ok" | "degraded"; db: "ok" | "error" } }>`.
   - Scripts `db:generate` and `db:migrate` (`db:migrate` uses `DATABASE_MIGRATION_URL`).
 
-- [ ] **Step 1: Write the failing test in `src/lib/health.test.ts`**
+- [ ] **Step 1: Write the failing test in `src/server/health.test.ts`**
 
 ```ts
 test("reports healthy when the database responds", async () => {
@@ -348,7 +349,7 @@ test("reports 503 and hides connection details when the database fails", async (
 });
 ```
 
-- [ ] **Step 2: Write the failing test in `src/db/rls.int.test.ts`**
+- [ ] **Step 2: Write the failing test in `src/server/db/rls.int.test.ts`**
 
 Runs only when `TEST_DATABASE_URL` is set, and CI must set it. In CI, fail rather than skip if it's missing.
 
@@ -369,7 +370,7 @@ test("the profiles table exists", async () => {
 
 - [ ] **Step 3: Run the unit test to verify it fails**
 
-Run: `npx vitest run src/lib/health.test.ts`
+Run: `npx vitest run src/server/health.test.ts`
 Expected: FAIL, `checkHealth` not defined.
 
 - [ ] **Step 4: Implement `checkHealth`, the schema and the client**
@@ -388,7 +389,7 @@ Reference `auth.users` using Drizzle's Supabase helper. Run `npm run db:generate
 
 - [ ] **Step 7: Run tests to verify they pass**
 
-Run: `npx vitest run src/lib/health.test.ts`
+Run: `npx vitest run src/server/health.test.ts`
 Expected: PASS. The integration test is verified by CI in Task 7.
 
 - [ ] **Step 8: Commit**
@@ -407,7 +408,7 @@ git commit -m "feat: add database foundation and health endpoint"
 - Modify: `next.config.ts`, `package.json`
 
 **Interfaces:**
-- Consumes: `parseServerEnv` from Task 3, `src/db/client.ts` from Task 5.
+- Consumes: `parseServerEnv` from Task 3, `src/server/db/client.ts` from Task 5.
 - Produces: script `check:services`.
 
 Google sign-in setup moves to Phase 1, because nothing can test it until sign-in exists.

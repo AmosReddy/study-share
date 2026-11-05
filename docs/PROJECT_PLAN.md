@@ -101,6 +101,15 @@ Next.js server code  --------->  Cloudflare R2
 Supabase: Postgres, Auth, Realtime  ----> live chat to browser
 ```
 
+Code layout (enforced by ESLint `no-restricted-imports`):
+
+```
+src/app/      Routes only: pages, layouts, API handlers. No business logic.
+src/client/   Browser code: components, hooks, UI. Never imports src/server.
+src/server/   Server code: database, permissions, email, storage, env. Never imports src/client.
+src/shared/   Types and Zod schemas used by both. Imports neither.
+```
+
 Key rules:
 1. **All data goes through server code.** The browser never queries tables directly. Every action calls one `can(user, action, group)` permissions module, so rules live in one place.
 2. **Row Level Security is on for every table, with no public access,** as a safety net. The only browser access is Realtime, limited to groups the user belongs to.
