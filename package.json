@@ -10,14 +10,18 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --project unit",
     "test:int": "vitest run --project integration",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
     "cn": "^0.5.2",
+    "drizzle-orm": "^0.45.4",
     "lucide-react": "^1.69.0",
     "next": "16.4.5",
     "next-themes": "^0.4.6",
+    "postgres": "^4.0.0",
     "radix-ui": "^1.8.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -33,9 +37,11 @@
     "@types/node": "^26.6.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "drizzle-kit": "^0.31.11",
     "eslint": "^9",
     "eslint-config-next": "16.4.5",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5",
     "vitest": "^5.1.0"
   },
