@@ -12,15 +12,18 @@
     "test:int": "vitest run --project integration",
     "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate"
+    "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate",
+    "check:services": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/check-services.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1162.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.5.2",
     "drizzle-orm": "^0.45.4",
     "lucide-react": "^1.69.0",
     "next": "16.4.5",
     "next-themes": "^0.4.6",
+    "nodemailer": "^10.3.1",
     "postgres": "^4.0.0",
     "radix-ui": "^1.8.1",
     "react": "19.3.0",
@@ -35,6 +38,7 @@
     "@playwright/test": "^1.64.1",
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^26.6.6",
+    "@types/nodemailer": "^8.0.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "drizzle-kit": "^0.31.11",
