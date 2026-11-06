@@ -6,7 +6,7 @@
 
 **Architecture:** One Next.js App Router app. Server code reaches Postgres through Drizzle, with Row Level Security on every table. All authorisation goes through a single `can()` function. Vercel's Preview environment points at the dev Supabase project, and Production points at the production one.
 
-**Tech Stack:** Next.js, TypeScript, Tailwind CSS, shadcn/ui, next-themes, Drizzle ORM, postgres.js, Supabase, Cloudflare R2, Sentry, Zod, Vitest, Playwright, GitHub Actions, Vercel. Node 26.
+**Tech Stack:** Next.js, TypeScript, Tailwind CSS, shadcn/ui, next-themes, Drizzle ORM, postgres.js, Supabase (database, auth, file storage), Sentry, Zod, Vitest, Playwright, GitHub Actions, Vercel. Node 26.
 
 **Spec:** `docs/PROJECT_PLAN.md`
 
@@ -202,7 +202,7 @@ git commit -m "feat: add design tokens and responsive app shell"
 
 **Interfaces:**
 - Produces: `parseServerEnv(source: Record<string, string | undefined>): ServerEnv`, and `getServerEnv(): ServerEnv` (parses `process.env` once and caches). Throws `EnvError`.
-- `ServerEnv` keys: `APP_ENV` (`"dev" | "production"`), `DATABASE_URL`, `DATABASE_MIGRATION_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `SMTP_USER`, `SMTP_APP_PASSWORD`, `NEXT_PUBLIC_SENTRY_DSN`.
+- `ServerEnv` keys (vendor-neutral names): `APP_ENV` (`"dev" | "production"`), `DATABASE_URL`, `DATABASE_MIGRATION_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `STORAGE_BUCKET`, `STORAGE_FORCE_PATH_STYLE` (default true), `SMTP_HOST` (default smtp.gmail.com), `SMTP_PORT` (default 465), `SMTP_USER`, `SMTP_PASSWORD`, `NEXT_PUBLIC_SENTRY_DSN` (optional).
 - `getServerEnv()` is read only when needed, never at import time, so `next build` works without secrets.
 
 - [ ] **Step 1: Write the failing tests in `src/server/env.test.ts`**
@@ -216,7 +216,7 @@ test("returns parsed values when all are present", () => {
 
 test("names the missing variable and hides other values", () => {
   const { DATABASE_URL, ...rest } = valid;
-  const message = captureError(() => parseServerEnv({ ...rest, R2_SECRET_ACCESS_KEY: "s3cret" }));
+  const message = captureError(() => parseServerEnv({ ...rest, STORAGE_SECRET_ACCESS_KEY: "s3cret" }));
   expect(message).toContain("DATABASE_URL");
   expect(message).not.toContain("s3cret");
 });
@@ -417,21 +417,21 @@ Google sign-in setup moves to Phase 1, because nothing can test it until sign-in
 
 Name it `<product>-dev`, region Mumbai. Put the pooled URL in `DATABASE_URL`, the direct URL in `DATABASE_MIGRATION_URL`, and the project URL and keys in `.env.local`, with `APP_ENV=dev`.
 
-- [ ] **Step 2: [You] Create Cloudflare R2**
+- [ ] **Step 2: [You] Set up Supabase Storage** (replaces Cloudflare R2, which asked for a payment method)
 
-Enable R2. **Stop and tell me if a payment method is required, and whether your payment method is accepted.** If it can't be completed, use the Supabase Storage fallback from section 11 of the spec. Create the bucket `<product>-dev`, private, and an API token limited to that bucket. Set a budget alert at the lowest amount offered.
+In the dev Supabase project, open **Storage → New bucket**, name it `study-share-dev`, and keep it **private**. Then open **Storage → Settings → S3 Connection**: copy the endpoint into `STORAGE_ENDPOINT` and the region into `STORAGE_REGION`, enable the S3 connection, and create an access key pair for `STORAGE_ACCESS_KEY_ID` and `STORAGE_SECRET_ACCESS_KEY`.
 
 - [ ] **Step 3: [You] Create the Gmail account**
 
-A new account just for the platform, with 2-step verification and an app password. Add `SMTP_USER` and `SMTP_APP_PASSWORD` to `.env.local`.
+A new account just for the platform, with 2-step verification and an app password. Add `SMTP_USER` and `SMTP_PASSWORD` to `.env.local`.
 
 - [ ] **Step 4: [You] Create the Sentry project, and add the DSN to `.env.local`**
 
-- [ ] **Step 5: Write `scripts/check-services.ts`**
+- [ ] **Step 5: Write `scripts/check-services.ts`** (done, and the ports, adapters and lint rules it relies on were added before it; see the ledger's Replan line)
 
-Run with `tsx`, loading `.env.local`. Using `@aws-sdk/client-s3` and `nodemailer`, it checks in order:
+Run with `tsx`, loading `.env.local`. It goes through the same ports and `src/server/services.ts` as the app. Checks in order:
 1. Database: `select 1`.
-2. R2: put, get and delete `healthcheck/<timestamp>.txt`, confirming the contents match.
+2. File storage: put, head, get, signed download link and delete of `healthcheck/<timestamp>.txt`, confirming the contents match and the file is gone.
 3. SMTP: `transporter.verify()` for `smtp.gmail.com:465`.
 
 Print `PASS` or `FAIL` per service and exit non-zero on any failure. Print the failing service's error message without credentials. Always try to delete the test object.
@@ -444,7 +444,7 @@ Expected: migration applied. Check in the Supabase table view that `profiles` ex
 - [ ] **Step 7: Run the connection check**
 
 Run: `npm run check:services`
-Expected: `PASS` for database, R2 and SMTP.
+Expected: `PASS` for database, file storage and email.
 
 - [ ] **Step 8: Add Sentry**
 
@@ -499,7 +499,7 @@ Before pushing, confirm that `git ls-files` lists no `.env` file other than `.en
 
 - [ ] **Step 4: [You] Create the production services**
 
-A second Supabase project `<product>-prod` in Mumbai, an R2 bucket `<product>-prod` with its own token. Use Gmail SMTP as the custom SMTP sender in both Supabase projects.
+A second Supabase project `<product>-prod` in Mumbai, a private storage bucket `<product>-prod` in that project with its own access key. Use Gmail SMTP as the custom SMTP sender in both Supabase projects.
 
 - [ ] **Step 5: [You] Import the repo into Vercel**
 
