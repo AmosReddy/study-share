@@ -21,8 +21,8 @@ import {
 /*
   Sign-in and account use-cases. Plain functions over ports, so they run in unit
   tests with the fakes. They validate, rate limit, call the provider and return
-  results that never reveal whether an address is registered, and never contain
-  vendor text, tokens or passwords.
+  results that do not say whether an address is registered (one known exception, see
+  emailFlowFailure), and never contain vendor text, tokens or passwords.
 */
 
 export type Deps = { auth: AuthProvider; limiter: RateLimiter; siteUrl: string; ip: string };
@@ -101,8 +101,12 @@ function ipCheck(prefix: string, ip: string, limit: Limit): Check[] {
 /**
  * For the flows that send an email (sign-up, resend, reset). A provider rate limit (per address,
  * per IP, or the project's hourly email quota) means nothing was sent, so the person is told so
- * instead of "check your email". The answer is the same for every address, and our own
- * cooldown keeps quick repeats from reaching the provider. The fixed line has no email, key or IP.
+ * instead of "check your email". This code gives the same answer for every address, and our own
+ * cooldown keeps quick repeats from reaching the provider. That is not a guarantee that the message
+ * hides whether an address has an account: Supabase only reaches its email limits when it actually
+ * sends an email, so someone who deliberately drains the project's email quota first could still
+ * learn something from which addresses get this message. Accepted for the pilot, see "Known risks
+ * accepted for the pilot" in the Phase 1 spec. The fixed line has no email, key or IP.
  */
 function emailFlowFailure(error: unknown): Failure {
   if (error instanceof AuthProviderError && error.code === "rate_limited") {

@@ -618,9 +618,12 @@ describe("a rate limit store that fails", () => {
 /*
   A provider rate limit (Supabase's per-address, per-IP or project-wide email limit) means no
   email was sent. It used to be reported as the neutral "check your email"; now it is said
-  honestly. It does not reveal which addresses have accounts: the answer is the same for known
-  and unknown addresses, and our own one-a-minute cooldown keeps quick repeats (the case where
-  Supabase's per-address limit would only hit known addresses) from reaching the provider.
+  honestly. The tests below show that our code treats known and unknown addresses alike when the
+  provider refuses both, and our own one-a-minute cooldown keeps quick repeats (the case where
+  Supabase's per-address limit would only hit known addresses) from reaching the provider. In real
+  Supabase the provider's limit is only reached when an email is actually sent, so someone who
+  deliberately drains the project's email quota could still learn which addresses have accounts.
+  That is an accepted pilot risk, see "Known risks accepted for the pilot" in the Phase 1 spec.
 */
 describe("a provider rate limit is reported honestly, the same for known and unknown addresses", () => {
   type Flow = "signUp" | "resend" | "reset";
