@@ -525,6 +525,57 @@ describe("updateProfile", () => {
   });
 });
 
+describe("a rate limit store that never answers", () => {
+  const hanging: RateLimiter = { hit: () => new Promise(() => {}) };
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("gives up after 2 seconds, allows sign-up and logs the same single warning", async () => {
+    const { auth, deps } = setup({ limiter: hanging });
+    const spy = vi.spyOn(auth, "signUpWithPassword");
+    const pending = signUp(deps, validSignUp("a@x.com"), "/");
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(spy).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000 * 3);
+    expect(await pending).toEqual({ ok: true, data: { status: "check_email" } });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toBe("Rate limit store unavailable; allowing the request.");
+  });
+
+  it("does not stop log-in either", async () => {
+    const { auth, deps } = setup({ limiter: hanging });
+    await registerConfirmed(auth, "a@x.com", "my password");
+    const pending = logIn(deps, { email: "a@x.com", password: "my password" }, "/");
+    await vi.advanceTimersByTimeAsync(2000 * 2);
+    expect(await pending).toEqual({ ok: true, data: { redirectTo: "/" } });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("a slow but working store still decides (no timeout under 2 seconds)", async () => {
+    const real = createMemoryRateLimiter(() => 0);
+    const slow: RateLimiter = {
+      hit: (i) => new Promise((resolve) => setTimeout(() => resolve(real.hit(i)), 1500)),
+    };
+    const { deps } = setup({ limiter: slow });
+    const first = signUp(deps, validSignUp("a@x.com"), "/");
+    await vi.advanceTimersByTimeAsync(1500 * 3);
+    expect((await first).ok).toBe(true);
+    const second = signUp(deps, validSignUp("a@x.com"), "/");
+    await vi.advanceTimersByTimeAsync(1500 * 3);
+    expect(await second).toMatchObject({ ok: false, formError: COOLDOWN_MESSAGE });
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
 describe("a rate limit store that fails", () => {
   const failing: RateLimiter = {
     hit: async () => {

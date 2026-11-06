@@ -112,17 +112,33 @@ function emailFlowFailure(error: unknown): Failure {
   return providerFailure(error);
 }
 
+/** How long one limiter hit may take before it counts as a store failure (fail open). */
+const LIMITER_TIMEOUT_MS = 2000;
+
+/** The hit, or a rejection once LIMITER_TIMEOUT_MS has passed. The timer never outlives the hit. */
+async function hitWithTimeout(limiter: RateLimiter, input: Parameters<RateLimiter["hit"]>[0]) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Rate limit store timed out")), LIMITER_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([limiter.hit(input), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Counts each check and returns a failure for the first one that is over its limit.
- * A limiter that throws never blocks anyone: one warning is logged (with no key,
- * email, IP or error text) and that hit counts as allowed.
+ * A limiter that throws, or takes over 2 seconds, never blocks anyone: one warning is logged
+ * (with no key, email, IP or error text) and that hit counts as allowed.
  */
 async function overLimit(limiter: RateLimiter, checks: Check[]): Promise<Failure | null> {
   let storeFailed = false;
   let refusal: Failure | null = null;
   for (const { key, limit, message } of checks) {
     try {
-      const result = await limiter.hit({ key, limit: limit.limit, windowSeconds: limit.windowSeconds });
+      const result = await hitWithTimeout(limiter, { key, limit: limit.limit, windowSeconds: limit.windowSeconds });
       if (!result.allowed) {
         refusal = {
           ok: false,
