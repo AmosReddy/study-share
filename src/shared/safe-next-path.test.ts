@@ -16,6 +16,34 @@ describe("safeNextPath", () => {
     expect(safeNextPath(value)).toBe("/");
   });
 
+  it.each(["/.//evil.com", "/..//evil.com", "/a/..//evil.com", "/%2e%2e//evil.com", "/%2E/%2e//evil.com"])(
+    "refuses %s, which the URL parser would normalise into //evil.com",
+    (value) => {
+      expect(safeNextPath(value)).toBe("/");
+    },
+  );
+
+  it("keeps a double-encoded slash as an inert path", () => {
+    expect(safeNextPath("/%252f%252fevil.com")).toBe("/%252f%252fevil.com");
+  });
+
+  it("never returns a value that starts with // or /\\ for hostile inputs", () => {
+    const hostile = [
+      "//evil.com", "/\\evil.com", "/.//evil.com", "/..//evil.com", "/a/..//evil.com",
+      "/%2e%2e//evil.com", "/./\\evil.com", "/a/../\\evil.com", "/%2e/%2f/evil.com",
+      "/a/%2e%2e/%2fevil.com", "/. //evil.com", "/;//evil.com", "/a/./.././/evil.com",
+    ];
+    for (const value of hostile) {
+      const result = safeNextPath(value, "/fb");
+      expect(result.startsWith("//"), value).toBe(false);
+      expect(result.startsWith("/\\"), value).toBe(false);
+    }
+  });
+
+  it("drops the #fragment on purpose", () => {
+    expect(safeNextPath("/a?b=1#frag")).toBe("/a?b=1");
+  });
+
   it.each(["/\tevil.com", "/\nfoo", "/a\\b", "/\u0000x"])(
     "rejects control characters and backslashes in %j",
     (value) => {

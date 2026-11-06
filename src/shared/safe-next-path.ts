@@ -15,6 +15,7 @@ function looksLikeLocalPath(text: string): boolean {
 /**
  * Where to send someone after they sign in: a path on this site (plus query), or the fallback.
  * Anything that could leave the site, however it is disguised, gets the fallback.
+ * The `#fragment` is dropped on purpose: the server never sees it, and it is not needed to return.
  */
 export function safeNextPath(value: unknown, fallback = "/"): string {
   if (typeof value !== "string" || value.length === 0 || value.length > MAX_LENGTH) {
@@ -39,5 +40,8 @@ export function safeNextPath(value: unknown, fallback = "/"): string {
   }
   if (url.origin !== PLACEHOLDER_ORIGIN) return fallback;
 
-  return url.pathname + url.search;
+  // The parser removes `.` and `..` segments, which can turn `/.//evil.com` into `//evil.com`.
+  // So the result must pass the same check as the input.
+  const result = url.pathname + url.search;
+  return looksLikeLocalPath(result) ? result : fallback;
 }
