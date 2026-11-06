@@ -22,6 +22,15 @@ export default function PrivacyPage() {
       </ul>
       <p>Files and messages will be added in later versions. This notice will be updated before they are.</p>
 
+      <h2>Cookies and abuse protection</h2>
+      <ul>
+        <li>We use a small set of cookies to keep you signed in. We do not use advertising or tracking cookies.</li>
+        <li>
+          To stop abuse we keep short-lived counters of sign-up and login attempts, keyed by email address and IP
+          address. They are kept only briefly.
+        </li>
+      </ul>
+
       <h2>Who can see it</h2>
       <ul>
         <li>People in your groups see your name and that you are a member.</li>

@@ -469,4 +469,12 @@ test.describe("legal pages", () => {
       await expect(page.getByText(CONTACT_EMAIL).first()).toBeVisible();
     });
   }
+
+  test("/privacy explains cookies and the short-lived abuse counters", async ({ page }) => {
+    await page.goto("/privacy");
+    await expect(
+      page.getByText("We use a small set of cookies to keep you signed in. We do not use advertising or tracking cookies."),
+    ).toBeVisible();
+    await expect(page.getByText(/keep short-lived counters of sign-up and login attempts, keyed by email address and IP address/)).toBeVisible();
+  });
 });
