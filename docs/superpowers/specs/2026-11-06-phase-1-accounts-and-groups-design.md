@@ -98,7 +98,7 @@ One phase, three working steps, each deployed and tested before the next: **1a a
 | `/` | Everyone | Signed out: a short pitch with Sign up and Log in. Signed in: the group list, or an empty state with "Create a group" and "Join with a code". |
 | `/signup`, `/login` | Signed out | Email and password forms, with Google. Password managers work. Inputs are at least 16px so phones do not zoom. |
 | `/forgot-password`, `/reset-password` | Signed out | Request a reset email, then set a new password from the link. |
-| email confirmation link | Anyone | Confirms the address, then continues to the group the person was joining, or home. |
+| email confirmation link | Anyone | Opens a small page with a Continue button (only the button uses the link, so mail scanners cannot). Continue confirms the address and asks the person to log in, then continues to the group they were joining, or home. A reset link's Continue goes to "Choose a new password"; an expired reset link explains itself and offers a new one. |
 | `/invite/[token]` | Anyone with the link | Signed out: layout A. Signed in: the group name and "Join" (with a password field in password mode). |
 | `/join` | Signed in | Enter a short code, then the same steps as an invite link. |
 | `/groups/new` | Signed in | Name, optional description, join mode (password is the default), password. After creating, a "Group created" screen shows the invite link, the short code and, once, the password with a Copy button and a reminder to send it separately. |
@@ -140,6 +140,12 @@ These say what must be true, not how the tables are laid out. The builder design
 - Membership has roles (owner, member) and statuses (active, removed). Pending and the admin role are reserved for Phase 5 and unused now. Every read of group data requires an active membership.
 - A removed person cannot rejoin by any path: link, code or email invite.
 - Account and group data never appears in URLs other than the invite token, and error messages never contain secrets or other people's details.
+
+### Known risks accepted for the pilot
+
+- **Response time can hint whether an address has an account.** Sign-up, resend and reset give the same words for every address, but Supabase sends a Gmail message only for new addresses or real targets, and that send takes time. Someone timing many requests could guess which addresses are registered. Accepted for the pilot (no artificial padding); revisit before public launch.
+- **Targeted lockout of password log-in.** Log-in is limited per email (10 tries in 15 minutes, counting every attempt), so anyone can lock a known address out of password log-in for 15 minutes. Accepted: Google sign-in and the reset link still work, and the limit stops password guessing.
+- **Supabase's own limits are shared by everyone.** Every auth call comes from our server on Vercel, not from the person's phone, so Supabase's per-IP limits (and its per-address email limit) may count all our users as one visitor. The app adds its own one-email-a-minute cooldown per address and says honestly when an email could not be sent; Supabase's per-IP and email limits must be raised to fit the class (plan Task 10).
 
 ## 8. Phones and quality bar
 
