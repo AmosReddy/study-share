@@ -56,13 +56,16 @@ export function createS3FileStorage(config: S3Config, sender?: Sender): FileStor
       return { url, headers: { "Content-Type": contentType } };
     },
 
-    async createDownloadUrl({ key, expiresInSeconds, downloadName, disposition = "attachment" }) {
+    async createDownloadUrl({ key, expiresInSeconds, downloadName, preview }) {
+      const inlineType = safeInlineType(preview?.contentType);
       return getSignedUrl(
         client,
         new GetObjectCommand({
           Bucket,
           Key: key,
-          ResponseContentDisposition: contentDisposition(disposition, downloadName),
+          ResponseContentDisposition: contentDisposition(inlineType ? "inline" : "attachment", downloadName),
+          // For a preview, tell the browser the exact safe type rather than trusting what is stored.
+          ...(inlineType ? { ResponseContentType: inlineType } : {}),
         }),
         { expiresIn: expiresInSeconds },
       );
@@ -98,11 +101,25 @@ export function createS3FileStorage(config: S3Config, sender?: Sender): FileStor
   };
 }
 
+/**
+ * The only types a browser may show inline. Anything that can run script or render
+ * attacker-controlled markup (HTML, SVG, XML, JavaScript) is deliberately absent.
+ */
+const INLINE_SAFE_TYPES = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+/** The type normalised (lower case, no parameters), or undefined when it is not safe to show inline. */
+function safeInlineType(contentType: string | undefined): string | undefined {
+  const type = contentType?.split(";")[0]?.trim().toLowerCase();
+  return type && INLINE_SAFE_TYPES.has(type) ? type : undefined;
+}
+
 /** Builds a Content-Disposition value that stays on one line and keeps non-English file names intact. */
 function contentDisposition(disposition: "attachment" | "inline", name?: string): string {
-  if (!name) return disposition;
-  const clean = name.replace(/[\r\n]+/g, " ").trim();
+  // toWellFormed() swaps lone surrogate characters, which encodeURIComponent would throw on.
+  const clean = (name ?? "").toWellFormed().replace(/[\r\n]+/g, " ").trim();
+  if (!clean) return disposition;
+  // Always quoted: an unquoted name with a comma makes some browsers refuse the download.
   const asciiFallback = clean.replace(/[^\x20-\x7e]/g, "_").replace(/["\\;]/g, "_");
   const encoded = encodeURIComponent(clean).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
-  return `${disposition}; filename=${asciiFallback.includes(" ") ? `${JSON.stringify(asciiFallback)}` : asciiFallback}; filename*=UTF-8''${encoded}`;
+  return `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
 }

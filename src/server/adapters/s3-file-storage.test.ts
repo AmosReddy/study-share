@@ -44,9 +44,44 @@ describe("createS3FileStorage", () => {
     expect(new URL(url).searchParams.get("response-content-disposition")).toMatch(/^attachment/);
   });
 
-  test("download URL can ask the browser to show the file inline", async () => {
-    const url = await storage.createDownloadUrl({ key: "k.pdf", expiresInSeconds: 300, disposition: "inline" });
-    expect(new URL(url).searchParams.get("response-content-disposition")).toMatch(/^inline/);
+  describe("showing a file inline in the browser (preview)", () => {
+    const params = async (contentType: string) => {
+      const url = await storage.createDownloadUrl({ key: "k", expiresInSeconds: 300, preview: { contentType } });
+      return new URL(url).searchParams;
+    };
+
+    test.each(["application/pdf", "image/png", "image/jpeg", "image/webp", "image/gif"])(
+      "%s may be shown inline, and the browser is told exactly that type",
+      async (type) => {
+        const search = await params(type);
+        expect(search.get("response-content-disposition")).toMatch(/^inline/);
+        expect(search.get("response-content-type")).toBe(type);
+      },
+    );
+
+    test("the type is matched ignoring case and parameters, and re-sent without them", async () => {
+      const search = await params("Application/PDF; charset=binary");
+      expect(search.get("response-content-disposition")).toMatch(/^inline/);
+      expect(search.get("response-content-type")).toBe("application/pdf");
+    });
+
+    // These would run script or show attacker-controlled pages from the storage address.
+    test.each([
+      "text/html",
+      "text/html; charset=utf-8",
+      "image/svg+xml",
+      "application/xhtml+xml",
+      "text/javascript",
+      "application/javascript",
+      "text/xml",
+      "application/octet-stream",
+      "image/png/../html",
+      "",
+    ])("%j is never shown inline: it becomes a download", async (type) => {
+      const search = await params(type);
+      expect(search.get("response-content-disposition")).toMatch(/^attachment/);
+      expect(search.get("response-content-type")).toBeNull();
+    });
   });
 
   test("download file name with quotes and non-English letters cannot break out of the header", async () => {
@@ -59,6 +94,36 @@ describe("createS3FileStorage", () => {
     expect(disposition).not.toMatch(/[\r\n]/);
     expect(disposition).toContain("filename*=UTF-8''");
     expect(disposition).not.toContain('"Unit 1"');
+  });
+
+  describe("download file names", () => {
+    const dispositionFor = async (downloadName: string) => {
+      const url = await storage.createDownloadUrl({ key: "k.pdf", expiresInSeconds: 300, downloadName });
+      return new URL(url).searchParams.get("response-content-disposition") ?? "";
+    };
+
+    test("a name with a comma is quoted, so browsers do not reject the download", async () => {
+      expect(await dispositionFor("DBMS,PYQ.pdf")).toContain('filename="DBMS,PYQ.pdf"');
+    });
+
+    test("a plain name is quoted too", async () => {
+      expect(await dispositionFor("notes.pdf")).toContain('filename="notes.pdf"');
+    });
+
+    test("a name with a lone surrogate character does not crash the download", async () => {
+      const disposition = await dispositionFor("bad\uD800name.pdf");
+      expect(disposition).toMatch(/^attachment; filename="/);
+      expect(disposition).toContain("filename*=UTF-8''");
+    });
+
+    test.each(["", "   ", "\r\n"])("an empty name %j gives a plain attachment, with no empty file name", async (name) => {
+      expect(await dispositionFor(name)).toBe("attachment");
+    });
+
+    test("a name in another script keeps its real letters in filename*", async () => {
+      const disposition = await dispositionFor("प्रश्न.pdf");
+      expect(disposition).toContain(`filename*=UTF-8''${encodeURIComponent("प्रश्न.pdf")}`);
+    });
   });
 
   test("head returns null when the vendor says the object does not exist", async () => {

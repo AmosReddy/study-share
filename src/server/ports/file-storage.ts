@@ -12,12 +12,20 @@ export interface FileStorage {
     expiresInSeconds: number;
   }): Promise<{ url: string; headers: Record<string, string> }>;
 
-  /** A short-lived URL for reading one file. Downloads by default. Use "inline" only for safe previews. */
+  /**
+   * A short-lived URL for reading one file. It downloads by default.
+   *
+   * Pass `preview` to ask for the file to be shown in the browser instead. Pass the
+   * type that WE verified when the file was uploaded, never one the uploader claimed.
+   * The storage adapter still shows only PDFs and common images inline and turns
+   * everything else (HTML, SVG, scripts) into a download, so a bad type cannot
+   * run code from the storage address.
+   */
   createDownloadUrl(input: {
     key: string;
     expiresInSeconds: number;
     downloadName?: string;
-    disposition?: "attachment" | "inline";
+    preview?: { contentType: string };
   }): Promise<string>;
 
   /** Size and type of a stored file, or null when it does not exist. */
