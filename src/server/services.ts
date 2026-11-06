@@ -59,8 +59,11 @@ export function getEmailSender(): EmailSender {
  * it is the in-memory test double, sharing one store across the process.
  */
 export async function getAuthProvider(): Promise<AuthProvider> {
-  const env = getServerEnv();
+  // Cookies first: while a page is prerendered at build time this is where it stops and waits
+  // for a real request. Reading the settings before it would run (and fail) at build time,
+  // where there are no settings. src/server/services.test.ts guards the order.
   const store = await cookies();
+  const env = getServerEnv();
 
   // Server Components may read cookies but not write them; the proxy and server
   // actions do the writing, so a refused write during rendering is ignored.

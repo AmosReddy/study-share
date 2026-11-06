@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import type { NextRequest } from "next/server";
+import { connection, type NextRequest } from "next/server";
 import { confirmLinkTarget } from "@/server/auth/redirect-target";
 import { describeForLog } from "@/server/describe-error";
 import { getAuthProvider } from "@/server/services";
@@ -10,6 +10,8 @@ import { getAuthProvider } from "@/server/services";
  * link works on a different device from the one used to sign up.
  */
 export async function GET(request: NextRequest) {
+  // Settings and cookies are only read for a real request, never while the build prerenders.
+  await connection();
   const params = request.nextUrl.searchParams;
   const tokenHash = params.get("token_hash") ?? "";
   const type = params.get("type");

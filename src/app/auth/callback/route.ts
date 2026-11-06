@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import type { NextRequest } from "next/server";
+import { connection, type NextRequest } from "next/server";
 import { describeForLog } from "@/server/describe-error";
 import type { AuthUser } from "@/server/ports/auth-provider";
 import { getAuthProvider } from "@/server/services";
@@ -8,6 +8,8 @@ import { safeNextPath } from "@/shared/safe-next-path";
 
 /** Where Google sign-in returns: finish it, then go on, through /welcome if the terms are not accepted yet. */
 export async function GET(request: NextRequest) {
+  // Settings and cookies are only read for a real request, never while the build prerenders.
+  await connection();
   const params = request.nextUrl.searchParams;
   const code = params.get("code") ?? "";
   const next = safeNextPath(params.get("next"));
