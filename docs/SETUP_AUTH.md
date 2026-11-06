@@ -33,7 +33,7 @@ These are placeholders. Replace them with your real values as you go, and keep t
 | `<your-dev-project-ref>` | The dev Supabase project's reference id. In Supabase: Project Settings, General, "Reference ID". It is also the first part of `https://<your-dev-project-ref>.supabase.co` |
 | `<your-prod-project-ref>` | The same for the production project |
 | `<your-vercel-team-slug>` | The last part of your Vercel preview addresses, before `.vercel.app` |
-| `<production env file>` | The full path of your file of production settings (Part 5, step 5.2.1), for example a `.env.production.local` in a private folder outside the project folder |
+| `<production env file>` | The full path to the FILE (folder and file name, not just the folder) that holds your production settings (Part 5, step 5.2.1), for example the path of a `.env.production.local` in a private folder outside the project folder |
 | `<live address>` | The production site address, for example `https://study-share-amber.vercel.app` |
 | `<dev alias>` | `https://study-share-git-feature-phase-1a-accounts-amos-6f52.vercel.app`, the stable address of the branch preview |
 
@@ -225,10 +225,17 @@ This uses `DATABASE_MIGRATION_URL` from `.env.local`, which must point at the **
 Migrations 0001 to 0003 **must be applied to production before anything is merged to `main`**: without them production has no `profiles` or `rate_limits` tables and sign-up breaks.
 
 - [ ] **5.2.1** Create the file of production settings, **outside the project folder**. This file holds the production service-role key, the database address and the email password. The project folder is inside OneDrive, which copies its files to the cloud, and Next.js loads a `.env.production.local` that sits in the project folder automatically for `npm run build` and `npm run start`, so a local build or start would quietly use production settings. So:
-  - **Recommended:** make a private folder that OneDrive does not sync (for example a new folder under your user profile, outside OneDrive), and create `.env.production.local` there. In this guide its full path is written `<production env file>`. Every command below that uses it gets the full path, in quotes.
-  - **Fallback only:** if you keep `.env.production.local` in the project folder instead, it is still not committed, but it is synced to the cloud, and you must not run `npm run build` or `npm run start` on your computer while it is there. In that case write `.env.production.local` instead of `<production env file>` in the commands below.
+  - **Recommended: keep it outside OneDrive.**
+    1. In File Explorer, open `C:\Users\<you>\` (your user folder, where Desktop, Documents and Downloads live) and create a new folder directly inside it, for example `study-share-secrets`. Do **not** use Desktop, Documents, Downloads or Pictures: OneDrive normally syncs those, and so does the project folder itself (it is inside OneDrive\Desktop).
+    2. In Explorer, turn on file name extensions: View, Show, **File name extensions**. Otherwise Windows hides a `.txt` ending and you cannot see it.
+    3. Open Notepad, paste the settings (see "What goes in the file" below), then File, Save as. Choose the new folder, set **Save as type** to **All files**, and type the file name exactly `.env.production.local`. Save.
+    4. Check in Explorer that the file is called `.env.production.local` and not `.env.production.local.txt`. If it ends in `.txt`, rename it and remove the `.txt`.
+    5. Get its full path: hold Shift, right-click the file, choose **Copy as path**. The path is copied with quotes around it, for example `"C:\Users\<you>\study-share-secrets\.env.production.local"`.
+    6. In the commands below, replace the **whole** `<production env file>` token with that full path, including the file name, and keep exactly **one** pair of quotes around it. The commands already show `--env-file="<production env file>"`, so if you paste the path with its own quotes, delete the extra pair: you want `--env-file="C:\Users\<you>\study-share-secrets\.env.production.local"`, never two pairs of quotes.
+  - **Fallback only: in the project folder.** You can instead create `.env.production.local` in the project folder. It is still not committed, but OneDrive syncs it to the cloud, and you must not run `npm run build` or `npm run start` on your computer while it is there. In that case write `.env.production.local` in place of `<production env file>` in the commands below, keeping the quotes.
 
-  The file holds the production settings, copied from the same list as `.env.example`, with `APP_ENV=production` and every value pointing at the **production** project. It must also contain **`NEXT_PUBLIC_SITE_URL`** set to `<live address>`, because production settings require it. Without it, `check:services` on production fails and the app refuses to start.
+  **What goes in the file.** All the production settings, copied from the list in `.env.example`: `APP_ENV=production`; `DATABASE_URL` and `DATABASE_MIGRATION_URL`; `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY`; the `STORAGE_*` settings; the `SMTP_*` settings; and **`NEXT_PUBLIC_SITE_URL`** set to `<live address>`. Every value points at the **production** project. Put each setting on its own line as `NAME=value`, with no spaces around `=` and no quotes around the value. `NEXT_PUBLIC_SITE_URL` is needed because production settings require it: without it, `check:services` on production fails and the app refuses to start.
+
 - [ ] **5.2.2** **[TERMINAL]** Run, using only the production file:
 
 ```bash
@@ -236,7 +243,7 @@ node --env-file="<production env file>" ./node_modules/drizzle-kit/bin.cjs migra
 ```
 
   - **You should see:** the command ends without an error. In the production project's Table Editor (public schema) there are `profiles` and `rate_limits` tables.
-  - **If it looks different:** if it says a file cannot be found, check the full path in quotes, and run the command from the project folder (the migrate script is looked up there). If the run is reported as nothing to apply, the migrations were already applied. If it fails to connect, check `DATABASE_MIGRATION_URL` in the production file.
+  - **If it looks different:** if it says a file cannot be found, check the full path in quotes (one pair only), check that the file name does not secretly end in `.txt` (step 5.2.1, point 4), and run the command from the project folder (the migrate script is looked up there). If the run is reported as nothing to apply, the migrations were already applied. If it fails to connect, check `DATABASE_MIGRATION_URL` in the production file.
 
 ---
 
@@ -289,7 +296,7 @@ npm run check:auth-behaviour
 
 `check:services` is safe on production, but it creates and deletes one throwaway confirmed user and one small test file. **Never run `check:auth-behaviour` against production.** It refuses to, but do not try.
 
-- [ ] **7.2.1** **[TERMINAL]** Run, loading only the production file (this is the same file as in step 5.2.1; `npm run check:services` would load `.env.local`, which is the dev project):
+- [ ] **7.2.1** **[TERMINAL]** Run, loading only the production file (use the same full path as in step 5.2.1; `npm run check:services` would load `.env.local`, which is the dev project):
 
 ```bash
 npx tsx --conditions=react-server --env-file="<production env file>" scripts/check-services.ts
