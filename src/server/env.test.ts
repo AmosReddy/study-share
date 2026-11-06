@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { EnvError, parseServerEnv } from "./env";
+import { EnvError, parseServerEnv, settingsPointAtProduction } from "./env";
 
 // Fake project ids. "prodref" stands in for the real production project.
 const options = { productionProjectRefs: ["prodref"] };
@@ -149,6 +149,22 @@ describe("parseServerEnv: which project the settings point at", () => {
       options,
     );
     expect(env.APP_ENV).toBe("production");
+  });
+});
+
+describe("settingsPointAtProduction (used by the live check scripts)", () => {
+  test("is false for dev settings", () => {
+    expect(settingsPointAtProduction(parseServerEnv(valid, options), options.productionProjectRefs)).toBe(false);
+  });
+
+  test("is true for production settings", () => {
+    const env = parseServerEnv({ ...validProduction, NEXT_PUBLIC_SITE_URL: "https://study.example.com" }, options);
+    expect(settingsPointAtProduction(env, options.productionProjectRefs)).toBe(true);
+  });
+
+  test("is true when APP_ENV says production, whatever the addresses", () => {
+    const env = { ...parseServerEnv(valid, options), APP_ENV: "production" as const };
+    expect(settingsPointAtProduction(env, options.productionProjectRefs)).toBe(true);
   });
 });
 

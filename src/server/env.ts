@@ -146,6 +146,20 @@ function checkProjects(env: ServerEnv, productionRefs: readonly string[]): void 
   }
 }
 
+/**
+ * True when these settings are, or point at, production. Scripts that change data on a
+ * live project (scripts/check-auth-behaviour.ts) refuse to run when this is true.
+ */
+export function settingsPointAtProduction(
+  env: ServerEnv,
+  productionRefs: readonly string[] = PRODUCTION_PROJECT_REFS,
+): boolean {
+  return (
+    env.APP_ENV === "production" ||
+    Object.values(projectRefsByVariable(env)).some((ref) => productionRefs.includes(ref))
+  );
+}
+
 /** Which Supabase project each setting points at. Settings for other vendors are left out. */
 function projectRefsByVariable(env: ServerEnv): Record<string, string> {
   const found: Record<string, string | undefined> = {

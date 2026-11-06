@@ -13,7 +13,8 @@
     "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate",
-    "check:services": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/check-services.ts"
+    "check:services": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/check-services.ts",
+    "check:auth-behaviour": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/check-auth-behaviour.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1162.0",
