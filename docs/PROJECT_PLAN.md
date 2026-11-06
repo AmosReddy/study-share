@@ -43,7 +43,9 @@ The project starts with students, grows to teachers and colleges, and later to w
 | Domain | No spending for now: use the free Vercel address and send email through Gmail during the pilot. Buy a domain and move email before public launch |
 | Joining | Owner chooses per group: link + password (default) or link only. The link can be reset at any time |
 | Upload form misfit | Only Title is strictly required. Missing details mark the file "needs details", and the owner or an admin completes them |
-| Stack | Next.js + Supabase + Cloudflare R2 |
+| Stack | Next.js + Supabase (database, sign-in, chat and file storage) |
+| File storage | Supabase Storage for now, because Cloudflare R2 asked for a payment method. Built behind our own interface so it can move to R2 or another service later by changing settings |
+| Design principle | Ports and adapters: every outside service sits behind our own interface, so switching vendors is easy (see section 5) |
 
 **My calls, please check these**
 - Sign-in uses email and password plus Google.
@@ -51,7 +53,7 @@ The project starts with students, grows to teachers and colleges, and later to w
 - If the owner adds a field later, older files stay visible and are marked "needs details".
 - Removing a member also blocks them from rejoining until an owner or admin lifts the block. There is no separate "ban" action.
 - Sign-up requires confirming you're 18 or over and accepting short terms and a privacy notice, and we record this. These are in place before the pilot, so classmates under 18 can't join it until the legal check in section 11 is done.
-- Limits: 50 MB per file, 1 GB per group, an alert when total storage reaches 8 GB, and new uploads stop at 9.5 GB so usage can't pass the R2 free limit unless you choose to raise it.
+- Limits are sized for Supabase's free storage (1 GB in total, 50 MB cap per file, 5 GB of downloads a month shared with the rest of Supabase): 25 MB per file, 100 MB per group, an alert at 700 MB total, and new uploads stop at 900 MB. All numbers live in `src/shared/limits.ts` and are raised when storage moves to a paid plan.
 - Allowed files: PDF, Word, PowerPoint, Excel, text and common images. No ZIP, executables or SVG at first.
 - A teacher's group is the same as any group, with stricter settings switched on, rather than a separate product.
 - We test with your own class after Phase 3, before opening to everyone.
@@ -59,7 +61,7 @@ The project starts with students, grows to teachers and colleges, and later to w
 
 ## 3. Approaches considered
 
-- **A. Next.js + Supabase + R2 (chosen by you).** One codebase, hosted database, sign-in and live chat. Fastest and free to start. Standard Postgres keeps it portable.
+- **A. Next.js + Supabase (chosen by you).**
 - **B. Next.js + own NestJS backend, Postgres and Redis.** Most control, but much more work and hard to host free.
 - **C. Next.js + Firebase.** Quick for chat, but weak at filtering on custom fields, which is the heart of this product, and hard to leave.
 
@@ -75,7 +77,7 @@ The project starts with students, grows to teachers and colleges, and later to w
 | Database code | Drizzle ORM and migrations | Typed queries, tracked schema changes |
 | Sign-in | Supabase Auth | Email, Google, verification and password reset |
 | Live chat | Supabase Realtime (private Broadcast) | Live delivery with per-group access control |
-| Files | Cloudflare R2 | 10 GB free, free downloads, about $1.50 per 100 GB a month after that |
+| Files | Supabase Storage (S3-compatible) | 1 GB free. Same S3 standard as R2, so moving later is a settings change. Pro includes 100 GB |
 | Search | Postgres full-text and trigram search | Good enough for a long time, with no extra service |
 | Hosting | Vercel (functions in Mumbai) | Simple deploys and a preview for every pull request |
 | Email | Gmail SMTP for the pilot, Resend or similar after buying a domain | Supabase's built-in email is too limited for real use. All email goes through one `sendEmail` module, so switching is a settings change |
@@ -84,7 +86,7 @@ The project starts with students, grows to teachers and colleges, and later to w
 | CI | GitHub Actions | Checks every pull request |
 
 Plan limits checked on 5 Nov 2026:
-- **R2:** 10 GB storage, 1M write and 10M read operations a month, free downloads, then $0.015 per GB a month. A payment method may be requested when creating the first bucket.
+- **Supabase Storage (free):** 1 GB storage, 50 MB cap per file, 5 GB of downloads a month shared across database, sign-in and storage. Pro includes 100 GB storage and 250 GB downloads. Cloudflare R2 (10 GB free, free downloads) asked for a payment method, so it is the planned move once storage outgrows the free plan.
 - **Supabase free:** 500 MB database, 50,000 monthly users, 200 live connections at once, 2M chat messages a month, and projects pause after a week without activity. Pro starts at $25 a month.
 - **Vercel Hobby:** non-commercial only. A Pro seat is $20 a month.
 
@@ -94,17 +96,26 @@ Plan limits checked on 5 Nov 2026:
 Browser (Next.js pages, TanStack Query)
    |  normal requests             |  file upload/download
    v                              v  (short-lived signed URL)
-Next.js server code  --------->  Cloudflare R2
+Next.js server code  --------->  File storage (Supabase Storage today)
 (one permissions module)
    |
    v
 Supabase: Postgres, Auth, Realtime  ----> live chat to browser
 ```
 
+Code layout (enforced by ESLint `no-restricted-imports`):
+
+```
+src/app/      Routes only: pages, layouts, API handlers. No business logic.
+src/client/   Browser code: components, hooks, UI. Never imports src/server.
+src/server/   Server code: database, permissions, email, storage, env. Never imports src/client.
+src/shared/   Types and Zod schemas used by both. Imports neither.
+```
+
 Key rules:
 1. **All data goes through server code.** The browser never queries tables directly. Every action calls one `can(user, action, group)` permissions module, so rules live in one place.
 2. **Row Level Security is on for every table, with no public access,** as a safety net. The only browser access is Realtime, limited to groups the user belongs to.
-3. **Files never pass through our server.** The browser sends them straight to R2 using a signed URL. This avoids server limits, keeps uploads fast and gives real progress bars.
+3. **Files never pass through our server.** The browser sends them straight to file storage using a signed URL. This avoids server limits, keeps uploads fast and gives real progress bars.
 4. **Files are private.** Download links are created per request after a membership check and expire in 5 minutes. They use a different domain from the app, so an uploaded file can never run as part of the site.
 5. **Lists use cursor-based pagination,** so a group with 50,000 files or messages stays as fast as a small one.
 
@@ -126,6 +137,16 @@ Key rules:
 On phones, the group list collapses into a menu and filters open in a slide-up panel.
 
 Design standards: skeleton loaders rather than spinners, optimistic updates, clear empty states, keyboard support, light and dark themes, WCAG AA contrast. Every page uses a flexible layout from 360px upward. Pilot polish targets 1024px and up.
+
+### Design principles
+
+1. **Ports and adapters.** Our code depends on small interfaces we own (`FileStorage`, `EmailSender` in `src/server/ports`). One adapter per vendor implements each (`src/server/adapters`). `src/server/services.ts` is the only place that chooses which one is used.
+2. **Vendor code in one folder.** `@aws-sdk/*` and `nodemailer` may only be imported in `src/server/adapters`. `drizzle-orm` and `postgres` may only be imported in `src/server/db`. ESLint fails the build otherwise.
+3. **Vendor-neutral settings.** `STORAGE_*` works for any S3-compatible service (Supabase Storage, Cloudflare R2, AWS S3). `SMTP_*` works for any SMTP service (Gmail, Resend, Brevo). Switching is a change to settings, with no code change.
+4. **Standard formats underneath.** Plain Postgres, the S3 protocol and SMTP, so no data format belongs to one vendor.
+5. **One place per decision.** Permissions in `can()`, limits in `src/shared/limits.ts`, environment in `src/server/env.ts`.
+6. **Same plan for later services.** Sign-in (Phase 1) and chat (Phase 4) get ports of their own (for example `AuthProvider`, `ChatBroadcaster`) before any feature uses them.
+7. **Swapping is tested.** Each adapter has tests, and `npm run check:services` exercises every service through the same ports the app uses.
 
 ## 6. Data model
 
@@ -168,7 +189,7 @@ Details that matter:
 **Upload**
 1. The user drops files and fills in the group's form. Details can be applied to several files at once, and recent choices are remembered, to keep uploading as easy as WhatsApp. Only Title is mandatory, and it defaults to the filename. If a detail doesn't fit, they can skip it and the file is marked "needs details" for the uploader, owner or an admin to complete.
 2. The server checks membership, file type, size and quota, then reserves the space and creates a record with status `uploading`.
-3. The browser sends the file directly to R2 with a progress bar.
+3. The browser sends the file directly to file storage with a progress bar.
 4. The server confirms the file's real size and type, then marks it `ready`, or `pending` if the group requires upload approval.
 5. A daily job cleans up abandoned uploads and returns their reserved space.
 
@@ -181,9 +202,9 @@ Each phase ends deployed, tested and merged. Each gets its own detailed task pla
 ### Phase 0: Foundation
 - Git repo, GitHub repo, branch protection and CI.
 - Next.js, TypeScript, Tailwind and shadcn/ui, with the design tokens and a responsive app layout.
-- Separate Supabase projects for dev and production, plus R2, Vercel, Sentry and Gmail sending.
+- Separate Supabase projects for dev and production, plus Supabase Storage, Vercel, Sentry and Gmail sending.
 - Vercel's free built-in environments only: Preview uses the dev project and settings, Production uses the production ones. Custom environments need Pro and aren't used. If a permanent test site is needed, use a free `staging` preview branch.
-- Cloudflare budget alert set at the lowest useful amount.
+- Storage and email set up behind our own interfaces (ports and adapters), with the lint rules that keep vendor code in one place.
 - Drizzle migrations and the permissions module skeleton.
 - **Done when:** a pull request runs CI, gets a preview link, and merging deploys to production.
 
@@ -232,7 +253,7 @@ Each phase ends deployed, tested and merged. Each gets its own detailed task pla
 - Full mobile polish, including upload, chat and settings.
 - Admin page for you: reports, group lookup, usage.
 - Security review, rate limits everywhere, load test, accessibility pass.
-- Nightly database backups to a separate private R2 bucket, tested with a real restore.
+- Nightly database backups to a separate private bucket (ideally at another provider), tested with a real restore.
 - Landing page and onboarding.
 - **Done when:** the launch checklist passes and you open sign-ups.
 
@@ -297,8 +318,8 @@ Docker isn't installed, so day-to-day development uses the dev Supabase project,
 | Gmail email during the pilot | Emails may land in spam, and Gmail limits daily sending. Use a dedicated account, keep the rate limits, and tell pilot users to check spam. WhatsApp links are the backup. Replace it before public launch |
 | Supabase free project pausing | A scheduled health check keeps a quiet project visible. Move to Pro once real users rely on it |
 | Free plan backups | Assume none are included, so we run our own nightly backup |
-| R2 needs a payment method | Check during setup, including which Indian payment methods work. Fallback is Supabase Storage (smaller free space) behind the same storage code |
-| Unexpected R2 charges | Charges apply only above the free limits, and no hard spending cap was found. Use a Cloudflare budget alert, per-user upload limits, and our own stop on new uploads at 9.5 GB |
+| Supabase free storage is small | 1 GB in total and 5 GB of downloads a month. Limits in `src/shared/limits.ts` stop uploads at 900 MB. Watch usage after the pilot. Plan the move to Supabase Pro or R2 before launch. Free-plan files are not backed up, so keep the backup job on the Phase 6 list |
+| Vendor lock-in | Every outside service sits behind our own interface. Vendor libraries can only be imported in one folder each, enforced by lint. Settings use vendor-neutral names (`STORAGE_*`, `SMTP_*`), so S3-compatible storage and SMTP email can be swapped by changing values only |
 | Malware | No antivirus on free plans. Strict file list, downloads as attachments, and reports. Add scanning when budget allows |
 | One person doing support | Admin page and audit log from Phases 5 and 6 |
 
@@ -308,7 +329,7 @@ Docker isn't installed, so day-to-day development uses the dev Supabase project,
 |---|---|---|
 | Preparing for public launch | Buy a domain and move email to Resend or similar | Small yearly domain cost |
 | Real users depend on it, or the database reaches 400 MB | Supabase Pro | $25 a month |
-| Total files pass 10 GB | R2 paid storage | $1.50 per 100 GB a month |
+| Storage nears 700 MB, or downloads near 5 GB a month | Supabase Pro ($25 a month, 100 GB), or move files to Cloudflare R2 by changing the `STORAGE_*` settings | $25 a month, or about $1.50 per 100 GB |
 | Charging money, or free limits reached | Vercel Pro | $20 a month per seat |
 | Live connections near 200 | Supabase Pro first, a dedicated chat service if needed much later | varies |
 | Search slows down despite indexes | Add Meilisearch or Typesense | varies |
@@ -322,10 +343,10 @@ All of these are plan changes or additions. None requires rebuilding the product
 2. A product name, or tell me to use a temporary one.
 
 **During Phase 0, with me guiding you**
-3. Free accounts on Supabase, Cloudflare, Vercel and Sentry.
+3. Free accounts on Supabase, Vercel and Sentry.
 4. A new Gmail account just for the platform, with 2-step verification and an app password.
 5. A Google Cloud project for "Continue with Google".
-6. A payment method for Cloudflare if requested. Cloudflare charges only for usage above the free limits, and the plan stops uploads before storage reaches that point.
+6. Nothing to pay: storage now uses Supabase's free plan, so no payment method is needed.
 
 Secrets go directly into `.env.local` or the provider dashboards, never into chat.
 

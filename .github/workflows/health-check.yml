@@ -1,0 +1,22 @@
+name: Health check
+
+# Pings the live site every 3 days. Supabase pauses free projects after a week
+# with no activity, and this request touches the database.
+on:
+  schedule:
+    - cron: "0 6 */3 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request /api/health
+        env:
+          HEALTH_URL: ${{ secrets.HEALTH_URL }}
+        run: |
+          if [ -z "$HEALTH_URL" ]; then
+            echo "HEALTH_URL secret is not set" >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 30 "$HEALTH_URL"
