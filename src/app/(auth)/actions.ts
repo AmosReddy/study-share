@@ -1,5 +1,6 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import {
@@ -12,8 +13,10 @@ import {
   signUp,
   startGoogle,
   type ActionResult,
+  updateProfile,
   type Deps,
 } from "@/server/auth/use-cases";
+import { getCurrentUser } from "@/server/auth/session";
 import { clientIp } from "@/server/request-ip";
 import { getAuthProvider, getRateLimiter } from "@/server/services";
 import { getSiteUrl } from "@/server/site-url";
@@ -116,4 +119,21 @@ export async function acceptTermsAction(_state: FormState, form: FormData): Prom
   const result = await acceptTerms(await deps(), raw, text(form, "next"));
   if (!result.ok) return failed(result, values);
   redirect(result.data.redirectTo);
+}
+
+export async function updateProfileAction(_state: FormState, form: FormData): Promise<FormState> {
+  // The page requires sign-in, but a stale tab can still post here after the session ended.
+  if (!(await getCurrentUser())) redirect("/login?next=%2Faccount");
+  const values = { displayName: text(form, "displayName") };
+  const result = await updateProfile(await deps(), values);
+  if (!result.ok) return failed(result, values);
+  // The name is shown in the shell header of every page, so refresh them all.
+  revalidatePath("/", "layout");
+  return { status: "done", values: { displayName: values.displayName.trim() } };
+}
+
+export async function logOutAction(): Promise<void> {
+  await (await getAuthProvider()).signOut();
+  revalidatePath("/", "layout");
+  redirect("/");
 }

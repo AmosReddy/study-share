@@ -26,3 +26,24 @@ test("the Google flow goes through /welcome once, and a second visit skips it", 
   await page.getByRole("button", { name: "Continue with Google" }).click();
   await expect(page).toHaveURL("/terms");
 });
+
+test("a Google person who has not accepted the terms is sent to /welcome from / and /account, and then on", async ({ page }) => {
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Continue with Google" }).click();
+  await expect(page).toHaveURL("/welcome?next=%2F");
+
+  // Visiting the app directly does not skip the terms, and /welcome does not bounce back (no loop).
+  await page.goto("/");
+  await expect(page).toHaveURL("/welcome?next=%2F");
+  await page.goto("/account");
+  await expect(page).toHaveURL("/welcome?next=%2Faccount");
+
+  await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page).toHaveURL("/account");
+  await expect(page.getByRole("heading", { name: "Account", level: 1 })).toBeVisible();
+
+  await page.goto("/");
+  await expect(page).toHaveURL("/");
+  await expect(page.getByRole("banner").getByRole("button", { name: "Google User", exact: true })).toBeVisible();
+});

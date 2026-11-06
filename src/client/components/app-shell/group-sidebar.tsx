@@ -15,6 +15,9 @@ export function GroupSidebar({ groups, activeGroupId }: GroupSidebarProps) {
       </p>
 
       <nav aria-label="Groups" className="min-h-0 flex-1 overflow-y-auto px-2">
+        {groups.length === 0 ? (
+          <p className="px-3 py-2 text-sm text-muted-foreground">You are not in any groups yet.</p>
+        ) : null}
         <ul className="flex flex-col gap-0.5">
           {groups.map((group) => {
             const active = group.id === activeGroupId;

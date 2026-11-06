@@ -1,11 +1,19 @@
 import { expect, test } from "@playwright/test";
+import { isolateRateLimits, sidewaysOverflow, signUpAndConfirm } from "./helpers";
 
-test("no sideways scroll, including a very long group name", async ({ page }) => {
+/*
+  The app shell is what a signed-in person sees on `/` (signed out, `/` is the pitch, which
+  account.spec.ts covers). Each test signs up first, through the real flow, in fake mode.
+*/
+
+test.beforeEach(async ({ page }) => {
+  await isolateRateLimits(page);
+  await signUpAndConfirm(page, { name: "Asha Rao" });
+});
+
+test("no sideways scroll", async ({ page }) => {
   await page.goto("/");
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-  );
-  expect(overflow).toBeLessThanOrEqual(0);
+  expect(await sidewaysOverflow(page)).toBeLessThanOrEqual(0);
 });
 
 test("group list is reachable at this screen size", async ({ page }, info) => {

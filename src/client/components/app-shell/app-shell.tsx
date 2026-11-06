@@ -10,10 +10,12 @@ import { ThemeToggle } from "./theme-toggle";
 type AppShellProps = {
   groups: SidebarGroup[];
   activeGroupId?: string;
+  /** The account menu, shown at the right of the header. */
+  accountMenu: ReactNode;
   children: ReactNode;
 };
 
-export function AppShell({ groups, activeGroupId, children }: AppShellProps) {
+export function AppShell({ groups, activeGroupId, accountMenu, children }: AppShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -31,7 +33,7 @@ export function AppShell({ groups, activeGroupId, children }: AppShellProps) {
             type="button"
             variant="ghost"
             size="icon"
-            className="lg:hidden"
+            className="size-11 lg:hidden"
             aria-label="Open group list"
             onClick={() => setMenuOpen(true)}
           >
@@ -40,7 +42,8 @@ export function AppShell({ groups, activeGroupId, children }: AppShellProps) {
           <p className="font-heading min-w-0 flex-1 truncate font-semibold lg:hidden">
             <span className="marker px-0.5">study-share</span>
           </p>
-          <div className="ml-auto">
+          <div className="flex min-w-0 shrink-0 items-center gap-1 lg:ml-auto">
+            {accountMenu}
             <ThemeToggle />
           </div>
         </header>

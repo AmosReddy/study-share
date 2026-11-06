@@ -1,5 +1,6 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { CONTACT_EMAIL } from "../src/shared/legal";
+import { isolateRateLimits, lastEmailedLink, PASSWORD, uniqueEmail } from "./helpers";
 
 /*
   Sign-up, log-in, reset and terms, against the fake auth provider (SERVICES_MODE=fake).
@@ -8,32 +9,14 @@ import { CONTACT_EMAIL } from "../src/shared/legal";
   resend. "Expired or reused" links below are ones that were already used or never existed.
 */
 
-const PASSWORD = "correct horse 1";
 const IN_APP_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36 Instagram 350.0.0.0.0";
-
-function uniqueEmail(tag: string) {
-  return `${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`;
-}
 
 // Each test gets its own made-up client address, so the per-IP rate limits of one test
 // (or of an earlier run against the same server) never block another.
 test.beforeEach(async ({ page }) => {
-  const part = () => Math.floor(Math.random() * 250) + 1;
-  await page.setExtraHTTPHeaders({ "x-forwarded-for": `10.${part()}.${part()}.${part()}` });
+  await isolateRateLimits(page);
 });
-
-/** The newest link the fake provider "emailed" to this address. */
-async function lastEmailedLink(request: APIRequestContext, email: string): Promise<string> {
-  let url = "";
-  await expect(async () => {
-    const response = await request.get(`/api/test/outbox?email=${encodeURIComponent(email)}`);
-    expect(response.status()).toBe(200);
-    url = ((await response.json()) as { url: string | null }).url ?? "";
-    expect(url).not.toBe("");
-  }).toPass({ timeout: 5000 });
-  return url;
-}
 
 async function fillSignUp(page: Page, { name, email, password }: { name: string; email: string; password: string }) {
   await page.getByLabel("Name", { exact: true }).fill(name);
@@ -76,6 +59,8 @@ test.describe("sign-up", () => {
     await page.goto(await lastEmailedLink(page.request, email));
     await expect(page).toHaveURL("/");
     await expectSignedIn(page);
+    // The person's name shows in the account menu on the home page.
+    await expect(page.getByRole("banner").getByRole("button", { name: "Asha Rao", exact: true })).toBeVisible();
   });
 
   test("an address that already has an account gets the identical screen", async ({ page }) => {
