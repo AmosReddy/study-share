@@ -39,21 +39,44 @@ export function readEmailLink(params: { get(name: string): unknown }): { link: E
   return { link: { tokenHash, type, next: confirmLinkTarget(text("redirect_to")) } };
 }
 
+/** After a confirmed sign-up link: log in, then go on to `next`. */
+function confirmedLoginPath(next: string): string {
+  return next === "/" ? "/login?confirmed=1" : `/login?confirmed=1&next=${encodeURIComponent(next)}`;
+}
+
 /**
- * Uses the link's token. It signs the person in on this device, so the link works on a
- * different device from the one used to sign up. Returns where to go next. A failure of any
- * kind (expired, used, an outage, missing settings) is the expired-link screen; it is logged
- * without the token.
+ * Uses the link's token and returns where to go next. A failure of any kind (expired, used, an
+ * outage, missing settings) is the expired-link screen; it is logged without the token.
+ *
+ * A reset link leaves the person signed in on this device, so they can choose a new password.
+ * A sign-up link confirms the address and then signs out again, and the person logs in with
+ * their password. Reason: Supabase keeps the FIRST password when an unconfirmed address signs
+ * up twice (checked live with npm run check:auth-behaviour), so the link may confirm a pending
+ * account that someone else created with their own password. Signing in through it would hand
+ * the real owner an account whose password a stranger knows. Logging in instead shows them at
+ * once that their password does not work, and Forgot password replaces it.
  */
-export async function verifyEmailLink(getAuth: () => Promise<Pick<AuthProvider, "confirmEmailToken">>, link: EmailLink): Promise<string> {
+export async function verifyEmailLink(
+  getAuth: () => Promise<Pick<AuthProvider, "confirmEmailToken" | "signOut">>,
+  link: EmailLink,
+): Promise<string> {
+  let auth: Pick<AuthProvider, "confirmEmailToken" | "signOut">;
   let confirmed = false;
   try {
-    const auth = await getAuth();
+    auth = await getAuth();
     confirmed = await auth.confirmEmailToken({ tokenHash: link.tokenHash, type: link.type });
   } catch (error) {
     // Not the person's fault (settings or an outage), but they still get the neutral screen.
     console.error("Email link check failed:", describeForLog(error));
+    return failurePath(link.type);
   }
   if (!confirmed) return failurePath(link.type);
-  return link.type === "recovery" ? "/reset-password" : link.next;
+  if (link.type === "recovery") return "/reset-password";
+
+  try {
+    await auth.signOut();
+  } catch (error) {
+    console.error("Sign-out after email confirmation failed:", describeForLog(error));
+  }
+  return confirmedLoginPath(link.next);
 }

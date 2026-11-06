@@ -144,7 +144,8 @@ export function createFakeAuthProvider(deps: {
       if (password.length < MIN_PASSWORD_LENGTH) throw new AuthProviderError("weak_password");
       const existing = findByEmail(email);
       if (existing) {
-        // Same outward result as a new sign-up. Never replace the first password.
+        // Same outward result as a new sign-up. Like real Supabase (checked live with
+        // npm run check:auth-behaviour), the first password is kept, confirmed or not.
         if (!existing.confirmed) issueToken(existing, "email", redirectTo);
         return;
       }

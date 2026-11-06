@@ -49,8 +49,21 @@ export async function forgetEmailCooldown(request: APIRequestContext, email: str
 }
 
 /**
- * Signs up through the real form, opens the emailed confirmation link, and leaves the
- * page signed in on `/`. The sign-up form records the terms, so no /welcome step follows.
+ * After a confirmation link: the log-in page says the email is confirmed (the link itself does
+ * not sign in), and the person logs in with their password.
+ */
+export async function logInAfterConfirming(page: Page, email: string, password = PASSWORD): Promise<void> {
+  await expect(page).toHaveURL(/\/login\?confirmed=1/);
+  // By role: while the page streams in, a hidden copy of the message can briefly exist too.
+  await expect(page.getByRole("status").filter({ hasText: "Your email is confirmed. Log in to continue." })).toBeVisible();
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Log in", exact: true }).click();
+}
+
+/**
+ * Signs up through the real form, opens the emailed confirmation link, logs in, and leaves
+ * the page signed in on `/`. The sign-up form records the terms, so no /welcome step follows.
  */
 export async function signUpAndConfirm(page: Page, { name, email }: { name: string; email?: string }): Promise<string> {
   const address = email ?? uniqueEmail("person");
@@ -62,6 +75,7 @@ export async function signUpAndConfirm(page: Page, { name, email }: { name: stri
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
   await followEmailLink(page, await lastEmailedLink(page.request, address));
+  await logInAfterConfirming(page, address);
   await expect(page).toHaveURL("/");
   return address;
 }

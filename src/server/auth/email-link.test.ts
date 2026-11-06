@@ -59,11 +59,52 @@ describe("verifyEmailLink", () => {
   });
   afterEach(() => error.mockRestore());
 
-  it("a sign-up link confirms the address and goes on to next", async () => {
+  /*
+    Real Supabase keeps the FIRST password when an unconfirmed address signs up again (checked
+    live with npm run check:auth-behaviour). So a confirmation link may belong to a pending
+    account someone else created with their own password. The link therefore confirms the
+    address but does not leave the person signed in: they log in with their own password, and
+    if it does not work, Forgot password replaces it.
+  */
+  it("a sign-up link confirms the address, signs out again and asks the person to log in", async () => {
     const { auth } = setup();
     const tokenHash = await signUpLink(auth);
-    expect(await verifyEmailLink(async () => auth, { tokenHash, type: "email", next: "/privacy?x=1" })).toBe("/privacy?x=1");
+    expect(await verifyEmailLink(async () => auth, { tokenHash, type: "email", next: "/privacy?x=1" })).toBe(
+      "/login?confirmed=1&next=%2Fprivacy%3Fx%3D1",
+    );
+    expect(await auth.getUser()).toBeNull();
     expect(await auth.signInWithPassword({ email: "a@x.com", password: "my password" })).toEqual({ ok: true });
+  });
+
+  it("leaves next out of the log-in address when it is the home page", async () => {
+    const { auth } = setup();
+    const tokenHash = await signUpLink(auth);
+    expect(await verifyEmailLink(async () => auth, { tokenHash, type: "email", next: "/" })).toBe("/login?confirmed=1");
+  });
+
+  it("still asks the person to log in when signing out fails, and logs one fixed line", async () => {
+    const { auth } = setup();
+    const tokenHash = await signUpLink(auth);
+    vi.spyOn(auth, "signOut").mockRejectedValue(new AuthProviderError("unavailable", "vendor text"));
+    expect(await verifyEmailLink(async () => auth, { tokenHash, type: "email", next: "/" })).toBe("/login?confirmed=1");
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(error.mock.calls)).not.toContain(tokenHash);
+  });
+
+  it("a pre-registered address: the person who confirms cannot log in with their own password", async () => {
+    const { auth } = setup();
+    // Someone else signs up first with their own password and never confirms.
+    await auth.signUpWithPassword({ email: "v@x.com", password: "other's password", displayName: "X", termsVersion: TERMS_VERSION, redirectTo: SITE });
+    // The real owner signs up later and confirms through the link they receive.
+    await auth.signUpWithPassword({ email: "v@x.com", password: "owner's password", displayName: "V", termsVersion: TERMS_VERSION, redirectTo: SITE });
+    const tokenHash = tokenOf(auth.outbox.lastFor("v@x.com")!.url);
+    expect(await verifyEmailLink(async () => auth, { tokenHash, type: "email", next: "/" })).toBe("/login?confirmed=1");
+    // They are not left signed in to an account whose password someone else knows.
+    expect(await auth.getUser()).toBeNull();
+    expect(await auth.signInWithPassword({ email: "v@x.com", password: "owner's password" })).toEqual({
+      ok: false,
+      reason: "invalid_credentials",
+    });
   });
 
   it("a reset link goes to /reset-password, signed in", async () => {

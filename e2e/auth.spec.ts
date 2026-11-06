@@ -1,6 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
 import { CONTACT_EMAIL } from "../src/shared/legal";
-import { followEmailLink, forgetEmailCooldown, isolateRateLimits, lastEmailedLink, PASSWORD, uniqueEmail } from "./helpers";
+import {
+  followEmailLink,
+  forgetEmailCooldown,
+  isolateRateLimits,
+  lastEmailedLink,
+  logInAfterConfirming,
+  PASSWORD,
+  uniqueEmail,
+} from "./helpers";
 
 /*
   Sign-up, log-in, reset and terms, against the fake auth provider (SERVICES_MODE=fake).
@@ -32,11 +40,11 @@ async function signUp(page: Page, email: string, path = "/signup") {
   await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
 }
 
-/** Signs up and confirms, then signs out by clearing cookies. */
+/** Signs up and confirms. The link does not sign in, so the person is left signed out. */
 async function createConfirmedUser(page: Page, email: string) {
   await signUp(page, email);
   await followEmailLink(page, await lastEmailedLink(page.request, email));
-  await expect(page).toHaveURL("/");
+  await expect(page).toHaveURL("/login?confirmed=1");
   await page.context().clearCookies();
 }
 
@@ -63,10 +71,14 @@ async function expectSignedIn(page: Page) {
 }
 
 test.describe("sign-up", () => {
-  test("confirming the emailed link lands on / signed in", async ({ page }) => {
+  test("confirming the emailed link asks the person to log in, then lands on / signed in", async ({ page }) => {
     const email = uniqueEmail("signup");
     await signUp(page, email);
     await followEmailLink(page, await lastEmailedLink(page.request, email));
+    await expect(page).toHaveURL("/login?confirmed=1");
+    // The link confirmed the address but did not sign in.
+    await expect(page.getByRole("banner").getByRole("button", { name: "Asha Rao", exact: true })).toHaveCount(0);
+    await logInAfterConfirming(page, email);
     await expect(page).toHaveURL("/");
     await expectSignedIn(page);
     // The person's name shows in the account menu on the home page.
@@ -189,6 +201,7 @@ test.describe("email links", () => {
 
     // The person then taps Continue: the token still works.
     await followEmailLink(page, link);
+    await logInAfterConfirming(page, email);
     await expect(page).toHaveURL("/");
     await expectSignedIn(page);
   });
@@ -210,7 +223,7 @@ test.describe("email links", () => {
     await signUp(page, email);
     const link = await lastEmailedLink(page.request, email);
     await followEmailLink(page, link);
-    await expect(page).toHaveURL("/");
+    await expect(page).toHaveURL("/login?confirmed=1");
 
     await page.context().clearCookies();
     await followEmailLink(page, link);
@@ -229,6 +242,8 @@ test.describe("email links", () => {
     const link = await lastEmailedLink(page.request, email);
     expect(new URL(link, baseURL).searchParams.get("redirect_to")).toBe(`${baseURL}/privacy`);
     await followEmailLink(page, link);
+    await expect(page).toHaveURL(`/login?confirmed=1&next=${encodeURIComponent("/privacy")}`);
+    await logInAfterConfirming(page, email);
     await expect(page).toHaveURL("/privacy");
 
     // An off-site redirect_to is reduced to a path on this site before it reaches the form.
@@ -236,6 +251,63 @@ test.describe("email links", () => {
     await expect(page.locator('input[name="redirect_to"]')).toHaveValue("/x");
     await page.getByRole("button", { name: "Continue", exact: true }).click();
     expect(new URL(page.url()).origin).toBe(baseURL);
+  });
+});
+
+/*
+  Real Supabase keeps the FIRST password when an unconfirmed address signs up twice, so someone
+  could sign up with another person's address and their own password, wait, and keep that
+  password after the real owner confirms. The confirmation link therefore never signs in: the
+  owner logs in, finds their password does not work, and replaces it with Forgot password.
+*/
+test.describe("an address someone else signed up first", () => {
+  test("the owner is not signed in by the link, and Forgot password takes the account back", async ({ page, browser, baseURL }) => {
+    const email = uniqueEmail("prereg");
+    const strangersPassword = "the stranger's password";
+
+    // A stranger signs up with the owner's address and never confirms.
+    await page.goto("/signup");
+    await fillSignUp(page, { name: "Stranger", email, password: strangersPassword });
+    await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    await page.context().clearCookies();
+
+    // Later the owner signs up with their own password and confirms through the email they get.
+    await forgetEmailCooldown(page.request, email);
+    await signUp(page, email);
+    await followEmailLink(page, await lastEmailedLink(page.request, email));
+    await expect(page).toHaveURL("/login?confirmed=1");
+
+    // The owner's password does not work: nobody was signed in to the stranger's account.
+    await logInAfterConfirming(page, email);
+    await expect(page.getByText("That email and password do not match.")).toBeVisible();
+
+    // Forgot password replaces the stranger's password.
+    await page.context().clearCookies();
+    const ownersPassword = "the owner's new password";
+    await forgetEmailCooldown(page.request, email);
+    await page.goto("/forgot-password");
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    await page.getByRole("button", { name: "Send reset link" }).click();
+    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    await followEmailLink(page, await lastEmailedLink(page.request, email));
+    await expect(page).toHaveURL("/reset-password");
+    await page.getByLabel("New password", { exact: true }).fill(ownersPassword);
+    await page.getByLabel("Confirm new password", { exact: true }).fill(ownersPassword);
+    await page.getByRole("button", { name: "Save password" }).click();
+    await expect(page).toHaveURL("/");
+
+    // The stranger's password no longer works.
+    const stranger = await browser.newPage({ baseURL });
+    try {
+      await isolateRateLimits(stranger);
+      await stranger.goto("/login");
+      await logIn(stranger, email, strangersPassword);
+      await expect(stranger.getByText("That email and password do not match.")).toBeVisible();
+    } finally {
+      await stranger.close();
+    }
   });
 });
 

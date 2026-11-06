@@ -58,7 +58,10 @@ export function runAuthProviderContract(make: () => { provider: AuthProvider; ou
       expect(url.searchParams.get("token_hash")).toBeTruthy();
     });
 
-    test("signing up twice with the same email looks the same and keeps the first password", async () => {
+    // Real Supabase does this (checked live with npm run check:auth-behaviour): a repeat sign-up
+    // of an unconfirmed address keeps the FIRST password. /auth/confirm therefore signs out after
+    // a sign-up confirmation (src/server/auth/email-link.ts).
+    test("signing up twice before confirming looks the same and keeps the FIRST password", async () => {
       const { provider, outbox } = make();
       await expect(provider.signUpWithPassword(sign())).resolves.toBeUndefined();
       const afterFirst = outbox.entries.length;
@@ -154,6 +157,15 @@ export function runAuthProviderContract(make: () => { provider: AuthProvider; ou
       expect(outbox.entries.length).toBe(before + 1);
       const token = tokenOf(outbox.lastFor("ada@example.com")!.url);
       expect(await provider.confirmEmailToken({ tokenHash: token, type: "email" })).toBe(true);
+    });
+
+    test("resendConfirmation for an already-confirmed address does not throw and sends nothing", async () => {
+      // Real Supabase returns normally here too (checked live with npm run check:auth-behaviour),
+      // so the reply for a confirmed address looks the same as for an unknown one.
+      const { provider, outbox } = await confirmed();
+      const before = outbox.entries.length;
+      await expect(provider.resendConfirmation({ email: "ada@example.com", redirectTo: REDIRECT })).resolves.toBeUndefined();
+      expect(outbox.entries.length).toBe(before);
     });
 
     test("sendPasswordReset for an unknown email does not throw and sends nothing", async () => {

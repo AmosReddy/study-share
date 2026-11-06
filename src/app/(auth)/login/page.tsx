@@ -30,7 +30,10 @@ async function Login({ searchParams }: Pick<PageProps<"/login">, "searchParams">
   );
 
   let notice = null;
-  if (error === "link_expired") {
+  if (param(params, "confirmed") === "1") {
+    // The confirmation link confirms the address but does not sign in (see src/server/auth/email-link.ts).
+    notice = <FormMessage tone="success" title="Your email is confirmed. Log in to continue." />;
+  } else if (error === "link_expired") {
     notice = (
       <div className="flex flex-col gap-4">
         <FormMessage tone="error" title="This link has expired or was already used">
