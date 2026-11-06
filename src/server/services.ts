@@ -40,6 +40,7 @@ export function getEmailSender(): EmailSender {
       port: env.SMTP_PORT,
       user: env.SMTP_USER,
       password: env.SMTP_PASSWORD,
+      from: env.SMTP_FROM,
     });
   }
   return email;
