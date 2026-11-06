@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { FormAction } from "@/shared/form-state";
-import { AuthCard } from "./auth-card";
+import { AuthCard, linkTarget } from "./auth-card";
 import { FormMessage } from "./form-message";
 import { OrDivider } from "./or-divider";
 import { PasswordField } from "./password-field";
@@ -36,7 +36,7 @@ export function LoginForm({ action, resendAction, next, signupHref, forgotHref, 
       footer={
         <>
           New here?{" "}
-          <Link href={signupHref} className="font-medium text-foreground underline underline-offset-4">
+          <Link href={signupHref} className={linkTarget}>
             Create an account
           </Link>
         </>

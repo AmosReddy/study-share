@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { FormAction } from "@/shared/form-state";
-import { AuthCard } from "./auth-card";
+import { AuthCard, linkTarget } from "./auth-card";
 import { FormMessage } from "./form-message";
 import { SubmitButton } from "./submit-button";
 import { EmailField } from "./text-field";
@@ -12,7 +12,7 @@ export function ForgotPasswordForm({ action }: { action: FormAction }) {
   const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
   const values = state.values ?? {};
   const backToLogin = (
-    <Link href="/login" className="font-medium text-foreground underline underline-offset-4">
+    <Link href="/login" className={linkTarget}>
       Back to log in
     </Link>
   );

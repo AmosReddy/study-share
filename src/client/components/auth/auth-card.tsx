@@ -8,6 +8,10 @@ type AuthCardProps = {
   footer?: ReactNode;
 };
 
+/** A link that stands on its own line or ends a sentence in a card footer: a full 44px tap target. */
+export const linkTarget =
+  "inline-flex min-h-11 min-w-11 items-center justify-center font-medium text-foreground underline underline-offset-4";
+
 /** One single-column card per screen. On phones it sits flat on the paper; from `sm` up it is a card. */
 export function AuthCard({ title, description, children, footer }: AuthCardProps) {
   return (

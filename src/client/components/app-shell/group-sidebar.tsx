@@ -44,14 +44,14 @@ export function GroupSidebar({ groups, activeGroupId }: GroupSidebarProps) {
         <button
           type="button"
           disabled
-          className="rounded-md border px-3 py-2 text-left text-sm text-muted-foreground disabled:cursor-not-allowed"
+          className="min-h-11 rounded-md border px-3 py-2 text-left text-sm text-muted-foreground disabled:cursor-not-allowed"
         >
           New group
         </button>
         <button
           type="button"
           disabled
-          className="rounded-md border px-3 py-2 text-left text-sm text-muted-foreground disabled:cursor-not-allowed"
+          className="min-h-11 rounded-md border px-3 py-2 text-left text-sm text-muted-foreground disabled:cursor-not-allowed"
         >
           Join a group
         </button>

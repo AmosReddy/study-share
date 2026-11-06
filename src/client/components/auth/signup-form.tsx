@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { FormAction } from "@/shared/form-state";
-import { AuthCard } from "./auth-card";
+import { AuthCard, linkTarget } from "./auth-card";
 import { FormMessage } from "./form-message";
 import { OrDivider } from "./or-divider";
 import { PasswordField } from "./password-field";
@@ -36,13 +36,13 @@ export function SignupForm({ action, next, loginHref, alternative }: SignupFormP
           </>
         }
         footer={
-          <>
+          <p>
             Nothing after a few minutes? Check your spam folder, or{" "}
             <Link href={loginHref} className="font-medium text-foreground underline underline-offset-4">
               log in
             </Link>{" "}
             if you already have an account.
-          </>
+          </p>
         }
       />
     );
@@ -55,7 +55,7 @@ export function SignupForm({ action, next, loginHref, alternative }: SignupFormP
       footer={
         <>
           Already have an account?{" "}
-          <Link href={loginHref} className="font-medium text-foreground underline underline-offset-4">
+          <Link href={loginHref} className={linkTarget}>
             Log in
           </Link>
         </>

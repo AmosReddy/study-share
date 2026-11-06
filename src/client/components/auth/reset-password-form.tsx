@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { FormAction } from "@/shared/form-state";
-import { AuthCard } from "./auth-card";
+import { AuthCard, linkTarget } from "./auth-card";
 import { FormMessage } from "./form-message";
 import { PasswordField } from "./password-field";
 import { SubmitButton } from "./submit-button";
@@ -17,7 +17,7 @@ export function ResetPasswordForm({ action }: { action: FormAction }) {
       <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
         {state.formError ? (
           <FormMessage tone="error" title={state.formError}>
-            <Link href="/forgot-password" className="font-medium underline underline-offset-4">
+            <Link href="/forgot-password" className={linkTarget}>
               Get a new link
             </Link>
           </FormMessage>

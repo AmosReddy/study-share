@@ -11,10 +11,10 @@ export function EmptyGroups() {
         A group is a class or a study circle with its own library of notes and papers. You are not in any yet.
       </p>
       <div className="flex w-full flex-col gap-3 sm:flex-row">
-        <Button type="button" disabled className="h-11 flex-1 px-5 text-base sm:flex-none">
+        <Button type="button" disabled className="h-11 px-5 text-base">
           Create a group
         </Button>
-        <Button type="button" variant="outline" disabled className="h-11 flex-1 px-5 text-base sm:flex-none">
+        <Button type="button" variant="outline" disabled className="h-11 px-5 text-base">
           Join with a code
         </Button>
       </div>

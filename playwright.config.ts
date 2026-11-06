@@ -43,7 +43,7 @@ const fakeServicesEnv = {
 };
 
 /** Resets the shared fake store, so it runs alone, after the other projects. */
-const SERIAL_SPECS = /google\.spec\.ts/;
+const SERIAL_SPECS = /(google|phone-quality-welcome)\.spec\.ts/;
 /** Makes the fake provider's next sign-out fail, a server-wide switch, so it runs alone, last. */
 const FAILING_SIGN_OUT_SPECS = /logout-failure\.spec\.ts/;
 const phone360 = { ...devices["Pixel 5"], viewport: { width: 360, height: 740 } };
@@ -53,6 +53,8 @@ export default defineConfig({
   globalSetup: "./e2e/global-setup.ts",
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
+  // On CI, also write an HTML report to playwright-report/ (uploaded with test-results/ when a run fails).
+  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
   use: { baseURL: BASE_URL },
   projects: [
     {
