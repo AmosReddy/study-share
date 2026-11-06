@@ -1,7 +1,8 @@
 import "server-only";
 import { cookies } from "next/headers";
 import { createFakeAuthProvider, getFakeAuthStore } from "@/server/adapters/fake-auth-provider";
-import { createMemoryRateLimiter } from "@/server/adapters/memory-rate-limiter";
+import { createMemoryRateLimiter, type MemoryRateLimiter } from "@/server/adapters/memory-rate-limiter";
+import { emailSendKey } from "@/server/auth/rate-limit-policy";
 import { createSmtpEmailSenderFromConfig } from "@/server/adapters/smtp-email-sender";
 import { createS3FileStorage } from "@/server/adapters/s3-file-storage";
 import { createSupabaseAuthProvider } from "@/server/adapters/supabase-auth-provider";
@@ -97,13 +98,24 @@ export async function getAuthProvider(): Promise<AuthProvider> {
 const MEMORY_LIMITER_KEY = "__studyShareMemoryRateLimiter";
 let postgresLimiter: RateLimiter | undefined;
 
+/** Test mode's one limiter. On globalThis, like the fake auth store, because Next.js can bundle
+ * server actions and route handlers separately and each would get its own copy. */
+function memoryLimiter(): MemoryRateLimiter {
+  const g = globalThis as unknown as Record<string, MemoryRateLimiter | undefined>;
+  return (g[MEMORY_LIMITER_KEY] ??= createMemoryRateLimiter());
+}
+
 export function getRateLimiter(): RateLimiter {
-  if (getServerEnv().SERVICES_MODE === "fake") {
-    // On globalThis, like the fake auth store, because Next.js can bundle server
-    // actions and route handlers separately and each would get its own copy.
-    const g = globalThis as unknown as Record<string, RateLimiter | undefined>;
-    return (g[MEMORY_LIMITER_KEY] ??= createMemoryRateLimiter());
-  }
+  if (getServerEnv().SERVICES_MODE === "fake") return memoryLimiter();
   postgresLimiter ??= createPostgresRateLimiter(getDb());
   return postgresLimiter;
+}
+
+/**
+ * Test mode only: clears one address's one-email-a-minute cooldown, so a browser test can send
+ * a second email to the same address without waiting a minute. Does nothing in any other mode.
+ */
+export function forgetEmailSendCooldown(email: string): void {
+  if (getServerEnv().SERVICES_MODE !== "fake") return;
+  memoryLimiter().forget(emailSendKey(email.trim().toLowerCase()));
 }

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { auditInBothThemes, auditPage, type PageExpectation } from "./audit";
-import { isolateRateLimits, lastEmailedLink, signUpAndConfirm, uniqueEmail } from "./helpers";
+import { forgetEmailCooldown, isolateRateLimits, lastEmailedLink, signUpAndConfirm, uniqueEmail } from "./helpers";
 
 /*
   The phone quality sweep: every page of Phase 1a, audited (see ./audit.ts) in the light and
@@ -100,6 +100,7 @@ test.describe("signed in", () => {
     const email = uniqueEmail("reset");
     await signUpAndConfirm(page, { name: NAME, email });
     await page.context().clearCookies();
+    await forgetEmailCooldown(page.request, email);
 
     await page.goto("/forgot-password");
     await page.getByLabel("Email", { exact: true }).fill(email);

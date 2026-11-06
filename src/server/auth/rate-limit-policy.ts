@@ -17,3 +17,13 @@ export const PASSWORD_RESET_IP_LIMIT: Limit = { limit: 30, windowSeconds: HOUR }
 export const PASSWORD_UPDATE_USER_LIMIT: Limit = { limit: 10, windowSeconds: HOUR };
 
 export const RESEND_EMAIL_LIMIT: Limit = { limit: 3, windowSeconds: HOUR };
+
+/**
+ * At most one email a minute to an address, shared by sign-up, resend and reset (one key for
+ * all three, because Supabase's own per-address limit counts every email it sends). Our own
+ * refusal depends only on this counter, never on whether an account exists.
+ */
+export const EMAIL_SEND_COOLDOWN: Limit = { limit: 1, windowSeconds: 60 };
+
+/** The cooldown's key. `email` must already be normalised (trimmed, lowercase). */
+export const emailSendKey = (email: string) => `email-send:${email}`;

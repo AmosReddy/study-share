@@ -5,6 +5,8 @@ import { displayNameSchema, forgotPasswordSchema, loginSchema, resetPasswordSche
 import { TERMS_VERSION } from "@/shared/legal";
 import { safeNextPath } from "@/shared/safe-next-path";
 import {
+  EMAIL_SEND_COOLDOWN,
+  emailSendKey,
   LOGIN_EMAIL_LIMIT,
   LOGIN_IP_LIMIT,
   PASSWORD_RESET_EMAIL_LIMIT,
@@ -36,6 +38,8 @@ export const CONFIRM_EMAIL_CODE = "confirm_email";
 
 const MESSAGES = {
   tooMany: "Too many attempts. Please try again later.",
+  justSent: "We just sent you an email. Please wait a minute before trying again.",
+  couldNotSend: "We couldn't send the email right now. Please try again in a few minutes.",
   generic: "Something went wrong. Please try again.",
   badLogin: "That email and password do not match.",
   badForm: "Check the form and try again.",
@@ -70,7 +74,18 @@ function parse<S extends z.ZodType>(schema: S, raw: unknown): { data: z.output<S
   };
 }
 
-type Check = { key: string; limit: Limit };
+/** One limit to count. `message` replaces the usual "too many attempts" when this one refuses. */
+type Check = { key: string; limit: Limit; message?: string };
+
+/**
+ * The shared one-email-a-minute cooldown. It comes first, so a quick repeat (a double tap)
+ * is refused before it uses up any hourly allowance.
+ */
+const emailSendCheck = (email: string): Check => ({
+  key: emailSendKey(email),
+  limit: EMAIL_SEND_COOLDOWN,
+  message: MESSAGES.justSent,
+});
 
 const MAX_IP_LENGTH = 64;
 
@@ -84,14 +99,17 @@ function ipCheck(prefix: string, ip: string, limit: Limit): Check[] {
 }
 
 /**
- * The provider limits emails per address (for example one a minute), and only for addresses that
- * have an account. Reporting that would reveal which emails are registered, so for the neutral
- * flows a provider rate limit looks like success. The fixed line carries no email, key or IP.
+ * For the flows that send an email (sign-up, resend, reset). A provider rate limit (per address,
+ * per IP, or the project's hourly email quota) means nothing was sent, so the person is told so
+ * instead of "check your email". The answer is the same for every address, and our own
+ * cooldown keeps quick repeats from reaching the provider. The fixed line has no email, key or IP.
  */
-function isNeutralProviderLimit(error: unknown): boolean {
-  if (!(error instanceof AuthProviderError) || error.code !== "rate_limited") return false;
-  console.warn("Auth provider email rate limit reached; reporting the neutral result.");
-  return true;
+function emailFlowFailure(error: unknown): Failure {
+  if (error instanceof AuthProviderError && error.code === "rate_limited") {
+    console.warn("Auth provider refused to send an email (rate limited); told the person to try again later.");
+    return { ok: false, formError: MESSAGES.couldNotSend };
+  }
+  return providerFailure(error);
 }
 
 /**
@@ -102,11 +120,15 @@ function isNeutralProviderLimit(error: unknown): boolean {
 async function overLimit(limiter: RateLimiter, checks: Check[]): Promise<Failure | null> {
   let storeFailed = false;
   let refusal: Failure | null = null;
-  for (const { key, limit } of checks) {
+  for (const { key, limit, message } of checks) {
     try {
       const result = await limiter.hit({ key, limit: limit.limit, windowSeconds: limit.windowSeconds });
       if (!result.allowed) {
-        refusal = { ok: false, formError: MESSAGES.tooMany, retryAfterSeconds: Math.max(1, result.retryAfterSeconds) };
+        refusal = {
+          ok: false,
+          formError: message ?? MESSAGES.tooMany,
+          retryAfterSeconds: Math.max(1, result.retryAfterSeconds),
+        };
         break;
       }
     } catch {
@@ -138,6 +160,7 @@ export async function signUp(deps: Deps, raw: unknown, next: unknown): Promise<A
   const { email, password, displayName } = parsed.data;
 
   const refused = await overLimit(deps.limiter, [
+    emailSendCheck(email),
     { key: `signup:email:${email}`, limit: SIGN_UP_EMAIL_LIMIT },
     ...ipCheck("signup", deps.ip, SIGN_UP_IP_LIMIT),
   ]);
@@ -152,7 +175,7 @@ export async function signUp(deps: Deps, raw: unknown, next: unknown): Promise<A
       redirectTo: confirmRedirect(deps, next),
     });
   } catch (error) {
-    if (!isNeutralProviderLimit(error)) return providerFailure(error);
+    return emailFlowFailure(error);
   }
   return { ok: true, data: { status: "check_email" } };
 }
@@ -187,13 +210,16 @@ export async function resendConfirmation(deps: Deps, raw: unknown, next: unknown
   if ("failure" in parsed) return parsed.failure;
   const { email } = parsed.data;
 
-  const refused = await overLimit(deps.limiter, [{ key: `resend:email:${email}`, limit: RESEND_EMAIL_LIMIT }]);
+  const refused = await overLimit(deps.limiter, [
+    emailSendCheck(email),
+    { key: `resend:email:${email}`, limit: RESEND_EMAIL_LIMIT },
+  ]);
   if (refused) return refused;
 
   try {
     await deps.auth.resendConfirmation({ email, redirectTo: confirmRedirect(deps, next) });
   } catch (error) {
-    if (!isNeutralProviderLimit(error)) return providerFailure(error);
+    return emailFlowFailure(error);
   }
   return { ok: true, data: undefined };
 }
@@ -204,6 +230,7 @@ export async function requestPasswordReset(deps: Deps, raw: unknown): Promise<Ac
   const { email } = parsed.data;
 
   const refused = await overLimit(deps.limiter, [
+    emailSendCheck(email),
     { key: `reset:email:${email}`, limit: PASSWORD_RESET_EMAIL_LIMIT },
     ...ipCheck("reset", deps.ip, PASSWORD_RESET_IP_LIMIT),
   ]);
@@ -212,7 +239,7 @@ export async function requestPasswordReset(deps: Deps, raw: unknown): Promise<Ac
   try {
     await deps.auth.sendPasswordReset({ email, redirectTo: `${deps.siteUrl}/reset-password` });
   } catch (error) {
-    if (!isNeutralProviderLimit(error)) return providerFailure(error);
+    return emailFlowFailure(error);
   }
   return { ok: true, data: { status: "check_email" } };
 }

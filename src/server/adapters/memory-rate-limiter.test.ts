@@ -15,3 +15,13 @@ test("works with the real clock when none is injected", async () => {
   expect((await limiter.hit({ key: "k", limit: 1, windowSeconds: 60 })).allowed).toBe(true);
   expect((await limiter.hit({ key: "k", limit: 1, windowSeconds: 60 })).allowed).toBe(false);
 });
+
+test("forget(key) clears one key's window and leaves the others (test mode only)", async () => {
+  const limiter = createMemoryRateLimiter(() => 0);
+  const hit = (key: string) => limiter.hit({ key, limit: 1, windowSeconds: 60 });
+  await hit("a");
+  await hit("b");
+  limiter.forget("a");
+  expect((await hit("a")).allowed).toBe(true);
+  expect((await hit("b")).allowed).toBe(false);
+});

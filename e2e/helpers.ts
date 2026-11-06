@@ -31,6 +31,15 @@ export async function lastEmailedLink(request: APIRequestContext, email: string)
 }
 
 /**
+ * Clears the address's one-email-a-minute cooldown (test mode only), so the test can send it
+ * another email without waiting a minute.
+ */
+export async function forgetEmailCooldown(request: APIRequestContext, email: string): Promise<void> {
+  const response = await request.post(`/api/test/forget-email-cooldown?email=${encodeURIComponent(email)}`);
+  expect(response.status()).toBe(204);
+}
+
+/**
  * Signs up through the real form, opens the emailed confirmation link, and leaves the
  * page signed in on `/`. The sign-up form records the terms, so no /welcome step follows.
  */

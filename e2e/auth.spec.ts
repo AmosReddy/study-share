@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { CONTACT_EMAIL } from "../src/shared/legal";
-import { isolateRateLimits, lastEmailedLink, PASSWORD, uniqueEmail } from "./helpers";
+import { forgetEmailCooldown, isolateRateLimits, lastEmailedLink, PASSWORD, uniqueEmail } from "./helpers";
 
 /*
   Sign-up, log-in, reset and terms, against the fake auth provider (SERVICES_MODE=fake).
@@ -69,6 +69,7 @@ test.describe("sign-up", () => {
     const first = await page.getByRole("main").innerText();
 
     await page.context().clearCookies();
+    await forgetEmailCooldown(page.request, email);
     await signUp(page, email);
     expect(await page.getByRole("main").innerText()).toBe(first);
   });
@@ -121,6 +122,13 @@ test.describe("log-in", () => {
     await page.goto("/login");
     await logIn(page, email, PASSWORD);
     await expect(page.getByText("Confirm your email to log in")).toBeVisible();
+
+    // The sign-up email went out moments ago: one email a minute per address.
+    await page.getByRole("button", { name: "Resend confirmation email" }).click();
+    await expect(page.getByText("We just sent you an email. Please wait a minute before trying again.")).toBeVisible();
+    expect(await lastEmailedLink(page.request, email)).toBe(firstLink);
+
+    await forgetEmailCooldown(page.request, email);
     await page.getByRole("button", { name: "Resend confirmation email" }).click();
     await expect(page.getByText(/we've sent a new link/)).toBeVisible();
     expect(await lastEmailedLink(page.request, email)).not.toBe(firstLink);
@@ -147,6 +155,7 @@ test.describe("email links", () => {
     await expect(page).toHaveURL("/login?error=link_expired");
     await expect(page.getByText("This link has expired or was already used")).toBeVisible();
 
+    await forgetEmailCooldown(page.request, email);
     await page.getByLabel("Email", { exact: true }).first().fill(email);
     await page.getByRole("button", { name: "Send a new link" }).click();
     await expect(page.getByText(/we've sent a new link/)).toBeVisible();
@@ -176,6 +185,7 @@ test.describe("password reset", () => {
     await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
     const unknown = (await page.getByRole("main").innerText()).replace(/\S+@example\.test/, "<email>");
 
+    await forgetEmailCooldown(page.request, email);
     await page.goto("/forgot-password");
     await page.getByLabel("Email", { exact: true }).fill(email);
     await page.getByRole("button", { name: "Send reset link" }).click();

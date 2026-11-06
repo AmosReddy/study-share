@@ -19,6 +19,7 @@ import {
 
 const SITE = "https://app.test";
 
+/** The limiter runs on a test clock: `advance(seconds)` moves it on. */
 function setup(overrides: Partial<Deps> = {}) {
   const jar = new Map<string, string>();
   const auth = createFakeAuthProvider({
@@ -29,9 +30,17 @@ function setup(overrides: Partial<Deps> = {}) {
       delete: (name) => void jar.delete(name),
     },
   });
-  const deps: Deps = { auth, limiter: createMemoryRateLimiter(), siteUrl: SITE, ip: "10.0.0.1", ...overrides };
-  return { auth, deps };
+  let now = 1_000_000;
+  const limiter = createMemoryRateLimiter(() => now);
+  const deps: Deps = { auth, limiter, siteUrl: SITE, ip: "10.0.0.1", ...overrides };
+  const advance = (seconds: number) => void (now += seconds * 1000);
+  return { auth, deps, advance };
 }
+
+/** Just past the shared one-email-a-minute cooldown. */
+const PAST_COOLDOWN = 61;
+const COOLDOWN_MESSAGE = "We just sent you an email. Please wait a minute before trying again.";
+const COULD_NOT_SEND = "We couldn't send the email right now. Please try again in a few minutes.";
 
 /** Creates a confirmed account directly through the provider, then signs out. */
 async function registerConfirmed(auth: ReturnType<typeof setup>["auth"], email: string, password: string) {
@@ -99,10 +108,14 @@ describe("signUp", () => {
     expect(existing).toEqual({ ok: true, data: { status: "check_email" } });
   });
 
+  // Attempts are spaced past the one-email-a-minute cooldown, so only the hourly limit decides.
   it("refuses the 6th attempt for one email in an hour without calling the provider", async () => {
-    const { auth, deps } = setup();
+    const { auth, deps, advance } = setup();
     const spy = vi.spyOn(auth, "signUpWithPassword");
-    for (let i = 0; i < 5; i++) expect((await signUp(deps, validSignUp(), "/")).ok).toBe(true);
+    for (let i = 0; i < 5; i++) {
+      expect((await signUp(deps, validSignUp(), "/")).ok).toBe(true);
+      advance(PAST_COOLDOWN);
+    }
     const sixth = await signUp(deps, validSignUp(), "/");
     expect(sixth.ok).toBe(false);
     if (sixth.ok) return;
@@ -112,9 +125,12 @@ describe("signUp", () => {
   });
 
   it("shares one limit between upper and lower case emails", async () => {
-    const { deps } = setup();
+    const { deps, advance } = setup();
     const variants = ["A@x.com", "a@x.com", " A@X.COM ", "a@X.com", "A@x.com"];
-    for (const email of variants) expect((await signUp(deps, validSignUp(email), "/")).ok).toBe(true);
+    for (const email of variants) {
+      expect((await signUp(deps, validSignUp(email), "/")).ok).toBe(true);
+      advance(PAST_COOLDOWN);
+    }
     expect((await signUp(deps, validSignUp("a@x.com"), "/")).ok).toBe(false);
   });
 
@@ -127,14 +143,86 @@ describe("signUp", () => {
     const refused = await signUp(a, validSignUp("u31@x.com"), "/");
     expect(refused.ok).toBe(false);
     expect(!refused.ok && refused.retryAfterSeconds).toBeGreaterThan(0);
-    expect((await signUp(b, validSignUp("u31@x.com"), "/")).ok).toBe(true);
+    // Another address: u31's one-a-minute cooldown was counted by the refused attempt above.
+    expect((await signUp(b, validSignUp("u32@x.com"), "/")).ok).toBe(true);
   });
 
   it("uses namespaced keys", async () => {
     const hit = vi.fn<RateLimiter["hit"]>(async () => ({ allowed: true, retryAfterSeconds: 0 }));
     const { deps } = setup({ limiter: { hit } });
     await signUp(deps, validSignUp("k@x.com"), "/");
-    expect(hit.mock.calls.map((c) => c[0].key)).toEqual(["signup:email:k@x.com", "signup:ip:10.0.0.1"]);
+    expect(hit.mock.calls.map((c) => c[0].key)).toEqual([
+      "email-send:k@x.com",
+      "signup:email:k@x.com",
+      "signup:ip:10.0.0.1",
+    ]);
+  });
+});
+
+describe("one email a minute per address (shared by sign-up, resend and reset)", () => {
+  const flows = {
+    signUp: (deps: Deps, email: string) => signUp(deps, validSignUp(email), "/"),
+    resend: (deps: Deps, email: string) => resendConfirmation(deps, { email }, "/"),
+    reset: (deps: Deps, email: string) => requestPasswordReset(deps, { email }),
+  } as const;
+
+  it.each(Object.keys(flows) as (keyof typeof flows)[])(
+    "%s: a second send within 60 seconds is refused without calling the provider, and passes after",
+    async (flow) => {
+      const { auth, deps, advance } = setup();
+      const providerCalls = [
+        vi.spyOn(auth, "signUpWithPassword"),
+        vi.spyOn(auth, "resendConfirmation"),
+        vi.spyOn(auth, "sendPasswordReset"),
+      ];
+      const calls = () => providerCalls.reduce((n, spy) => n + spy.mock.calls.length, 0);
+
+      expect((await flows[flow](deps, "a@x.com")).ok).toBe(true);
+      advance(59);
+      const refused = await flows[flow](deps, "a@x.com");
+      expect(refused).toEqual({ ok: false, formError: COOLDOWN_MESSAGE, retryAfterSeconds: 1 });
+      expect(calls()).toBe(1);
+
+      advance(1);
+      expect((await flows[flow](deps, "a@x.com")).ok).toBe(true);
+      expect(calls()).toBe(2);
+    },
+  );
+
+  it("is shared across the three flows", async () => {
+    const { deps, advance } = setup();
+    expect((await flows.signUp(deps, "a@x.com")).ok).toBe(true);
+    expect(await flows.resend(deps, "a@x.com")).toMatchObject({ ok: false, formError: COOLDOWN_MESSAGE });
+    expect(await flows.reset(deps, "a@x.com")).toMatchObject({ ok: false, formError: COOLDOWN_MESSAGE });
+    advance(PAST_COOLDOWN);
+    expect((await flows.reset(deps, "a@x.com")).ok).toBe(true);
+    expect(await flows.signUp(deps, "a@x.com")).toMatchObject({ ok: false, formError: COOLDOWN_MESSAGE });
+  });
+
+  it("is per normalised email: case and spaces do not matter, another address is not affected", async () => {
+    const { deps } = setup();
+    expect((await flows.reset(deps, "A@X.com")).ok).toBe(true);
+    expect(await flows.resend(deps, "  a@x.COM ")).toMatchObject({ ok: false, formError: COOLDOWN_MESSAGE });
+    expect((await flows.reset(deps, "b@x.com")).ok).toBe(true);
+  });
+
+  it("does not count a request that fails validation", async () => {
+    const { deps } = setup();
+    const invalid = await signUp(deps, { ...validSignUp("a@x.com"), password: "short" }, "/");
+    expect(!invalid.ok && invalid.fieldErrors?.password).toBeTruthy();
+    expect((await flows.signUp(deps, "a@x.com")).ok).toBe(true);
+  });
+
+  it("refuses known and unknown addresses alike (it depends only on our own counter)", async () => {
+    const { auth, deps } = setup();
+    await registerConfirmed(auth, "known@x.com", "my password");
+    const results = [];
+    for (const email of ["known@x.com", "ghost@x.com"]) {
+      await flows.reset(deps, email);
+      results.push(await flows.reset(deps, email));
+    }
+    expect(results[0]).toEqual(results[1]);
+    expect(results[0]).toMatchObject({ ok: false, formError: COOLDOWN_MESSAGE });
   });
 });
 
@@ -244,10 +332,11 @@ describe("logIn", () => {
 
 describe("resendConfirmation", () => {
   it("sends with the sign-up redirect and is limited to 3 per email per hour", async () => {
-    const { auth, deps } = setup();
+    const { auth, deps, advance } = setup();
     const spy = vi.spyOn(auth, "resendConfirmation");
     for (let i = 0; i < 3; i++) {
       expect(await resendConfirmation(deps, { email: "Pending@x.com" }, "/invite/z")).toEqual({ ok: true, data: undefined });
+      advance(PAST_COOLDOWN);
     }
     expect(spy).toHaveBeenCalledWith({ email: "pending@x.com", redirectTo: `${SITE}/invite/z` });
     const fourth = await resendConfirmation(deps, { email: "pending@x.com" }, "/invite/z");
@@ -282,9 +371,12 @@ describe("requestPasswordReset", () => {
   });
 
   it("refuses the 4th request for an email in an hour", async () => {
-    const { auth, deps } = setup();
+    const { auth, deps, advance } = setup();
     const spy = vi.spyOn(auth, "sendPasswordReset");
-    for (let i = 0; i < 3; i++) expect((await requestPasswordReset(deps, { email: "a@x.com" })).ok).toBe(true);
+    for (let i = 0; i < 3; i++) {
+      expect((await requestPasswordReset(deps, { email: "a@x.com" })).ok).toBe(true);
+      advance(PAST_COOLDOWN);
+    }
     const fourth = await requestPasswordReset(deps, { email: "A@x.com" });
     expect(!fourth.ok && fourth.retryAfterSeconds).toBeGreaterThan(0);
     expect(spy).toHaveBeenCalledTimes(3);
@@ -472,63 +564,57 @@ describe("a rate limit store that fails", () => {
   });
 });
 
-describe("provider rate limits do not reveal which emails have accounts", () => {
-  /** Mimics Supabase: one email per known address per minute, so a quick repeat is refused for known addresses only. */
-  function limitKnownEmails(auth: ReturnType<typeof setup>["auth"], method: "sendPasswordReset" | "resendConfirmation" | "signUpWithPassword") {
-    const real = auth[method].bind(auth) as (i: { email: string }) => Promise<void>;
-    const known = new Set<string>();
-    const sent = new Set<string>();
-    vi.spyOn(auth, method).mockImplementation((async (i: { email: string }) => {
-      if (known.has(i.email) && sent.has(i.email)) throw new AuthProviderError("rate_limited", "over_email_send_rate_limit");
-      sent.add(i.email);
-      return real(i);
-    }) as never);
-    return known;
-  }
+/*
+  A provider rate limit (Supabase's per-address, per-IP or project-wide email limit) means no
+  email was sent. It used to be reported as the neutral "check your email"; now it is said
+  honestly. It does not reveal which addresses have accounts: the answer is the same for known
+  and unknown addresses, and our own one-a-minute cooldown keeps quick repeats (the case where
+  Supabase's per-address limit would only hit known addresses) from reaching the provider.
+*/
+describe("a provider rate limit is reported honestly, the same for known and unknown addresses", () => {
+  type Flow = "signUp" | "resend" | "reset";
+  const methods = { signUp: "signUpWithPassword", resend: "resendConfirmation", reset: "sendPasswordReset" } as const;
+  const run = (flow: Flow, deps: Deps, email: string) =>
+    flow === "signUp"
+      ? signUp(deps, validSignUp(email), "/")
+      : flow === "resend"
+        ? resendConfirmation(deps, { email }, "/")
+        : requestPasswordReset(deps, { email });
 
-  it("requestPasswordReset returns the same result for a known and an unknown email on a quick repeat", async () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  it.each(["signUp", "resend", "reset"] as const)("%s: known and unknown addresses get the same honest error", async (flow) => {
     const { auth, deps } = setup();
-    limitKnownEmails(auth, "sendPasswordReset").add("known@x.com");
-    const results: Record<string, unknown[]> = { "known@x.com": [], "ghost@x.com": [] };
-    for (const email of Object.keys(results)) {
-      for (let i = 0; i < 2; i++) results[email].push(await requestPasswordReset(deps, { email }));
-    }
-    expect(results["known@x.com"]).toEqual(results["ghost@x.com"]);
-    expect(results["known@x.com"][1]).toEqual({ ok: true, data: { status: "check_email" } });
+    await registerConfirmed(auth, "known@x.com", "my password");
+    vi.spyOn(auth, methods[flow]).mockRejectedValue(new AuthProviderError("rate_limited", "over_email_send_rate_limit"));
+    const known = await run(flow, deps, "known@x.com");
+    const unknown = await run(flow, deps, "ghost@x.com");
+    expect(known).toEqual({ ok: false, formError: COULD_NOT_SEND });
+    expect(unknown).toEqual(known);
   });
 
-  it("resendConfirmation returns the same result for a known and an unknown email on a quick repeat", async () => {
+  it("logs one fixed line per refusal, with no email, key, IP or provider text", async () => {
     const { auth, deps } = setup();
-    limitKnownEmails(auth, "resendConfirmation").add("known@x.com");
-    const second: unknown[] = [];
-    for (const email of ["known@x.com", "ghost@x.com"]) {
-      await resendConfirmation(deps, { email }, "/");
-      second.push(await resendConfirmation(deps, { email }, "/"));
-    }
-    expect(second[0]).toEqual(second[1]);
-    expect(second[0]).toEqual({ ok: true, data: undefined });
+    vi.spyOn(auth, "sendPasswordReset").mockRejectedValue(new AuthProviderError("rate_limited", "over_email_send_rate_limit"));
+    await requestPasswordReset(deps, { email: "known@x.com" });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const text = JSON.stringify(warn.mock.calls);
+    for (const leak of ["known@x.com", "email-send:", "over_email_send_rate_limit", "10.0.0.1"]) expect(text).not.toContain(leak);
   });
 
-  it("signUp returns check_email when the provider refuses a repeat for an existing address", async () => {
+  it("without any limit, an existing and a new address still get the identical neutral result", async () => {
     const { auth, deps } = setup();
-    limitKnownEmails(auth, "signUpWithPassword").add("known@x.com");
-    await signUp(deps, validSignUp("known@x.com"), "/");
-    const repeat = await signUp(deps, validSignUp("known@x.com"), "/");
-    const fresh = await signUp(deps, validSignUp("fresh@x.com"), "/");
-    expect(repeat).toEqual(fresh);
-    expect(repeat).toEqual({ ok: true, data: { status: "check_email" } });
-  });
-
-  it("logs nothing that identifies the email or the provider text", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      const { auth, deps } = setup();
-      vi.spyOn(auth, "sendPasswordReset").mockRejectedValue(new AuthProviderError("rate_limited", "over_email_send_rate_limit"));
-      await requestPasswordReset(deps, { email: "known@x.com" });
-      const text = JSON.stringify(warn.mock.calls);
-      for (const leak of ["known@x.com", "over_email_send_rate_limit", "10.0.0.1"]) expect(text).not.toContain(leak);
-    } finally {
-      warn.mockRestore();
+    await registerConfirmed(auth, "known@x.com", "my password");
+    for (const flow of ["signUp", "resend", "reset"] as const) {
+      const known = await run(flow, deps, `known@x.com`);
+      const fresh = await run(flow, deps, `${flow.toLowerCase()}-fresh@x.com`);
+      expect(known.ok).toBe(true);
+      expect(known).toEqual(fresh);
+      deps.limiter = createMemoryRateLimiter();
     }
   });
 
@@ -549,9 +635,15 @@ describe("the client address", () => {
   };
 
   it.each(["", "   "])("skips the per-IP limit when the address is unknown (%j)", async (ip) => {
-    expect(await keysFor(ip, (d) => signUp(d, validSignUp("k@x.com"), "/"))).toEqual(["signup:email:k@x.com"]);
+    expect(await keysFor(ip, (d) => signUp(d, validSignUp("k@x.com"), "/"))).toEqual([
+      "email-send:k@x.com",
+      "signup:email:k@x.com",
+    ]);
     expect(await keysFor(ip, (d) => logIn(d, { email: "k@x.com", password: "pw" }, "/"))).toEqual(["login:email:k@x.com"]);
-    expect(await keysFor(ip, (d) => requestPasswordReset(d, { email: "k@x.com" }))).toEqual(["reset:email:k@x.com"]);
+    expect(await keysFor(ip, (d) => requestPasswordReset(d, { email: "k@x.com" }))).toEqual([
+      "email-send:k@x.com",
+      "reset:email:k@x.com",
+    ]);
   });
 
   it("does not put everyone without an address into one bucket", async () => {
@@ -561,7 +653,7 @@ describe("the client address", () => {
 
   it("trims the address and caps its length at 64 characters in the key", async () => {
     const long = "a".repeat(200);
-    const [, ipKey] = await keysFor(`  ${long}  `, (d) => signUp(d, validSignUp("k@x.com"), "/"));
+    const [, , ipKey] = await keysFor(`  ${long}  `, (d) => signUp(d, validSignUp("k@x.com"), "/"));
     expect(ipKey).toBe(`signup:ip:${"a".repeat(64)}`);
     const [, loginIp] = await keysFor("1.2.3.4 ", (d) => logIn(d, { email: "k@x.com", password: "pw" }, "/"));
     expect(loginIp).toBe("login:ip:1.2.3.4");
