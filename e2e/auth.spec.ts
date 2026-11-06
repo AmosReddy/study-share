@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { CONTACT_EMAIL } from "../src/shared/legal";
-import { forgetEmailCooldown, isolateRateLimits, lastEmailedLink, PASSWORD, uniqueEmail } from "./helpers";
+import { followEmailLink, forgetEmailCooldown, isolateRateLimits, lastEmailedLink, PASSWORD, uniqueEmail } from "./helpers";
 
 /*
   Sign-up, log-in, reset and terms, against the fake auth provider (SERVICES_MODE=fake).
@@ -35,9 +35,19 @@ async function signUp(page: Page, email: string, path = "/signup") {
 /** Signs up and confirms, then signs out by clearing cookies. */
 async function createConfirmedUser(page: Page, email: string) {
   await signUp(page, email);
-  await page.goto(await lastEmailedLink(page.request, email));
+  await followEmailLink(page, await lastEmailedLink(page.request, email));
   await expect(page).toHaveURL("/");
   await page.context().clearCookies();
+}
+
+/** Asks for a reset link for `email` through the form and returns the link. */
+async function requestResetLink(page: Page, email: string): Promise<string> {
+  await forgetEmailCooldown(page.request, email);
+  await page.goto("/forgot-password");
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page.getByRole("button", { name: "Send reset link" }).click();
+  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+  return lastEmailedLink(page.request, email);
 }
 
 async function logIn(page: Page, email: string, password: string) {
@@ -56,7 +66,7 @@ test.describe("sign-up", () => {
   test("confirming the emailed link lands on / signed in", async ({ page }) => {
     const email = uniqueEmail("signup");
     await signUp(page, email);
-    await page.goto(await lastEmailedLink(page.request, email));
+    await followEmailLink(page, await lastEmailedLink(page.request, email));
     await expect(page).toHaveURL("/");
     await expectSignedIn(page);
     // The person's name shows in the account menu on the home page.
@@ -137,21 +147,73 @@ test.describe("log-in", () => {
 
 test.describe("email links", () => {
   test("a link that never existed lands on the expired-link screen with a resend form", async ({ page }) => {
-    await page.goto("/auth/confirm?token_hash=never-issued&type=email&redirect_to=/");
+    await followEmailLink(page, "/auth/confirm?token_hash=never-issued&type=email&redirect_to=/");
     await expect(page).toHaveURL("/login?error=link_expired");
     await expect(page.getByText("This link has expired or was already used")).toBeVisible();
     await expect(page.getByRole("button", { name: "Send a new link" })).toBeVisible();
+  });
+
+  test("a link with an unknown type or no token goes straight to the expired-link screen", async ({ page }) => {
+    await page.goto("/auth/confirm?token_hash=x&type=magiclink&redirect_to=/");
+    await expect(page).toHaveURL("/login?error=link_expired");
+    await page.goto("/auth/confirm?type=email");
+    await expect(page).toHaveURL("/login?error=link_expired");
+    await page.goto("/auth/confirm?type=recovery");
+    await expect(page).toHaveURL("/forgot-password?error=link_expired");
+  });
+
+  test("opening a link only shows a Continue page and never uses the token", async ({ page, baseURL }) => {
+    const email = uniqueEmail("scanner");
+    await signUp(page, email);
+    const link = await lastEmailedLink(page.request, email);
+    const token = new URL(link, baseURL).searchParams.get("token_hash")!;
+
+    // What a mail scanner does: open the link (twice, even), and never press anything.
+    const thirdParty: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).origin !== baseURL) thirdParty.push(request.url());
+    });
+    for (let i = 0; i < 2; i++) {
+      const response = await page.goto(link);
+      expect(response?.status()).toBe(200);
+      expect(response?.headers()["cache-control"]).toBe("no-store");
+      expect(response?.headers()["referrer-policy"]).toBe("no-referrer");
+    }
+    await expect(page.getByRole("heading", { level: 1, name: "Confirm your email" })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(token);
+    expect(thirdParty).toEqual([]);
+    // Opening the link signed nobody in and confirmed nothing.
+    await page.goto("/login");
+    await logIn(page, email, PASSWORD);
+    await expect(page.getByText("Confirm your email to log in")).toBeVisible();
+
+    // The person then taps Continue: the token still works.
+    await followEmailLink(page, link);
+    await expect(page).toHaveURL("/");
+    await expectSignedIn(page);
+  });
+
+  test.describe("without JavaScript", () => {
+    test.use({ javaScriptEnabled: false });
+
+    test("the Continue button still works, and is a large tap target", async ({ page }) => {
+      await page.goto("/auth/confirm?token_hash=never-issued&type=recovery&redirect_to=/");
+      const button = page.getByRole("button", { name: "Continue", exact: true });
+      expect((await button.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+      await button.click();
+      await expect(page).toHaveURL("/forgot-password?error=link_expired");
+    });
   });
 
   test("a link that was already used lands on the expired-link screen", async ({ page }) => {
     const email = uniqueEmail("reused");
     await signUp(page, email);
     const link = await lastEmailedLink(page.request, email);
-    await page.goto(link);
+    await followEmailLink(page, link);
     await expect(page).toHaveURL("/");
 
     await page.context().clearCookies();
-    await page.goto(link);
+    await followEmailLink(page, link);
     await expect(page).toHaveURL("/login?error=link_expired");
     await expect(page.getByText("This link has expired or was already used")).toBeVisible();
 
@@ -166,10 +228,13 @@ test.describe("email links", () => {
     await signUp(page, email, "/signup?next=/privacy");
     const link = await lastEmailedLink(page.request, email);
     expect(new URL(link, baseURL).searchParams.get("redirect_to")).toBe(`${baseURL}/privacy`);
-    await page.goto(link);
+    await followEmailLink(page, link);
     await expect(page).toHaveURL("/privacy");
 
+    // An off-site redirect_to is reduced to a path on this site before it reaches the form.
     await page.goto("/auth/confirm?token_hash=x&type=email&redirect_to=https://evil.com/x");
+    await expect(page.locator('input[name="redirect_to"]')).toHaveValue("/x");
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
     expect(new URL(page.url()).origin).toBe(baseURL);
   });
 });
@@ -193,7 +258,7 @@ test.describe("password reset", () => {
     const known = (await page.getByRole("main").innerText()).replace(/\S+@example\.test/, "<email>");
     expect(known).toBe(unknown);
 
-    await page.goto(await lastEmailedLink(page.request, email));
+    await followEmailLink(page, await lastEmailedLink(page.request, email));
     await expect(page).toHaveURL("/reset-password");
     const newPassword = "a brand new secret";
     await page.getByLabel("New password", { exact: true }).fill(newPassword);
@@ -209,6 +274,34 @@ test.describe("password reset", () => {
     await page.getByLabel("Password", { exact: true }).fill(newPassword);
     await page.getByRole("button", { name: "Log in", exact: true }).click();
     await expect(page).toHaveURL("/");
+  });
+
+  test("an expired reset link explains itself and offers a new one", async ({ page }) => {
+    await followEmailLink(page, "/auth/confirm?token_hash=never-issued&type=recovery&redirect_to=/");
+    await expect(page).toHaveURL("/forgot-password?error=link_expired");
+    await expect(page.getByText("This reset link has expired or was already used.")).toBeVisible();
+    await expect(page.getByText("Enter your email and we will send a new one.")).toBeVisible();
+
+    await page.getByLabel("Email", { exact: true }).fill(uniqueEmail("expired-reset"));
+    await page.getByRole("button", { name: "Send reset link" }).click();
+    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+  });
+
+  test("a reset link used twice ends on the same screen, and a new link works", async ({ page }) => {
+    const email = uniqueEmail("reset-twice");
+    await createConfirmedUser(page, email);
+    const link = await requestResetLink(page, email);
+    await followEmailLink(page, link);
+    await expect(page).toHaveURL("/reset-password");
+
+    await page.context().clearCookies();
+    await followEmailLink(page, link);
+    await expect(page).toHaveURL("/forgot-password?error=link_expired");
+    await expect(page.getByText("This reset link has expired or was already used.")).toBeVisible();
+
+    await followEmailLink(page, await requestResetLink(page, email));
+    await expect(page).toHaveURL("/reset-password");
+    await expect(page.getByRole("heading", { level: 1, name: "Choose a new password" })).toBeVisible();
   });
 });
 

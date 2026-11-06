@@ -1,6 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 import { auditInBothThemes, auditPage, type PageExpectation } from "./audit";
-import { forgetEmailCooldown, isolateRateLimits, lastEmailedLink, signUpAndConfirm, uniqueEmail } from "./helpers";
+import {
+  followEmailLink,
+  forgetEmailCooldown,
+  isolateRateLimits,
+  lastEmailedLink,
+  signUpAndConfirm,
+  uniqueEmail,
+} from "./helpers";
 
 /*
   The phone quality sweep: every page of Phase 1a, audited (see ./audit.ts) in the light and
@@ -50,6 +57,30 @@ test.describe("signed out", () => {
       landmark: (p) => p.getByText("This link has expired or was already used"),
     });
   });
+
+  test("/forgot-password after an expired reset link", async ({ page }) => {
+    await auditInBothThemes(page, {
+      path: "/forgot-password?error=link_expired",
+      url: "/forgot-password?error=link_expired",
+      landmark: (p) => p.getByText("This reset link has expired or was already used."),
+    });
+  });
+
+  // Plain HTML with no theme switcher of its own: it follows the device's light or dark setting.
+  for (const [type, heading] of [
+    ["email", "Confirm your email"],
+    ["recovery", "Choose a new password"],
+  ] as const) {
+    test(`the email link's Continue page (${type})`, async ({ page }) => {
+      for (const colorScheme of ["light", "dark"] as const) {
+        await page.emulateMedia({ colorScheme });
+        const response = await page.goto(`/auth/confirm?token_hash=audit-only&type=${type}&redirect_to=/`);
+        expect(response?.status()).toBe(200);
+        await expect(h1(heading)(page)).toBeVisible();
+        await auditPage(page);
+      }
+    });
+  }
 
   test("/reset-password without a reset link", async ({ page }) => {
     await auditInBothThemes(page, {
@@ -107,7 +138,7 @@ test.describe("signed in", () => {
     await page.getByRole("button", { name: "Send reset link" }).click();
     await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
 
-    await page.goto(await lastEmailedLink(page.request, email));
+    await followEmailLink(page, await lastEmailedLink(page.request, email));
     await expect(page).toHaveURL("/reset-password");
     // The link signed this browser in, so the page can be opened again for the second theme.
     await auditInBothThemes(page, {

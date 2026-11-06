@@ -31,6 +31,15 @@ export async function lastEmailedLink(request: APIRequestContext, email: string)
 }
 
 /**
+ * Opens an emailed link and taps Continue, as a person does. Opening the link alone never
+ * uses its token (mail scanners open links too); only the Continue button does.
+ */
+export async function followEmailLink(page: Page, link: string): Promise<void> {
+  await page.goto(link);
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+}
+
+/**
  * Clears the address's one-email-a-minute cooldown (test mode only), so the test can send it
  * another email without waiting a minute.
  */
@@ -52,7 +61,7 @@ export async function signUpAndConfirm(page: Page, { name, email }: { name: stri
   await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-  await page.goto(await lastEmailedLink(page.request, address));
+  await followEmailLink(page, await lastEmailedLink(page.request, address));
   await expect(page).toHaveURL("/");
   return address;
 }

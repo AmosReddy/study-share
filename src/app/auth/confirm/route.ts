@@ -1,34 +1,29 @@
-import { redirect } from "next/navigation";
 import { connection, type NextRequest } from "next/server";
-import { confirmLinkTarget } from "@/server/auth/redirect-target";
-import { describeForLog } from "@/server/describe-error";
+import { CONFIRM_PAGE_HEADERS, renderConfirmPage } from "@/server/auth/confirm-page";
+import { readEmailLink, verifyEmailLink } from "@/server/auth/email-link";
 import { getAuthProvider } from "@/server/services";
 
-/**
- * Where email links land: sign-up confirmation (`type=email`) and password reset
- * (`type=recovery`). Verifying the token signs the person in on this device, so the
- * link works on a different device from the one used to sign up.
- */
+/*
+  Where email links land: sign-up confirmation (`type=email`) and password reset (`type=recovery`).
+  GET never uses the token: it shows a small page with a Continue button, because mail scanners
+  (Outlook Safe Links and others) open links and would otherwise use up the single-use token.
+  POST (the Continue button) checks the token and redirects. 303 makes the browser follow with GET.
+*/
+
+const seeOther = (path: string) => new Response(null, { status: 303, headers: { Location: path, "Cache-Control": "no-store" } });
+
 export async function GET(request: NextRequest) {
   // Settings and cookies are only read for a real request, never while the build prerenders.
   await connection();
-  const params = request.nextUrl.searchParams;
-  const tokenHash = params.get("token_hash") ?? "";
-  const type = params.get("type");
+  const read = readEmailLink(request.nextUrl.searchParams);
+  if ("failure" in read) return seeOther(read.failure);
+  return new Response(renderConfirmPage(read.link), { status: 200, headers: CONFIRM_PAGE_HEADERS });
+}
 
-  let confirmed = false;
-  if (tokenHash !== "" && (type === "email" || type === "recovery")) {
-    try {
-      const auth = await getAuthProvider();
-      confirmed = await auth.confirmEmailToken({ tokenHash, type });
-    } catch (error) {
-      // Not the person's fault (settings or an outage), but they still get the neutral screen.
-      // Never log the token.
-      console.error("Email link check failed:", describeForLog(error));
-      confirmed = false;
-    }
-  }
-
-  if (!confirmed) redirect("/login?error=link_expired");
-  redirect(type === "recovery" ? "/reset-password" : confirmLinkTarget(params.get("redirect_to")));
+export async function POST(request: NextRequest) {
+  await connection();
+  const form = await request.formData().catch(() => new FormData());
+  const read = readEmailLink(form);
+  if ("failure" in read) return seeOther(read.failure);
+  return seeOther(await verifyEmailLink(getAuthProvider, read.link));
 }

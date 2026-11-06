@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { ReactNode } from "react";
 import type { FormAction } from "@/shared/form-state";
 import { AuthCard, linkTarget } from "./auth-card";
 import { FormMessage } from "./form-message";
@@ -8,7 +9,8 @@ import { SubmitButton } from "./submit-button";
 import { EmailField } from "./text-field";
 import { useAuthForm } from "./use-auth-form";
 
-export function ForgotPasswordForm({ action }: { action: FormAction }) {
+/** `notice` shows above the form, for example when a reset link had expired. */
+export function ForgotPasswordForm({ action, notice }: { action: FormAction; notice?: ReactNode }) {
   const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
   const values = state.values ?? {};
   const backToLogin = (
@@ -39,6 +41,7 @@ export function ForgotPasswordForm({ action }: { action: FormAction }) {
       footer={backToLogin}
     >
       <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
+        {notice}
         {state.formError ? <FormMessage tone="error" title={state.formError} /> : null}
         <EmailField defaultValue={values.email} error={state.fieldErrors?.email} />
         <SubmitButton pending={pending} pendingLabel="Sending…">
