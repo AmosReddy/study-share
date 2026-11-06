@@ -14,41 +14,80 @@ function fakeTransport() {
   };
 }
 
+const FROM = "bot@gmail.com";
+
+async function rejects(to: string | string[], subject = "Hi") {
+  const { sent, transport } = fakeTransport();
+  await expect(createSmtpEmailSender(transport, FROM).send({ to, subject, text: "x" })).rejects.toThrow();
+  expect(sent).toEqual([]);
+}
+
 describe("createSmtpEmailSender", () => {
   test("sends from the configured address to every recipient", async () => {
     const { sent, transport } = fakeTransport();
-    const sender = createSmtpEmailSender(transport, "bot@gmail.com");
+    const sender = createSmtpEmailSender(transport, FROM);
     await sender.send({ to: ["a@x.com", "b@x.com"], subject: "Invite", text: "Join us" });
     expect(sent).toEqual([
-      { from: "bot@gmail.com", to: "a@x.com, b@x.com", subject: "Invite", text: "Join us", html: undefined },
+      { from: FROM, to: ["a@x.com", "b@x.com"], subject: "Invite", text: "Join us", html: undefined },
     ]);
   });
 
-  test("rejects line breaks in the subject, which could inject extra headers", async () => {
+  test("can send from a display name and address that differ from the login", async () => {
     const { sent, transport } = fakeTransport();
-    const sender = createSmtpEmailSender(transport, "bot@gmail.com");
-    await expect(sender.send({ to: "a@x.com", subject: "Hi\r\nBcc: evil@x.com", text: "x" })).rejects.toThrow(
-      /line break/i,
-    );
-    expect(sent).toEqual([]);
+    await createSmtpEmailSender(transport, "StudyShare <hello@example.com>").send({
+      to: "a@x.com",
+      subject: "Hi",
+      text: "x",
+    });
+    expect(sent[0]).toMatchObject({ from: "StudyShare <hello@example.com>" });
+  });
+
+  test("rejects line breaks in the subject, which could inject extra headers", async () => {
+    await rejects("a@x.com", "Hi\r\nBcc: evil@x.com");
   });
 
   test("rejects line breaks in a recipient address", async () => {
-    const { transport } = fakeTransport();
-    const sender = createSmtpEmailSender(transport, "bot@gmail.com");
-    await expect(sender.send({ to: "a@x.com\nBcc: evil@x.com", subject: "Hi", text: "x" })).rejects.toThrow(
-      /line break/i,
-    );
+    await rejects("a@x.com\nBcc: evil@x.com");
   });
 
   test("rejects an empty recipient list", async () => {
-    const { transport } = fakeTransport();
-    const sender = createSmtpEmailSender(transport, "bot@gmail.com");
-    await expect(sender.send({ to: [], subject: "Hi", text: "x" })).rejects.toThrow(/recipient/i);
+    await rejects([]);
+  });
+
+  // One typed value must never become several recipients: that would let a single
+  // invite box turn the platform's email account into a spam relay.
+  test.each([
+    ["a comma-separated list", "a@x.com, b@y.com"],
+    ["a semicolon-separated list", "a@x.com; b@y.com"],
+    ["a name with angle brackets", '"Evil" <evil@x.com>'],
+    ["bare angle brackets", "<evil@x.com>"],
+    ["an address with spaces", "a b@x.com"],
+    ["no @ sign", "not-an-address"],
+    ["an empty string", ""],
+  ])("rejects %s as a single recipient", async (_label, value) => {
+    await rejects(value);
+  });
+
+  test("rejects a bad address hiding inside a list of good ones", async () => {
+    await rejects(["a@x.com", "b@y.com, c@z.com"]);
+  });
+
+  test("rejects too many recipients in one message", async () => {
+    await rejects(Array.from({ length: 51 }, (_, i) => `user${i}@x.com`));
+  });
+
+  test("accepts 50 recipients, the daily invite limit", async () => {
+    const { sent, transport } = fakeTransport();
+    await createSmtpEmailSender(transport, FROM).send({
+      to: Array.from({ length: 50 }, (_, i) => `user${i}@x.com`),
+      subject: "Hi",
+      text: "x",
+    });
+    expect(sent).toHaveLength(1);
   });
 
   test("verify passes the connection check through", async () => {
     const { transport } = fakeTransport();
-    await expect(createSmtpEmailSender(transport, "bot@gmail.com").verify()).resolves.toBeUndefined();
+    await expect(createSmtpEmailSender(transport, FROM).verify()).resolves.toBeUndefined();
   });
 });
