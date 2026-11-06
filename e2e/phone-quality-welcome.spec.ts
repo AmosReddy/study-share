@@ -5,8 +5,9 @@ import { isolateRateLimits } from "./helpers";
 /*
   /welcome is what a Google sign-in lands on until the terms are accepted. The fake provider
   has one Google account for the whole server, so this file starts each test from an empty
-  fake store (POST /api/test/reset) and runs in the serial project, after the others (see
-  playwright.config.ts). The serial project is a 360px phone; the desktop width is set per test.
+  fake store (POST /api/test/reset) and runs in its own project, after the others and after
+  google.spec.ts, which resets the same store (see playwright.config.ts). That project is a
+  360px phone; the desktop width is set per test.
 */
 
 // test.use() may not set the browser type, so it is left out of the device description.

@@ -43,7 +43,10 @@ const fakeServicesEnv = {
 };
 
 /** Resets the shared fake store, so it runs alone, after the other projects. */
-const SERIAL_SPECS = /(google|phone-quality-welcome)\.spec\.ts/;
+const GOOGLE_SPECS = /google\.spec\.ts/;
+/** Also resets the shared fake store, so it never runs at the same time as the Google spec. */
+const WELCOME_AUDIT_SPECS = /phone-quality-welcome\.spec\.ts/;
+const SERIAL_SPECS = [GOOGLE_SPECS, WELCOME_AUDIT_SPECS];
 /** Makes the fake provider's next sign-out fail, a server-wide switch, so it runs alone, last. */
 const FAILING_SIGN_OUT_SPECS = /logout-failure\.spec\.ts/;
 const phone360 = { ...devices["Pixel 5"], viewport: { width: 360, height: 740 } };
@@ -59,32 +62,38 @@ export default defineConfig({
   projects: [
     {
       name: "desktop",
-      testIgnore: [SERIAL_SPECS, FAILING_SIGN_OUT_SPECS],
+      testIgnore: [...SERIAL_SPECS, FAILING_SIGN_OUT_SPECS],
       use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } },
     },
     {
       // A small Android phone: touch, mobile user agent, 360px wide.
       name: "phone-360",
-      testIgnore: [SERIAL_SPECS, FAILING_SIGN_OUT_SPECS],
+      testIgnore: [...SERIAL_SPECS, FAILING_SIGN_OUT_SPECS],
       use: phone360,
     },
     {
       name: "phone-412",
-      testIgnore: [SERIAL_SPECS, FAILING_SIGN_OUT_SPECS],
+      testIgnore: [...SERIAL_SPECS, FAILING_SIGN_OUT_SPECS],
       use: { ...devices["Pixel 7"] },
     },
     {
       // Tests that reset the shared fake store. Running them only after the others keeps
       // the reset from wiping accounts another test is still using.
       name: "phone-360-serial",
-      testMatch: SERIAL_SPECS,
+      testMatch: GOOGLE_SPECS,
       dependencies: ["desktop", "phone-360", "phone-412"],
+      use: phone360,
+    },
+    {
+      name: "phone-360-welcome-audit",
+      testMatch: WELCOME_AUDIT_SPECS,
+      dependencies: ["phone-360-serial"],
       use: phone360,
     },
     {
       name: "phone-360-logout-failure",
       testMatch: FAILING_SIGN_OUT_SPECS,
-      dependencies: ["phone-360-serial"],
+      dependencies: ["phone-360-welcome-audit"],
       use: phone360,
     },
   ],
