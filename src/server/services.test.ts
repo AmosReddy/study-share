@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
   Next.js stops a prerender at the first request-reading call (cookies()); anything that
   runs before it, like reading the settings, runs at build time and breaks the build.
   This guards that order. The mocked cookies() stands in for the prerender stopping.
+  A future page that calls getRateLimiter() or getServerEnv() before a dynamic API is caught
+  only by the CI quality job, which builds with no settings; that is the intended backstop.
 */
 const { getServerEnv, cookies } = vi.hoisted(() => ({
   getServerEnv: vi.fn(() => {

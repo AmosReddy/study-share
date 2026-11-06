@@ -1,5 +1,5 @@
 import { devices, expect, test } from "@playwright/test";
-import { auditPage } from "./audit";
+import { auditInBothThemes } from "./audit";
 import { isolateRateLimits } from "./helpers";
 
 /*
@@ -29,16 +29,16 @@ for (const size of SIZES) {
   test.describe(size.name, () => {
     test.use(size.use);
 
-    for (const colorScheme of ["light", "dark"] as const) {
-      test(`/welcome (${colorScheme})`, async ({ page }) => {
-        await page.emulateMedia({ colorScheme });
-        await page.goto("/login");
-        await page.getByRole("button", { name: "Continue with Google" }).click();
-        await expect(page).toHaveURL("/welcome?next=%2F");
-        await expect(page.getByRole("button", { name: "Continue" })).toBeVisible();
-        await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? /dark/ : /^(?!.*dark)/);
-        await auditPage(page);
+    test("/welcome", async ({ page }) => {
+      await page.goto("/login");
+      await page.getByRole("button", { name: "Continue with Google" }).click();
+      await expect(page).toHaveURL("/welcome?next=%2F");
+      // The Google sign-in left a session, so /welcome can be opened again for each theme.
+      await auditInBothThemes(page, {
+        path: "/welcome?next=%2F",
+        url: "/welcome?next=%2F",
+        landmark: (p) => p.getByRole("heading", { level: 1, name: "One last step", exact: true }),
       });
-    }
+    });
   });
 }

@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { sidewaysOverflow } from "./helpers";
 
 /*
@@ -182,4 +182,41 @@ export async function auditPage(page: Page, options: AuditOptions = {}): Promise
   }
 
   expect(problems, `${page.url()} misses the phone quality bar`).toEqual([]);
+}
+
+/**
+ * Says which page a sweep test means to audit, so it can never pass on a look-alike: Next's
+ * 404 or error page, a redirect to log in, or the signed-out home instead of the signed-in one.
+ * Every audited page must give one; none of it is optional.
+ */
+export type PageExpectation = {
+  /** What to open. */
+  path: string;
+  /** Where the browser must end up after any redirect (relative to the base URL, or a pattern). */
+  url: string | RegExp;
+  /** Something only this page has, such as its heading or its primary control. */
+  landmark: (page: Page) => Locator;
+  /** Something that belongs to a look-alike and must not be there (the pitch on the signed-in home). */
+  absent?: (page: Page) => Locator;
+  /** How long to wait for the landmark, in ms. Only the helper's own self-checks change this. */
+  timeout?: number;
+};
+
+/** Opens the page, proves it is the intended one, then audits it in the light theme and the dark one. */
+export async function auditInBothThemes(page: Page, expected: PageExpectation, options: AuditOptions = {}): Promise<void> {
+  const timeout = expected.timeout ?? 5000;
+  for (const colorScheme of ["light", "dark"] as const) {
+    await test.step(`${expected.path} (${colorScheme})`, async () => {
+      await page.emulateMedia({ colorScheme });
+      const response = await page.goto(expected.path);
+      expect(response?.status() ?? 0, `${expected.path} answered with an error status`).toBeLessThan(400);
+      await expect(page, `${expected.path} ended up on the wrong address`).toHaveURL(expected.url, { timeout });
+      await expect(expected.landmark(page), `${expected.path} does not show its own landmark`).toBeVisible({ timeout });
+      if (expected.absent) await expect(expected.absent(page), `${expected.path} shows a look-alike page`).toHaveCount(0, { timeout });
+      // Next's own 404 page also renders inside the root layout, with a lang and a theme class.
+      await expect(page.getByText("This page could not be found")).toHaveCount(0);
+      await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? /dark/ : /^(?!.*dark)/);
+      await auditPage(page, options);
+    });
+  }
 }
