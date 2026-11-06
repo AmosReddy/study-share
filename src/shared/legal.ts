@@ -3,6 +3,6 @@ export const TERMS_VERSION = "2026-11-06";
 
 /**
  * Where people reach the owner about the terms, privacy and takedowns.
- * PLACEHOLDER: the project owner replaces this with a real address in Phase 1a Task 10.
+ * This is the project mailbox, chosen by the owner (it is shown publicly on the Privacy and Terms pages).
  */
-export const CONTACT_EMAIL = "contact@example.invalid";
+export const CONTACT_EMAIL = "projectsmail09@gmail.com";
