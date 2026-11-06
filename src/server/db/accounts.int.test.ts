@@ -163,6 +163,74 @@ describe.skipIf(!url)("accounts database", () => {
         expect(await profileOf(tx, id)).toBeUndefined();
       }));
 
+    // Metadata is user-writable, so only string values count. Anything else is absent.
+    const nonStrings: [string, unknown][] = [
+      ["false", false],
+      ["0", 0],
+      ["an object", {}],
+      ["an array", []],
+      ["null", null],
+    ];
+
+    test.each(nonStrings)("a non-string terms_version (%s) does not stamp terms or age", (_label, value) =>
+      rolledBack(async (tx) => {
+        const p = await profileOf(tx, await createUser(tx, "a@example.com", { terms_version: value }));
+        expect(p.terms_version).toBeNull();
+        expect(p.terms_accepted_at).toBeNull();
+        expect(p.age_confirmed_at).toBeNull();
+      }));
+
+    test.each(nonStrings)("a non-string terms_version (%s) in a later update does not stamp terms or age", (_label, value) =>
+      rolledBack(async (tx) => {
+        const id = await createUser(tx, "a@example.com", {});
+        await tx`update auth.users set raw_user_meta_data = ${tx.json({ terms_version: value } as never)} where id = ${id}`;
+        const p = await profileOf(tx, id);
+        expect(p.terms_version).toBeNull();
+        expect(p.terms_accepted_at).toBeNull();
+        expect(p.age_confirmed_at).toBeNull();
+      }));
+
+    test("a terms_version that is blank after trimming does not stamp terms or age", () =>
+      rolledBack(async (tx) => {
+        const p = await profileOf(tx, await createUser(tx, "a@example.com", { terms_version: "   " }));
+        expect(p.terms_version).toBeNull();
+        expect(p.terms_accepted_at).toBeNull();
+        expect(p.age_confirmed_at).toBeNull();
+      }));
+
+    test("an over-long terms_version is stored truncated to 64 characters", () =>
+      rolledBack(async (tx) => {
+        const p = await profileOf(tx, await createUser(tx, "a@example.com", { terms_version: "v".repeat(500) }));
+        expect(p.terms_version).toBe("v".repeat(64));
+        expect(p.terms_accepted_at).not.toBeNull();
+      }));
+
+    test.each(nonStrings)("a non-string display_name (%s) falls through to full_name", (_label, value) =>
+      rolledBack(async (tx) => {
+        const id = await createUser(tx, "a@example.com", { display_name: value, full_name: "Asha Rao" });
+        expect((await profileOf(tx, id)).display_name).toBe("Asha Rao");
+      }));
+
+    test.each(nonStrings)("a non-string full_name (%s) falls through to name", (_label, value) =>
+      rolledBack(async (tx) => {
+        const id = await createUser(tx, "a@example.com", { full_name: value, name: "Ravi" });
+        expect((await profileOf(tx, id)).display_name).toBe("Ravi");
+      }));
+
+    test("non-string name sources fall through to the email prefix, then to 'New user'", () =>
+      rolledBack(async (tx) => {
+        const junk = { display_name: {}, full_name: [], name: false };
+        expect((await profileOf(tx, await createUser(tx, "pre.fix@example.com", junk))).display_name).toBe("pre.fix");
+        expect((await profileOf(tx, await createUser(tx, null, junk))).display_name).toBe("New user");
+      }));
+
+    test("a non-string display_name in a later update keeps the current name", () =>
+      rolledBack(async (tx) => {
+        const id = await createUser(tx, "a@example.com", { display_name: "Keep" });
+        await tx`update auth.users set raw_user_meta_data = ${tx.json({ display_name: { a: 1 } })} where id = ${id}`;
+        expect((await profileOf(tx, id)).display_name).toBe("Keep");
+      }));
+
     test("the trigger function is security definer with a fixed search_path", async () => {
       const [row] = await sql`
         select p.prosecdef, p.proconfig
