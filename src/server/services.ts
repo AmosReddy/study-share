@@ -1,9 +1,17 @@
 import "server-only";
+import { cookies } from "next/headers";
+import { createFakeAuthProvider, getFakeAuthStore } from "@/server/adapters/fake-auth-provider";
+import { createMemoryRateLimiter } from "@/server/adapters/memory-rate-limiter";
 import { createSmtpEmailSenderFromConfig } from "@/server/adapters/smtp-email-sender";
 import { createS3FileStorage } from "@/server/adapters/s3-file-storage";
+import { createSupabaseAuthProvider } from "@/server/adapters/supabase-auth-provider";
+import { getDb } from "@/server/db/client";
+import { createPostgresRateLimiter } from "@/server/db/postgres-rate-limiter";
 import { getServerEnv } from "@/server/env";
+import type { AuthProvider } from "@/server/ports/auth-provider";
 import type { EmailSender } from "@/server/ports/email-sender";
 import type { FileStorage } from "@/server/ports/file-storage";
+import type { RateLimiter } from "@/server/ports/rate-limiter";
 
 /**
  * Composition root: the only place that decides which implementation backs
@@ -44,4 +52,55 @@ export function getEmailSender(): EmailSender {
     });
   }
   return email;
+}
+
+/**
+ * A new provider per request, over this request's cookies. In SERVICES_MODE=fake
+ * it is the in-memory test double, sharing one store across the process.
+ */
+export async function getAuthProvider(): Promise<AuthProvider> {
+  const env = getServerEnv();
+  const store = await cookies();
+
+  // Server Components may read cookies but not write them; the proxy and server
+  // actions do the writing, so a refused write during rendering is ignored.
+  const write = (fn: () => void) => {
+    try {
+      fn();
+    } catch {}
+  };
+
+  if (env.SERVICES_MODE === "fake") {
+    return createFakeAuthProvider({
+      store: getFakeAuthStore(),
+      cookies: {
+        get: (name) => store.get(name)?.value,
+        set: (name, value) => write(() => store.set(name, value, { httpOnly: true, sameSite: "lax", path: "/" })),
+        delete: (name) => write(() => store.delete(name)),
+      },
+    });
+  }
+
+  return createSupabaseAuthProvider({
+    url: env.NEXT_PUBLIC_SUPABASE_URL,
+    anonKey: env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    cookies: {
+      getAll: () => store.getAll().map(({ name, value }) => ({ name, value })),
+      setAll: (items) => write(() => items.forEach(({ name, value, options }) => store.set(name, value, options))),
+    },
+  });
+}
+
+const MEMORY_LIMITER_KEY = "__studyShareMemoryRateLimiter";
+let postgresLimiter: RateLimiter | undefined;
+
+export function getRateLimiter(): RateLimiter {
+  if (getServerEnv().SERVICES_MODE === "fake") {
+    // On globalThis, like the fake auth store, because Next.js can bundle server
+    // actions and route handlers separately and each would get its own copy.
+    const g = globalThis as unknown as Record<string, RateLimiter | undefined>;
+    return (g[MEMORY_LIMITER_KEY] ??= createMemoryRateLimiter());
+  }
+  postgresLimiter ??= createPostgresRateLimiter(getDb());
+  return postgresLimiter;
 }
