@@ -11,19 +11,40 @@ export class EnvError extends Error {
 const nonEmpty = z.string().min(1);
 const postgresUrl = z.string().regex(/^postgres(ql)?:\/\//);
 
+/**
+ * Settings for outside services use vendor-neutral names (STORAGE_*, SMTP_*).
+ * Any S3-compatible storage (Supabase Storage, Cloudflare R2, AWS S3) and any
+ * SMTP email service (Gmail, Resend, Brevo) work by changing these values only.
+ */
 const serverEnvSchema = z.object({
   APP_ENV: z.enum(["dev", "production"]),
+
+  // Database: any Postgres. Supabase today.
   DATABASE_URL: postgresUrl,
   DATABASE_MIGRATION_URL: postgresUrl,
+
+  // Supabase Auth and Realtime
   NEXT_PUBLIC_SUPABASE_URL: z.url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: nonEmpty,
   SUPABASE_SERVICE_ROLE_KEY: nonEmpty,
-  R2_ACCOUNT_ID: nonEmpty,
-  R2_ACCESS_KEY_ID: nonEmpty,
-  R2_SECRET_ACCESS_KEY: nonEmpty,
-  R2_BUCKET: nonEmpty,
+
+  // File storage: any S3-compatible service.
+  STORAGE_ENDPOINT: z.url(),
+  STORAGE_REGION: nonEmpty,
+  STORAGE_ACCESS_KEY_ID: nonEmpty,
+  STORAGE_SECRET_ACCESS_KEY: nonEmpty,
+  STORAGE_BUCKET: nonEmpty,
+  STORAGE_FORCE_PATH_STYLE: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+
+  // Email: any SMTP service.
+  SMTP_HOST: z.string().min(1).default("smtp.gmail.com"),
+  SMTP_PORT: z.coerce.number().int().positive().default(465),
   SMTP_USER: nonEmpty,
-  SMTP_APP_PASSWORD: nonEmpty,
+  SMTP_PASSWORD: nonEmpty,
+
   // Optional: with no DSN, error reporting is simply off.
   NEXT_PUBLIC_SENTRY_DSN: z
     .string()

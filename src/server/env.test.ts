@@ -8,12 +8,13 @@ const valid = {
   NEXT_PUBLIC_SUPABASE_URL: "https://abc.supabase.co",
   NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key",
   SUPABASE_SERVICE_ROLE_KEY: "service-key",
-  R2_ACCOUNT_ID: "account",
-  R2_ACCESS_KEY_ID: "access",
-  R2_SECRET_ACCESS_KEY: "secret",
-  R2_BUCKET: "bucket",
+  STORAGE_ENDPOINT: "https://abc.storage.supabase.co/storage/v1/s3",
+  STORAGE_REGION: "ap-south-1",
+  STORAGE_ACCESS_KEY_ID: "access",
+  STORAGE_SECRET_ACCESS_KEY: "secret",
+  STORAGE_BUCKET: "bucket",
   SMTP_USER: "bot@gmail.com",
-  SMTP_APP_PASSWORD: "app-password",
+  SMTP_PASSWORD: "app-password",
   NEXT_PUBLIC_SENTRY_DSN: "https://key@o1.ingest.sentry.io/1",
 };
 
@@ -32,16 +33,33 @@ describe("parseServerEnv", () => {
     expect(parseServerEnv(valid).APP_ENV).toBe("dev");
   });
 
+  test("uses Gmail and path-style storage by default, so swapping vendors is only a settings change", () => {
+    const env = parseServerEnv(valid);
+    expect(env.SMTP_HOST).toBe("smtp.gmail.com");
+    expect(env.SMTP_PORT).toBe(465);
+    expect(env.STORAGE_FORCE_PATH_STYLE).toBe(true);
+  });
+
+  test("accepts another email host, storage style and port", () => {
+    const env = parseServerEnv({
+      ...valid,
+      SMTP_HOST: "smtp.resend.com",
+      SMTP_PORT: "587",
+      STORAGE_FORCE_PATH_STYLE: "false",
+    });
+    expect(env.SMTP_HOST).toBe("smtp.resend.com");
+    expect(env.SMTP_PORT).toBe(587);
+    expect(env.STORAGE_FORCE_PATH_STYLE).toBe(false);
+  });
+
   test("works without a Sentry DSN", () => {
-    const { NEXT_PUBLIC_SENTRY_DSN, ...rest } = valid;
-    void NEXT_PUBLIC_SENTRY_DSN;
-    expect(parseServerEnv({ ...rest, NEXT_PUBLIC_SENTRY_DSN: "" }).NEXT_PUBLIC_SENTRY_DSN).toBeUndefined();
+    expect(parseServerEnv({ ...valid, NEXT_PUBLIC_SENTRY_DSN: "" }).NEXT_PUBLIC_SENTRY_DSN).toBeUndefined();
   });
 
   test("names the missing variable and hides other values", () => {
     const { DATABASE_URL, ...rest } = valid;
     void DATABASE_URL;
-    const message = messageOf(() => parseServerEnv({ ...rest, R2_SECRET_ACCESS_KEY: "s3cret" }));
+    const message = messageOf(() => parseServerEnv({ ...rest, STORAGE_SECRET_ACCESS_KEY: "s3cret" }));
     expect(message).toContain("DATABASE_URL");
     expect(message).not.toContain("s3cret");
   });

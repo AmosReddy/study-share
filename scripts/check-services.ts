@@ -2,46 +2,39 @@
  * Verifies that every external service is reachable with the credentials in
  * .env.local. Run with: npm run check:services
  *
- * Prints PASS or FAIL per service and exits non-zero if any fails. Error output
- * is limited to the error's name and message so credentials are not printed.
+ * It goes through the same ports and composition root as the app, so it also
+ * proves the wiring works. Prints PASS or FAIL per service and exits non-zero
+ * if any fails. Error output is limited to the error's name and message so
+ * credentials are not printed.
  */
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { sql } from "drizzle-orm";
-import nodemailer from "nodemailer";
-import { getDb } from "@/server/db/client";
-import { EnvError, getServerEnv, type ServerEnv } from "@/server/env";
+import { pingDatabase } from "@/server/db/ping";
+import { EnvError, getServerEnv } from "@/server/env";
+import { getEmailSender, getFileStorage } from "@/server/services";
 
-async function checkDatabase(): Promise<void> {
-  await getDb().execute(sql`select 1`);
-}
-
-async function checkR2(env: ServerEnv): Promise<void> {
-  const client = new S3Client({
-    region: "auto",
-    endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: env.R2_ACCESS_KEY_ID, secretAccessKey: env.R2_SECRET_ACCESS_KEY },
-  });
-  const Key = `healthcheck/${Date.now()}.txt`;
-  const Body = `check ${Key}`;
+async function checkStorage(): Promise<void> {
+  const storage = getFileStorage();
+  const key = `healthcheck/${Date.now()}.txt`;
+  const body = `check ${key}`;
   try {
-    await client.send(new PutObjectCommand({ Bucket: env.R2_BUCKET, Key, Body }));
-    const object = await client.send(new GetObjectCommand({ Bucket: env.R2_BUCKET, Key }));
-    const text = await object.Body?.transformToString();
-    if (text !== Body) throw new Error("Downloaded content did not match what was uploaded");
-  } finally {
-    // Always try to clean up, even when the read failed.
-    await client.send(new DeleteObjectCommand({ Bucket: env.R2_BUCKET, Key })).catch(() => {});
-  }
-}
+    await storage.put(key, body, "text/plain");
 
-async function checkSmtp(env: ServerEnv): Promise<void> {
-  const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user: env.SMTP_USER, pass: env.SMTP_APP_PASSWORD },
-  });
-  await transporter.verify();
+    const info = await storage.head(key);
+    if (info?.sizeBytes !== body.length) throw new Error("Stored size did not match what was uploaded");
+
+    const bytes = await storage.get(key);
+    if (!bytes || new TextDecoder().decode(bytes) !== body) {
+      throw new Error("Downloaded content did not match what was uploaded");
+    }
+
+    // Prove a signed download link works too, since the app hands these to browsers.
+    const url = await storage.createDownloadUrl({ key, expiresInSeconds: 60 });
+    const response = await fetch(url);
+    if (!response.ok || (await response.text()) !== body) throw new Error(`Signed download failed (${response.status})`);
+  } finally {
+    // Always try to clean up, even when a check failed.
+    await storage.delete(key).catch(() => {});
+  }
+  if ((await storage.head(key)) !== null) throw new Error("Deleted file is still there");
 }
 
 function describeError(error: unknown): string {
@@ -49,18 +42,17 @@ function describeError(error: unknown): string {
 }
 
 async function main(): Promise<void> {
-  let env: ServerEnv;
   try {
-    env = getServerEnv();
+    getServerEnv();
   } catch (error) {
     console.log(`FAIL  environment  ${error instanceof EnvError ? error.message : describeError(error)}`);
     process.exit(1);
   }
 
   const checks: [string, () => Promise<void>][] = [
-    ["database", checkDatabase],
-    ["R2 storage", () => checkR2(env)],
-    ["Gmail SMTP", () => checkSmtp(env)],
+    ["database", pingDatabase],
+    ["file storage", checkStorage],
+    ["email (SMTP login)", () => getEmailSender().verify()],
   ];
 
   let failed = false;
