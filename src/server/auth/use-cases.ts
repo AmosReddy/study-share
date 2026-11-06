@@ -41,10 +41,12 @@ const MESSAGES = {
   badForm: "Check the form and try again.",
   weakPassword: "Choose a stronger password with at least 8 characters.",
   passwordsDiffer: "The two passwords do not match.",
+  termsChanged: "The terms have changed since you opened this page. Please reload and review them.",
   signInAgain: "Your session has ended. Please use the link in your email again.",
 } as const;
 
-const termsSchema = z.object({ acceptTerms: signUpSchema.shape.acceptTerms });
+/** `termsVersion` is checked by hand so a mismatch is a form error, not a field error. */
+const termsSchema = z.object({ acceptTerms: signUpSchema.shape.acceptTerms, termsVersion: z.unknown() });
 const profileSchema = z.object({ displayName: displayNameSchema });
 const newPasswordSchema = resetPasswordSchema.extend({ confirmPassword: z.string() });
 
@@ -68,6 +70,28 @@ function parse<S extends z.ZodType>(schema: S, raw: unknown): { data: z.output<S
 }
 
 type Check = { key: string; limit: Limit };
+
+const MAX_IP_LENGTH = 64;
+
+/**
+ * The per-IP check, or none when the address is unknown (empty). Skipping is deliberate:
+ * a shared "unknown" bucket would let one visitor use up the limit for everyone.
+ */
+function ipCheck(prefix: string, ip: string, limit: Limit): Check[] {
+  const address = ip.trim().slice(0, MAX_IP_LENGTH);
+  return address === "" ? [] : [{ key: `${prefix}:ip:${address}`, limit }];
+}
+
+/**
+ * The provider limits emails per address (for example one a minute), and only for addresses that
+ * have an account. Reporting that would reveal which emails are registered, so for the neutral
+ * flows a provider rate limit looks like success. The fixed line carries no email, key or IP.
+ */
+function isNeutralProviderLimit(error: unknown): boolean {
+  if (!(error instanceof AuthProviderError) || error.code !== "rate_limited") return false;
+  console.warn("Auth provider email rate limit reached; reporting the neutral result.");
+  return true;
+}
 
 /**
  * Counts each check and returns a failure for the first one that is over its limit.
@@ -114,7 +138,7 @@ export async function signUp(deps: Deps, raw: unknown, next: unknown): Promise<A
 
   const refused = await overLimit(deps.limiter, [
     { key: `signup:email:${email}`, limit: SIGN_UP_EMAIL_LIMIT },
-    { key: `signup:ip:${deps.ip}`, limit: SIGN_UP_IP_LIMIT },
+    ...ipCheck("signup", deps.ip, SIGN_UP_IP_LIMIT),
   ]);
   if (refused) return refused;
 
@@ -127,7 +151,7 @@ export async function signUp(deps: Deps, raw: unknown, next: unknown): Promise<A
       redirectTo: confirmRedirect(deps, next),
     });
   } catch (error) {
-    return providerFailure(error);
+    if (!isNeutralProviderLimit(error)) return providerFailure(error);
   }
   return { ok: true, data: { status: "check_email" } };
 }
@@ -139,7 +163,7 @@ export async function logIn(deps: Deps, raw: unknown, next: unknown): Promise<Ac
 
   const refused = await overLimit(deps.limiter, [
     { key: `login:email:${email}`, limit: LOGIN_EMAIL_LIMIT },
-    { key: `login:ip:${deps.ip}`, limit: LOGIN_IP_LIMIT },
+    ...ipCheck("login", deps.ip, LOGIN_IP_LIMIT),
   ]);
   if (refused) return refused;
 
@@ -168,7 +192,7 @@ export async function resendConfirmation(deps: Deps, raw: unknown, next: unknown
   try {
     await deps.auth.resendConfirmation({ email, redirectTo: confirmRedirect(deps, next) });
   } catch (error) {
-    return providerFailure(error);
+    if (!isNeutralProviderLimit(error)) return providerFailure(error);
   }
   return { ok: true, data: undefined };
 }
@@ -180,14 +204,14 @@ export async function requestPasswordReset(deps: Deps, raw: unknown): Promise<Ac
 
   const refused = await overLimit(deps.limiter, [
     { key: `reset:email:${email}`, limit: PASSWORD_RESET_EMAIL_LIMIT },
-    { key: `reset:ip:${deps.ip}`, limit: PASSWORD_RESET_IP_LIMIT },
+    ...ipCheck("reset", deps.ip, PASSWORD_RESET_IP_LIMIT),
   ]);
   if (refused) return refused;
 
   try {
     await deps.auth.sendPasswordReset({ email, redirectTo: `${deps.siteUrl}/reset-password` });
   } catch (error) {
-    return providerFailure(error);
+    if (!isNeutralProviderLimit(error)) return providerFailure(error);
   }
   return { ok: true, data: { status: "check_email" } };
 }
@@ -229,6 +253,8 @@ export async function startGoogle(deps: Deps, next: unknown): Promise<ActionResu
 export async function acceptTerms(deps: Deps, raw: unknown, next: unknown): Promise<ActionResult<{ redirectTo: string }>> {
   const parsed = parse(termsSchema, raw);
   if ("failure" in parsed) return parsed.failure;
+  // Only accept the version the person was shown. The version we record is always TERMS_VERSION.
+  if (parsed.data.termsVersion !== TERMS_VERSION) return { ok: false, formError: MESSAGES.termsChanged };
 
   try {
     await deps.auth.acceptTerms({ termsVersion: TERMS_VERSION });
