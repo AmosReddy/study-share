@@ -33,6 +33,7 @@ These are placeholders. Replace them with your real values as you go, and keep t
 | `<your-dev-project-ref>` | The dev Supabase project's reference id. In Supabase: Project Settings, General, "Reference ID". It is also the first part of `https://<your-dev-project-ref>.supabase.co` |
 | `<your-prod-project-ref>` | The same for the production project |
 | `<your-vercel-team-slug>` | The last part of your Vercel preview addresses, before `.vercel.app` |
+| `<production env file>` | The full path of your file of production settings (Part 5, step 5.2.1), for example a `.env.production.local` in a private folder outside the project folder |
 | `<live address>` | The production site address, for example `https://study-share-amber.vercel.app` |
 | `<dev alias>` | `https://study-share-git-feature-phase-1a-accounts-amos-6f52.vercel.app`, the stable address of the branch preview |
 
@@ -223,17 +224,19 @@ This uses `DATABASE_MIGRATION_URL` from `.env.local`, which must point at the **
 
 Migrations 0001 to 0003 **must be applied to production before anything is merged to `main`**: without them production has no `profiles` or `rate_limits` tables and sign-up breaks.
 
-- [ ] **5.2.1** Open (or create) `.env.production.local` in the project folder. It holds the production settings, copied from the same list as `.env.example`, with `APP_ENV=production` and every value pointing at the **production** project. It must also contain **`NEXT_PUBLIC_SITE_URL`** set to `<live address>`, because production settings require it. Without it, `check:services` on production fails and the app refuses to start.
+- [ ] **5.2.1** Create the file of production settings, **outside the project folder**. This file holds the production service-role key, the database address and the email password. The project folder is inside OneDrive, which copies its files to the cloud, and Next.js loads a `.env.production.local` that sits in the project folder automatically for `npm run build` and `npm run start`, so a local build or start would quietly use production settings. So:
+  - **Recommended:** make a private folder that OneDrive does not sync (for example a new folder under your user profile, outside OneDrive), and create `.env.production.local` there. In this guide its full path is written `<production env file>`. Every command below that uses it gets the full path, in quotes.
+  - **Fallback only:** if you keep `.env.production.local` in the project folder instead, it is still not committed, but it is synced to the cloud, and you must not run `npm run build` or `npm run start` on your computer while it is there. In that case write `.env.production.local` instead of `<production env file>` in the commands below.
+
+  The file holds the production settings, copied from the same list as `.env.example`, with `APP_ENV=production` and every value pointing at the **production** project. It must also contain **`NEXT_PUBLIC_SITE_URL`** set to `<live address>`, because production settings require it. Without it, `check:services` on production fails and the app refuses to start.
 - [ ] **5.2.2** **[TERMINAL]** Run, using only the production file:
 
 ```bash
-node --env-file=.env.production.local ./node_modules/drizzle-kit/bin.cjs migrate
+node --env-file="<production env file>" ./node_modules/drizzle-kit/bin.cjs migrate
 ```
 
   - **You should see:** the command ends without an error. In the production project's Table Editor (public schema) there are `profiles` and `rate_limits` tables.
-  - **If it looks different:** if it says the file cannot be found, run the command from the project folder. If the run is reported as nothing to apply, the migrations were already applied. If it fails to connect, check `DATABASE_MIGRATION_URL` in `.env.production.local`.
-
-Note about `.env.production.local`: it holds real production secrets, it is not committed, and it sits in a OneDrive folder, which syncs files to the cloud. Next.js also loads this file automatically for `npm run build` and `npm run start`, so a local build or start would use production settings. Avoid running those two commands on your computer while the file is in the project folder. A safer arrangement is to keep the file outside the synced folder and pass its full path to `--env-file`.
+  - **If it looks different:** if it says a file cannot be found, check the full path in quotes, and run the command from the project folder (the migrate script is looked up there). If the run is reported as nothing to apply, the migrations were already applied. If it fails to connect, check `DATABASE_MIGRATION_URL` in the production file.
 
 ---
 
@@ -244,13 +247,13 @@ Note about `.env.production.local`: it holds real production secrets, it is not 
 - [ ] **6.1** Add **`NEXT_PUBLIC_SITE_URL`** with the value `<live address>`, and tick **Production only**. Untick Preview and Development. Previews must use their own branch address, so this setting stays unset for Preview.
   - **You should see:** the variable listed with only "Production" beside it.
   - **If it looks different:** if you created it with "All Environments", edit it and untick the others. A production address in Preview can send preview users to the live site.
-- [ ] **6.2** Check that the other variables from `.env.example` exist for the right environments, and add any that are missing: `APP_ENV` (`production` for Production, `dev` for Preview), `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, the `STORAGE_*` settings, and `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` (and `SMTP_FROM` only if you need it). Production values point at the production Supabase project, Preview values at the dev project. Do not set `SERVICES_MODE` on Vercel: the app refuses `fake` there, and the default is `real`.
+- [ ] **6.2** Check that the other variables from `.env.example` exist for the right environments, and add any that are missing: `APP_ENV` (`production` for Production, `dev` for Preview), `DATABASE_URL`, `DATABASE_MIGRATION_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, the `STORAGE_*` settings, and `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` (and `SMTP_FROM` only if you need it). Production values point at the production Supabase project, Preview values at the dev project. Do not set `SERVICES_MODE` on Vercel: the app refuses `fake` there, and the default is `real`.
 - [ ] **6.3** Redeploy so the new values are used. Go to Deployments, open the menu on the latest Production deployment, choose **Redeploy**, and untick "Use existing build cache" (some settings are baked in when the site is built).
 - [ ] **6.4** Open `<live address>/api/health`.
   - **You should see:** `{"status":"ok","db":"ok"}`.
   - **If it looks different:** a 503 with `{"status":"degraded","db":"error"}` means a setting is missing or wrong. Open the deployment's logs in Vercel for the reason. The usual cause is a missing `NEXT_PUBLIC_SITE_URL` (see Troubleshooting).
 
-For Preview, no redeploy of settings is needed: the next push builds with them. The stable address `<dev alias>` always points at the latest build of the `feature/phase-1a-accounts` branch.
+Vercel applies a changed variable only to deployments made afterwards. If you added or fixed a Preview variable, **redeploy the latest Preview deployment too (or push a commit) before you start Part 8**, otherwise you would be testing the old settings. The stable address `<dev alias>` always points at the latest build of the `feature/phase-1a-accounts` branch.
 
 ---
 
@@ -286,14 +289,14 @@ npm run check:auth-behaviour
 
 `check:services` is safe on production, but it creates and deletes one throwaway confirmed user and one small test file. **Never run `check:auth-behaviour` against production.** It refuses to, but do not try.
 
-- [ ] **7.2.1** **[TERMINAL]** Run, loading only the production file (`npm run check:services` would load `.env.local`, which is the dev project):
+- [ ] **7.2.1** **[TERMINAL]** Run, loading only the production file (this is the same file as in step 5.2.1; `npm run check:services` would load `.env.local`, which is the dev project):
 
 ```bash
-npx tsx --conditions=react-server --env-file=.env.production.local scripts/check-services.ts
+npx tsx --conditions=react-server --env-file="<production env file>" scripts/check-services.ts
 ```
 
   - **You should see:** the same four `PASS` lines.
-  - **If it looks different:** `FAIL environment ... NEXT_PUBLIC_SITE_URL` means `.env.production.local` is missing that setting (step 5.2.1). `FAIL database` right after a fresh project usually means a wrong connection string.
+  - **If it looks different:** `FAIL environment ... NEXT_PUBLIC_SITE_URL` means the production file is missing that setting (step 5.2.1). `FAIL database` right after a fresh project usually means a wrong connection string.
 
 ---
 
@@ -416,7 +419,7 @@ where email_confirmed_at is null and created_at < now() - interval '7 days';
 | Google error `redirect_uri_mismatch` | The redirect URI in Google differs from Supabase's Callback URL | Copy Supabase's Callback URL from its Google provider page into the client's Authorised redirect URIs exactly (step 3.2.2) |
 | Google sign-in returns to the login page with "Google sign-in did not finish" | The site address is missing from Supabase's Redirect URLs, or the client id or secret in Supabase is wrong | Check the redirect list (step 2.3.3 or 4.3) and re-paste the client id and secret (step 3.3) |
 | `/api/health` returns 503 on production after a deploy | A setting is missing or wrong. The most common one is `NEXT_PUBLIC_SITE_URL`, which production now requires. Other causes: `APP_ENV` not `production`, or settings pointing at the wrong Supabase project | Add `NEXT_PUBLIC_SITE_URL` for Production (step 6.1), check the other variables (step 6.2), redeploy (step 6.3). The Vercel logs say which setting is at fault |
-| `check:services` on production says `NEXT_PUBLIC_SITE_URL` is missing | `.env.production.local` lacks it | Add the live address to that file (step 5.2.1) |
+| `check:services` on production says `NEXT_PUBLIC_SITE_URL` is missing | The production file lacks it | Add the live address to that file (step 5.2.1) |
 | Sign-up fails with a database error, or no profile appears | Migrations 0001 to 0003 are not applied to that project | Run the migration for that project (Part 5) |
 | Locally, you sign in and are sent back to the login page again and again | An `https` `NEXT_PUBLIC_SITE_URL` while running over `http://localhost`: the cookies are marked secure and the browser drops them | Never set an `https` `NEXT_PUBLIC_SITE_URL` for a local `http` run. Remove it from `.env.local` and restart `npm run dev` |
 | `check:auth-behaviour` refuses to run | Your settings are, or point at, production | Point `.env.local` at the dev project. This script runs on dev only |
