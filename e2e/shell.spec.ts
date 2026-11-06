@@ -10,7 +10,7 @@ test("no sideways scroll, including a very long group name", async ({ page }) =>
 
 test("group list is reachable at this screen size", async ({ page }, info) => {
   await page.goto("/");
-  if (info.project.name === "phone") {
+  if (info.project.name.startsWith("phone")) {
     await page.getByRole("button", { name: "Open group list" }).click();
   }
   await expect(page.getByRole("navigation", { name: "Groups" })).toBeVisible();
