@@ -167,3 +167,63 @@ describe("parseServerEnv: email sender address", () => {
     expect(parseServerEnv({ ...valid, SMTP_FROM: "  " }, options).SMTP_FROM).toBe("bot@gmail.com");
   });
 });
+
+describe("parseServerEnv: test-mode setting (SERVICES_MODE)", () => {
+  test("defaults to real", () => {
+    expect(parseServerEnv(valid, options).SERVICES_MODE).toBe("real");
+  });
+
+  test("accepts fake for a dev environment", () => {
+    expect(parseServerEnv({ ...valid, SERVICES_MODE: "fake" }, options).SERVICES_MODE).toBe("fake");
+  });
+
+  test("rejects a value that is neither real nor fake", () => {
+    const message = messageOf(() => parseServerEnv({ ...valid, SERVICES_MODE: "mock-it" }, options));
+    expect(message).toContain("SERVICES_MODE");
+    expect(message).not.toContain("mock-it");
+  });
+
+  test("refuses fake when APP_ENV is production", () => {
+    const message = messageOf(() => parseServerEnv({ ...validProduction, SERVICES_MODE: "fake" }, options));
+    expect(message).toContain("SERVICES_MODE");
+  });
+
+  test("refuses fake on a Vercel production deployment", () => {
+    const message = messageOf(() =>
+      parseServerEnv({ ...valid, VERCEL_ENV: "production", SERVICES_MODE: "fake" }, options),
+    );
+    expect(message).toContain("SERVICES_MODE");
+  });
+
+  test("refuses fake when any setting points at a production project", () => {
+    const message = messageOf(() =>
+      parseServerEnv(
+        { ...valid, DATABASE_URL: validProduction.DATABASE_URL, SERVICES_MODE: "fake" },
+        options,
+      ),
+    );
+    expect(message).toContain("SERVICES_MODE");
+    expect(message).not.toContain("prodref");
+  });
+
+  test("still allows real in production", () => {
+    expect(parseServerEnv({ ...validProduction, SERVICES_MODE: "real" }, options).SERVICES_MODE).toBe("real");
+  });
+});
+
+describe("parseServerEnv: site address setting", () => {
+  test("is optional", () => {
+    expect(parseServerEnv(valid, options).NEXT_PUBLIC_SITE_URL).toBeUndefined();
+  });
+
+  test("accepts a URL", () => {
+    const env = parseServerEnv({ ...valid, NEXT_PUBLIC_SITE_URL: "https://study.example.com" }, options);
+    expect(env.NEXT_PUBLIC_SITE_URL).toBe("https://study.example.com");
+  });
+
+  test("rejects something that is not a URL", () => {
+    expect(messageOf(() => parseServerEnv({ ...valid, NEXT_PUBLIC_SITE_URL: "not a url" }, options))).toContain(
+      "NEXT_PUBLIC_SITE_URL",
+    );
+  });
+});

@@ -50,6 +50,16 @@ const serverEnvSchema = z
     // (Resend's login is literally "resend"). Defaults to SMTP_USER, which suits Gmail.
     SMTP_FROM: z.string().optional(),
 
+    // "fake" swaps outside services for in-memory test doubles. Never allowed on production data.
+    SERVICES_MODE: z.enum(["real", "fake"]).default("real"),
+
+    // The public address of this deployment, used in email links. Empty counts as not set.
+    NEXT_PUBLIC_SITE_URL: z
+      .string()
+      .optional()
+      .transform((value) => (value?.trim() ? value.trim() : undefined))
+      .pipe(z.url().optional()),
+
     // Optional: with no DSN, error reporting is simply off.
     NEXT_PUBLIC_SENTRY_DSN: z
       .string()
@@ -81,6 +91,16 @@ export function parseServerEnv(
 
   const env = result.data;
   const deployment = source.VERCEL_ENV;
+  const productionRefs = options.productionProjectRefs ?? PRODUCTION_PROJECT_REFS;
+  if (env.SERVICES_MODE === "fake") {
+    const onProduction =
+      env.APP_ENV === "production" ||
+      deployment === "production" ||
+      Object.values(projectRefsByVariable(env)).some((ref) => productionRefs.includes(ref));
+    if (onProduction) {
+      throw new EnvError("Refusing to start: SERVICES_MODE=fake is not allowed on production or with production settings.");
+    }
+  }
   if (deployment === "preview" && env.APP_ENV === "production") {
     throw new EnvError("Refusing to start: this is a preview deployment but APP_ENV is production.");
   }
@@ -88,7 +108,7 @@ export function parseServerEnv(
     throw new EnvError("Refusing to start: this is a production deployment but APP_ENV is not production.");
   }
 
-  checkProjects(env, options.productionProjectRefs ?? PRODUCTION_PROJECT_REFS);
+  checkProjects(env, productionRefs);
   return env;
 }
 
