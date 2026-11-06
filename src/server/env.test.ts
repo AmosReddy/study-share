@@ -7,6 +7,8 @@ const options = { productionProjectRefs: ["prodref"] };
 function settingsFor(ref: string, appEnv: "dev" | "production") {
   return {
     APP_ENV: appEnv,
+    // Required in production; optional (and left out) in dev.
+    ...(appEnv === "production" ? { NEXT_PUBLIC_SITE_URL: "https://study.example.com" } : {}),
     DATABASE_URL: `postgres://postgres.${ref}:pw@aws-0-ap-south-1.pooler.supabase.com:6543/postgres`,
     DATABASE_MIGRATION_URL: `postgres://postgres.${ref}:pw@aws-0-ap-south-1.pooler.supabase.com:5432/postgres`,
     NEXT_PUBLIC_SUPABASE_URL: `https://${ref}.supabase.co`,
@@ -225,6 +227,21 @@ describe("parseServerEnv: test-mode setting (SERVICES_MODE)", () => {
   test("still allows real in production", () => {
     expect(parseServerEnv({ ...validProduction, SERVICES_MODE: "real" }, options).SERVICES_MODE).toBe("real");
   });
+
+  test.each(["production", "preview", "development", "anything"])(
+    "refuses fake on any Vercel deployment (VERCEL_ENV=%s), even with dev settings",
+    (vercelEnv) => {
+      const message = messageOf(() => parseServerEnv({ ...valid, VERCEL_ENV: vercelEnv, SERVICES_MODE: "fake" }, options));
+      expect(message).toContain("SERVICES_MODE");
+      // The value itself is never printed.
+      if (vercelEnv === "anything") expect(message).not.toContain(vercelEnv);
+    },
+  );
+
+  test("allows fake when VERCEL_ENV is empty or not set (local runs and CI)", () => {
+    expect(parseServerEnv({ ...valid, VERCEL_ENV: "", SERVICES_MODE: "fake" }, options).SERVICES_MODE).toBe("fake");
+    expect(parseServerEnv({ ...valid, SERVICES_MODE: "fake" }, options).SERVICES_MODE).toBe("fake");
+  });
 });
 
 describe("parseServerEnv: site address setting", () => {
@@ -235,6 +252,19 @@ describe("parseServerEnv: site address setting", () => {
   test("accepts a URL", () => {
     const env = parseServerEnv({ ...valid, NEXT_PUBLIC_SITE_URL: "https://study.example.com" }, options);
     expect(env.NEXT_PUBLIC_SITE_URL).toBe("https://study.example.com");
+  });
+
+  test("is required when APP_ENV is production, and the error names it without values", () => {
+    for (const missing of [undefined, "", "   "]) {
+      const message = messageOf(() => parseServerEnv({ ...validProduction, NEXT_PUBLIC_SITE_URL: missing }, options));
+      expect(message).toContain("NEXT_PUBLIC_SITE_URL");
+      expect(message).not.toContain("prodref");
+      expect(message).not.toContain("service-key");
+    }
+  });
+
+  test("is accepted in production when set", () => {
+    expect(parseServerEnv(validProduction, options).NEXT_PUBLIC_SITE_URL).toBe("https://study.example.com");
   });
 
   test("rejects something that is not a URL", () => {

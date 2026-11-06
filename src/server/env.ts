@@ -93,13 +93,22 @@ export function parseServerEnv(
   const deployment = source.VERCEL_ENV;
   const productionRefs = options.productionProjectRefs ?? PRODUCTION_PROJECT_REFS;
   if (env.SERVICES_MODE === "fake") {
+    // Fake mode is for local runs and CI only: never on any Vercel deployment (production,
+    // preview or development), whatever the other settings say.
+    const onVercel = (deployment ?? "").trim() !== "";
     const onProduction =
       env.APP_ENV === "production" ||
-      deployment === "production" ||
       Object.values(projectRefsByVariable(env)).some((ref) => productionRefs.includes(ref));
-    if (onProduction) {
-      throw new EnvError("Refusing to start: SERVICES_MODE=fake is not allowed on production or with production settings.");
+    if (onVercel || onProduction) {
+      throw new EnvError(
+        "Refusing to start: SERVICES_MODE=fake is only for local runs and CI, never on a Vercel deployment, on production or with production settings.",
+      );
     }
+  }
+  // Production must say where it lives: without it, email links, Google sign-in and cookies
+  // would fall back to a Vercel deployment address.
+  if (env.APP_ENV === "production" && !env.NEXT_PUBLIC_SITE_URL) {
+    throw new EnvError("Missing or invalid environment variables: NEXT_PUBLIC_SITE_URL (required when APP_ENV is production)");
   }
   if (deployment === "preview" && env.APP_ENV === "production") {
     throw new EnvError("Refusing to start: this is a preview deployment but APP_ENV is production.");
