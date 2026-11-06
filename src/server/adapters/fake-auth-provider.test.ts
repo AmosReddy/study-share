@@ -129,3 +129,28 @@ describe("fake provider safety", () => {
     expect(p.outbox.entries).toHaveLength(0);
   });
 });
+
+describe("failNextSignOut (test mode only)", () => {
+  test("makes exactly the next signOut throw, keeps the session, and a retry succeeds", async () => {
+    const store = createFakeAuthStore();
+    const cookies = jar();
+    const provider = createFakeAuthProvider({ store, cookies });
+    await provider.signUpWithPassword({ ...input, email: "out@example.com" });
+    const token = new URL(provider.outbox.lastFor("out@example.com")!.url, "http://x").searchParams.get("token_hash")!;
+    await provider.confirmEmailToken({ tokenHash: token, type: "email" });
+
+    store.failNextSignOut = true;
+    await expect(provider.signOut()).rejects.toMatchObject({ name: "AuthProviderError", code: "unavailable" });
+    expect(await provider.getUser()).not.toBeNull();
+
+    await provider.signOut();
+    expect(await provider.getUser()).toBeNull();
+  });
+
+  test("is cleared by a reset", () => {
+    const store = getFakeAuthStore();
+    store.failNextSignOut = true;
+    resetFakeAuthStore();
+    expect(store.failNextSignOut).toBe(false);
+  });
+});

@@ -7,6 +7,7 @@ import {
   acceptTerms,
   CONFIRM_EMAIL_CODE,
   logIn,
+  logOut,
   requestPasswordReset,
   resendConfirmation,
   resetPassword,
@@ -132,8 +133,13 @@ export async function updateProfileAction(_state: FormState, form: FormData): Pr
   return { status: "done", values: { displayName: values.displayName.trim() } };
 }
 
-export async function logOutAction(): Promise<void> {
-  await (await getAuthProvider()).signOut();
+/**
+ * Signs out and goes to `/`. When the provider fails, nothing redirects: the person may still be
+ * signed in, so the screen gets the message and shows it.
+ */
+export async function logOutAction(): Promise<FormState> {
+  const result = await logOut({ auth: await getAuthProvider() });
+  if (!result.ok) return failed(result, {});
   revalidatePath("/", "layout");
   redirect("/");
 }

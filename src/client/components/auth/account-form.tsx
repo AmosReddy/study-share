@@ -9,8 +9,8 @@ import { useAuthForm } from "./use-auth-form";
 
 type AccountFormProps = {
   action: FormAction;
-  /** A server action that signs the person out and redirects to `/`. */
-  logOutAction: () => Promise<void>;
+  /** A server action that signs the person out and redirects to `/`, or returns the reason it could not. */
+  logOutAction: FormAction;
   name: string;
   email: string;
 };
@@ -18,6 +18,13 @@ type AccountFormProps = {
 /** The account page: change the display name, see the email (read-only), log out. */
 export function AccountForm({ action, logOutAction, name, email }: AccountFormProps) {
   const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
+  const {
+    state: logOutState,
+    formAction: logOutFormAction,
+    pending: logOutPending,
+    formRef: logOutRef,
+    onSubmit: onLogOutSubmit,
+  } = useAuthForm(logOutAction);
   // What was typed is kept after an error; after a save, the saved (trimmed) name is shown.
   const shown = state.values?.displayName ?? name;
 
@@ -45,8 +52,14 @@ export function AccountForm({ action, logOutAction, name, email }: AccountFormPr
         </SubmitButton>
       </form>
 
-      <form action={logOutAction} className="mt-8 border-t pt-6">
-        <SubmitButton variant="outline" pendingLabel="Logging out…">
+      <form
+        ref={logOutRef}
+        action={logOutFormAction}
+        onSubmit={onLogOutSubmit}
+        className="mt-8 flex flex-col gap-4 border-t pt-6"
+      >
+        {logOutState.formError ? <FormMessage tone="error" title={logOutState.formError} /> : null}
+        <SubmitButton variant="outline" pending={logOutPending} pendingLabel="Logging out…">
           Log out
         </SubmitButton>
       </form>

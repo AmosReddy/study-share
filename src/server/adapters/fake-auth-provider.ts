@@ -41,6 +41,8 @@ export type FakeAuthStore = {
   /** Single-use codes handed out by startGoogleSignIn. */
   oauthCodes: Set<string>;
   outbox: FakeOutbox;
+  /** Test mode only: the next signOut throws once, so browser tests can see a failed log-out. */
+  failNextSignOut: boolean;
 };
 
 export type FakeCookies = {
@@ -50,7 +52,7 @@ export type FakeCookies = {
 };
 
 export function createFakeAuthStore(): FakeAuthStore {
-  return { users: new Map(), tokens: new Map(), oauthCodes: new Set(), outbox: new FakeOutbox() };
+  return { users: new Map(), tokens: new Map(), oauthCodes: new Set(), outbox: new FakeOutbox(), failNextSignOut: false };
 }
 
 const STORE_KEY = "__studyShareFakeAuthStore";
@@ -76,6 +78,7 @@ export function resetFakeAuthStore(): void {
   store.tokens.clear();
   store.oauthCodes.clear();
   store.outbox.entries.length = 0;
+  store.failNextSignOut = false;
 }
 
 const SESSION_COOKIE = "fake-auth-session";
@@ -227,6 +230,10 @@ export function createFakeAuthProvider(deps: {
     },
 
     async signOut() {
+      if (store.failNextSignOut) {
+        store.failNextSignOut = false;
+        throw new AuthProviderError("unavailable", "Sign-out failed (test mode).");
+      }
       cookies.delete(SESSION_COOKIE);
     },
   };

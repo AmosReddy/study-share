@@ -39,6 +39,7 @@ const MESSAGES = {
   generic: "Something went wrong. Please try again.",
   badLogin: "That email and password do not match.",
   badForm: "Check the form and try again.",
+  logOutFailed: "We could not log you out. Please try again.",
   weakPassword: "Choose a stronger password with at least 8 characters.",
   passwordsDiffer: "The two passwords do not match.",
   termsChanged: "The terms have changed since you opened this page. Please reload and review them.",
@@ -272,6 +273,21 @@ export async function updateProfile(deps: Deps, raw: unknown): Promise<ActionRes
     await deps.auth.updateDisplayName(parsed.data.displayName);
   } catch (error) {
     return providerFailure(error);
+  }
+  return { ok: true, data: undefined };
+}
+
+/**
+ * Signs the person out. A failure is reported, never swallowed: the session may still be live,
+ * and the screen must say so. The provider's own text is never shown or logged.
+ */
+export async function logOut(deps: Pick<Deps, "auth">): Promise<ActionResult> {
+  try {
+    await deps.auth.signOut();
+  } catch (error) {
+    if (!(error instanceof AuthProviderError)) throw error;
+    console.warn("Log out failed at the auth provider.");
+    return { ok: false, formError: MESSAGES.logOutFailed };
   }
   return { ok: true, data: undefined };
 }

@@ -3,6 +3,7 @@
 import { ChevronDown, LoaderCircle } from "lucide-react";
 import Link from "next/link";
 import { startTransition, useState } from "react";
+import { IDLE, type FormAction } from "@/shared/form-state";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,8 +16,8 @@ import {
 type AccountMenuProps = {
   name: string;
   email: string;
-  /** A server action that signs the person out and redirects to `/`. */
-  logOutAction: () => Promise<void>;
+  /** A server action that signs the person out and redirects to `/`, or returns the reason it could not. */
+  logOutAction: FormAction;
 };
 
 const itemClass = "min-h-11 px-3 text-base";
@@ -28,9 +29,10 @@ const itemClass = "min-h-11 px-3 text-base";
  */
 export function AccountMenu({ name, email, logOutAction }: AccountMenuProps) {
   const [loggingOut, setLoggingOut] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={() => setError(null)}>
       <div className="max-w-32 min-w-0 sm:max-w-56">
         <DropdownMenuTrigger asChild>
           <button
@@ -61,9 +63,12 @@ export function AccountMenu({ name, email, logOutAction }: AccountMenuProps) {
             // Keep the menu mounted until the redirect, so the request is not cut short.
             event.preventDefault();
             setLoggingOut(true);
+            setError(null);
             startTransition(async () => {
               try {
-                await logOutAction();
+                const result = await logOutAction(IDLE, new FormData());
+                // On success the action redirects; only a failure comes back here.
+                if (result.formError) setError(result.formError);
               } finally {
                 setLoggingOut(false);
               }
@@ -79,6 +84,11 @@ export function AccountMenu({ name, email, logOutAction }: AccountMenuProps) {
             "Log out"
           )}
         </DropdownMenuItem>
+        {error ? (
+          <p role="alert" className="px-3 py-2 text-sm font-medium text-destructive">
+            {error}
+          </p>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

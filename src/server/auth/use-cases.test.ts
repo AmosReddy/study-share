@@ -7,6 +7,7 @@ import { TERMS_VERSION } from "@/shared/legal";
 import {
   acceptTerms,
   logIn,
+  logOut,
   requestPasswordReset,
   resendConfirmation,
   resetPassword,
@@ -564,5 +565,39 @@ describe("the client address", () => {
     expect(ipKey).toBe(`signup:ip:${"a".repeat(64)}`);
     const [, loginIp] = await keysFor("1.2.3.4 ", (d) => logIn(d, { email: "k@x.com", password: "pw" }, "/"));
     expect(loginIp).toBe("login:ip:1.2.3.4");
+  });
+});
+
+describe("logOut", () => {
+  const stub = (signOut: () => Promise<void>) => ({ auth: { signOut } as unknown as Deps["auth"] });
+
+  it("signs out once and succeeds", async () => {
+    const signOut = vi.fn(async () => {});
+    expect(await logOut(stub(signOut))).toEqual({ ok: true, data: undefined });
+    expect(signOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("turns a provider failure into a plain message without vendor text, and logs one fixed line", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = await logOut(stub(async () => Promise.reject(new AuthProviderError("unavailable", "supabase boom token=abc"))));
+    expect(result).toEqual({ ok: false, formError: "We could not log you out. Please try again." });
+    expect(JSON.stringify(result)).not.toMatch(/supabase|boom|token/);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0])).not.toMatch(/supabase|boom|token/);
+    warn.mockRestore();
+  });
+
+  it("treats every provider error code the same way", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const code of ["rate_limited", "weak_password", "unavailable"] as const) {
+      const result = await logOut(stub(async () => Promise.reject(new AuthProviderError(code))));
+      expect(result.ok).toBe(false);
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("rethrows anything that is not a provider error", async () => {
+    const bug = new Error("a bug");
+    await expect(logOut(stub(async () => Promise.reject(bug)))).rejects.toBe(bug);
   });
 });
