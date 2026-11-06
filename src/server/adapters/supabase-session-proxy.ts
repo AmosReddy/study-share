@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { authCookieOptions, siteUsesHttps } from "./supabase-auth-cookies";
 
 /*
   Runs in the proxy, before each page or route. It refreshes an expiring Supabase
@@ -24,6 +25,7 @@ export async function refreshSupabaseSession(request: NextRequest): Promise<Next
 
   try {
     const supabase = createServerClient(url, anonKey, {
+      cookieOptions: authCookieOptions(siteUsesHttps()),
       cookies: {
         getAll: () => request.cookies.getAll(),
         setAll: (items, headers) => {

@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { isAuthError, isAuthRetryableFetchError, isAuthWeakPasswordError, type SupabaseClient } from "@supabase/supabase-js";
 import { AuthProviderError, type AuthProvider, type AuthUser } from "../ports/auth-provider";
+import { authCookieOptions, siteUsesHttps } from "./supabase-auth-cookies";
 
 /*
   Supabase Auth behind our AuthProvider port. Create one provider per request:
@@ -20,12 +21,19 @@ export type CookieJar = {
 export type SupabaseAuthClient = Pick<SupabaseClient, "auth">;
 
 export function createSupabaseAuthProvider(
-  deps: { url: string; anonKey: string; cookies: CookieJar },
+  deps: {
+    url: string;
+    anonKey: string;
+    cookies: CookieJar;
+    /** Mark the session cookies Secure. Defaults to whether the site address is https. */
+    secureCookies?: boolean;
+  },
   client?: SupabaseAuthClient,
 ): AuthProvider {
   const { auth } =
     client ??
     createServerClient(deps.url, deps.anonKey, {
+      cookieOptions: authCookieOptions(deps.secureCookies ?? siteUsesHttps()),
       cookies: {
         getAll: () => deps.cookies.getAll(),
         setAll: (items) => deps.cookies.setAll(items),
