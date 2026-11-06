@@ -17,7 +17,7 @@ function uniqueEmail(tag: string) {
 }
 
 // Each test gets its own made-up client address, so the per-IP rate limits of one test
-// (or of an earlier run against the same dev server) never block another.
+// (or of an earlier run against the same server) never block another.
 test.beforeEach(async ({ page }) => {
   const part = () => Math.floor(Math.random() * 250) + 1;
   await page.setExtraHTTPHeaders({ "x-forwarded-for": `10.${part()}.${part()}.${part()}` });
@@ -29,7 +29,8 @@ async function lastEmailedLink(request: APIRequestContext, email: string): Promi
   await expect(async () => {
     const response = await request.get(`/api/test/outbox?email=${encodeURIComponent(email)}`);
     expect(response.status()).toBe(200);
-    url = ((await response.json()) as { url: string }).url;
+    url = ((await response.json()) as { url: string | null }).url ?? "";
+    expect(url).not.toBe("");
   }).toPass({ timeout: 5000 });
   return url;
 }
@@ -118,13 +119,13 @@ test.describe("log-in", () => {
     await expect(page).toHaveURL("/terms");
   });
 
-  test("a next of //evil.com lands on /", async ({ page }) => {
+  test("a next of //evil.com lands on /", async ({ page, baseURL }) => {
     const email = uniqueEmail("evil");
     await createConfirmedUser(page, email);
 
     await page.goto("/login?next=//evil.com");
     await logIn(page, email, PASSWORD);
-    await expect(page).toHaveURL("http://localhost:3000/");
+    await expect(page).toHaveURL(`${baseURL}/`);
   });
 
   test("an unconfirmed account is asked to confirm and can resend the email", async ({ page }) => {
@@ -143,7 +144,7 @@ test.describe("log-in", () => {
 
 test.describe("email links", () => {
   test("a link that never existed lands on the expired-link screen with a resend form", async ({ page }) => {
-    await page.goto("/auth/confirm?token_hash=never-issued&type=email&redirect_to=http://localhost:3000/");
+    await page.goto("/auth/confirm?token_hash=never-issued&type=email&redirect_to=/");
     await expect(page).toHaveURL("/login?error=link_expired");
     await expect(page.getByText("This link has expired or was already used")).toBeVisible();
     await expect(page.getByRole("button", { name: "Send a new link" })).toBeVisible();
@@ -166,16 +167,16 @@ test.describe("email links", () => {
     await expect(page.getByText(/we've sent a new link/)).toBeVisible();
   });
 
-  test("a confirmation link returns to the page the person was heading for, never off-site", async ({ page }) => {
+  test("a confirmation link returns to the page the person was heading for, never off-site", async ({ page, baseURL }) => {
     const email = uniqueEmail("next");
     await signUp(page, email, "/signup?next=/privacy");
     const link = await lastEmailedLink(page.request, email);
-    expect(new URL(link, "http://localhost:3000").searchParams.get("redirect_to")).toBe("http://localhost:3000/privacy");
+    expect(new URL(link, baseURL).searchParams.get("redirect_to")).toBe(`${baseURL}/privacy`);
     await page.goto(link);
     await expect(page).toHaveURL("/privacy");
 
     await page.goto("/auth/confirm?token_hash=x&type=email&redirect_to=https://evil.com/x");
-    await expect(page).toHaveURL(/^http:\/\/localhost:3000\//);
+    expect(new URL(page.url()).origin).toBe(baseURL);
   });
 });
 
@@ -216,25 +217,8 @@ test.describe("password reset", () => {
   });
 });
 
+// The Google sign-in flow itself is in google.spec.ts, which runs alone (see playwright.config.ts).
 test.describe("Google and the terms", () => {
-  test("the Google flow goes through /welcome once, and a second visit skips it", async ({ page }, info) => {
-    // The fake provider has one fixed Google account shared by every project in the run,
-    // so only one project may walk its first sign-in.
-    test.skip(info.project.name !== "phone-360", "the fake Google account is shared across projects");
-
-    await page.goto("/login?next=/privacy");
-    await page.getByRole("button", { name: "Continue with Google" }).click();
-    await expect(page).toHaveURL("/welcome?next=%2Fprivacy");
-    await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page).toHaveURL("/privacy");
-
-    await page.context().clearCookies();
-    await page.goto("/login?next=/terms");
-    await page.getByRole("button", { name: "Continue with Google" }).click();
-    await expect(page).toHaveURL("/terms");
-  });
-
   test("/welcome sends a signed-out person to log in first", async ({ page }) => {
     await page.goto("/welcome?next=/privacy");
     await expect(page).toHaveURL(`/login?next=${encodeURIComponent("/welcome?next=%2Fprivacy")}`);
@@ -284,6 +268,24 @@ test.describe("fields", () => {
 
     await page.goto("/forgot-password");
     await expectEmailField();
+  });
+
+  test("the terms checkbox row and the footer links are at least 44px tall", async ({ page }) => {
+    await page.goto("/signup");
+    const box = page.getByRole("checkbox", { name: /I'm 18 or older/ });
+    const row = page.locator("label").filter({ has: box });
+    const rowBox = await row.boundingBox();
+    expect(rowBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+    // The whole row toggles the box: tap near its bottom-left corner, below the box itself.
+    await row.click({ position: { x: 4, y: (rowBox?.height ?? 44) - 4 } });
+    await expect(box).toBeChecked();
+    await box.focus();
+    await expect(box).toBeFocused();
+
+    for (const name of ["Terms", "Privacy"]) {
+      const link = page.getByRole("contentinfo").getByRole("link", { name, exact: true });
+      expect((await link.boundingBox())?.height ?? 0, name).toBeGreaterThanOrEqual(44);
+    }
   });
 
   test("the first invalid field receives focus on submit", async ({ page }) => {

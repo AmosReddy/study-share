@@ -1,4 +1,5 @@
 import "server-only";
+import { describeForLog } from "./describe-error";
 
 export type HealthResult = {
   httpStatus: 200 | 503;
@@ -19,9 +20,4 @@ export async function checkHealth(pingDatabase: () => Promise<void>): Promise<He
     console.error("Health check failed:", describeForLog(error));
     return { httpStatus: 503, body: { status: "degraded", db: "error" } };
   }
-}
-
-function describeForLog(error: unknown): string {
-  if (!(error instanceof Error)) return "unknown error";
-  return `${error.name}: ${error.message}`.replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, "<url removed>");
 }

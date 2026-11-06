@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import type { NextRequest } from "next/server";
 import { confirmLinkTarget } from "@/server/auth/redirect-target";
+import { describeForLog } from "@/server/describe-error";
 import { getAuthProvider } from "@/server/services";
 
 /**
@@ -18,7 +19,10 @@ export async function GET(request: NextRequest) {
     try {
       const auth = await getAuthProvider();
       confirmed = await auth.confirmEmailToken({ tokenHash, type });
-    } catch {
+    } catch (error) {
+      // Not the person's fault (settings or an outage), but they still get the neutral screen.
+      // Never log the token.
+      console.error("Email link check failed:", describeForLog(error));
       confirmed = false;
     }
   }

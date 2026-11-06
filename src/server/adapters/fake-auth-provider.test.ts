@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createFakeAuthProvider, createFakeAuthStore, getFakeAuthStore } from "./fake-auth-provider";
+import { createFakeAuthProvider, createFakeAuthStore, getFakeAuthStore, resetFakeAuthStore } from "./fake-auth-provider";
 
 function jar() {
   const m = new Map<string, string>();
@@ -32,6 +32,32 @@ describe("getFakeAuthStore", () => {
     const store = getFakeAuthStore();
     const holders = Object.values(globalThis as unknown as Record<string, unknown>);
     expect(holders).toContain(store);
+  });
+});
+
+describe("resetFakeAuthStore", () => {
+  test("empties the shared store in place: users, tokens, Google codes and the outbox", async () => {
+    const store = getFakeAuthStore();
+    const cookies = jar();
+    const p = createFakeAuthProvider({ store, cookies });
+    await p.signUpWithPassword({ ...input, email: "reset@example.com" });
+    await p.startGoogleSignIn({ redirectTo: "http://localhost:3000/auth/callback" });
+    await p.completeOAuth([...store.oauthCodes][0]);
+    await p.acceptTerms({ termsVersion: "2026-11" });
+    await p.startGoogleSignIn({ redirectTo: "http://localhost:3000/auth/callback" });
+
+    resetFakeAuthStore();
+
+    expect(getFakeAuthStore()).toBe(store);
+    expect(store.users.size).toBe(0);
+    expect(store.tokens.size).toBe(0);
+    expect(store.oauthCodes.size).toBe(0);
+    expect(store.outbox.entries).toHaveLength(0);
+    expect(p.outbox).toBe(store.outbox);
+    // The Google account starts over, so it has not accepted the terms.
+    await p.startGoogleSignIn({ redirectTo: "http://localhost:3000/auth/callback" });
+    await p.completeOAuth([...store.oauthCodes][0]);
+    expect((await p.getUser())?.termsVersion).toBeNull();
   });
 });
 

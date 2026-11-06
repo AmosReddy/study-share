@@ -79,24 +79,25 @@ type CheckboxFieldProps = Omit<ComponentProps<"input">, "id" | "name" | "type"> 
   error?: string;
 };
 
-/** A checkbox with a large tap area: the whole label row toggles it. */
+/**
+ * A checkbox with a large tap area: the whole row is its label, at least 44px tall, so a
+ * tap anywhere on it toggles the box. The box itself keeps a visible focus ring.
+ */
 export function CheckboxField({ name, id = name, label, error, ...props }: CheckboxFieldProps) {
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-start gap-3">
+      <label htmlFor={id} className="flex min-h-11 cursor-pointer items-center gap-3 py-1 text-sm leading-6">
         <input
           id={id}
           name={name}
           type="checkbox"
           aria-invalid={error ? true : undefined}
           aria-describedby={describedBy(id, undefined, error)}
-          className="mt-0.5 size-5 shrink-0 cursor-pointer rounded border-input accent-primary outline-none focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:outline-2 aria-invalid:outline-destructive"
+          className="size-5 shrink-0 cursor-pointer rounded border-input accent-primary outline-none focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:outline-2 aria-invalid:outline-destructive"
           {...props}
         />
-        <label htmlFor={id} className="cursor-pointer text-sm leading-6">
-          {label}
-        </label>
-      </div>
+        <span>{label}</span>
+      </label>
       {error ? <FieldError id={`${id}-error`}>{error}</FieldError> : null}
     </div>
   );

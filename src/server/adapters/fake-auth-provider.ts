@@ -65,6 +65,19 @@ export function getFakeAuthStore(): FakeAuthStore {
   return (g[STORE_KEY] ??= createFakeAuthStore());
 }
 
+/**
+ * Empties the shared store in place, so providers already holding it (and its outbox)
+ * see the reset. Browser tests call it through POST /api/test/reset so tests that share
+ * the one fake Google account can run again on the same server.
+ */
+export function resetFakeAuthStore(): void {
+  const store = getFakeAuthStore();
+  store.users.clear();
+  store.tokens.clear();
+  store.oauthCodes.clear();
+  store.outbox.entries.length = 0;
+}
+
 const SESSION_COOKIE = "fake-auth-session";
 const MIN_PASSWORD_LENGTH = 8;
 const GOOGLE_EMAIL = "google.user@example.test";
