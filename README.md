@@ -1,36 +1,57 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# study-share
 
-## Getting Started
+A place for a class to share notes, previous year papers and study material, organised by subject, semester and type, with search, filters and group chat. Built to replace digging through WhatsApp.
 
-First, run the development server:
+`study-share` is a temporary name.
+
+The full plan, with phases, design principles and edge cases, is in [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md).
+
+## Stack
+
+Next.js (App Router), TypeScript, Tailwind CSS, shadcn/ui, Drizzle ORM, Supabase (Postgres, auth, realtime, file storage), Vitest, Playwright.
+
+## Getting started
+
+You need Node 26 (see `.nvmrc`).
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # then fill in the values
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Never commit `.env.local`. It holds secrets.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Scripts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Command | What it does |
+|---|---|
+| `npm run dev` | Start the app locally |
+| `npm run build` | Production build |
+| `npm run lint` | ESLint, including the architecture rules below |
+| `npm run typecheck` | TypeScript check |
+| `npm test` | Unit tests |
+| `npm run test:int` | Database tests. Needs `TEST_DATABASE_URL` pointing at a Postgres |
+| `npm run test:e2e` | Browser tests at desktop and phone widths |
+| `npm run db:generate` | Create a migration after changing `src/server/db/schema.ts` |
+| `npm run db:migrate` | Apply migrations using `DATABASE_MIGRATION_URL` |
+| `npm run check:services` | Check the database, file storage and email connections |
 
-## Learn More
+## How the code is organised
 
-To learn more about Next.js, take a look at the following resources:
+```
+src/app/      Routes only: pages, layouts, API handlers
+src/client/   Browser code. Never imports src/server
+src/server/   Server code. Never imports src/client
+  ports/      Interfaces we own (FileStorage, EmailSender)
+  adapters/   One implementation per vendor. The only place vendor SDKs are imported
+  db/         Database access. The only place drizzle and postgres are imported
+  services.ts Chooses which adapter backs each port
+src/shared/   Types and limits used by both sides
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+ESLint enforces these boundaries, so switching a vendor means editing one adapter and some settings. Settings use vendor-neutral names (`STORAGE_*`, `SMTP_*`), so any S3-compatible storage and any SMTP email service can be swapped by changing values only.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Working on it
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Work happens on a `feature/...` or `fix/...` branch and reaches `main` through a pull request. Commits use [Conventional Commits](https://www.conventionalcommits.org). Every pull request runs lint, type check, unit tests, database tests and browser tests.
