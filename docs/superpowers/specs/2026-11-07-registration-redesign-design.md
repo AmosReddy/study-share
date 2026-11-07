@@ -74,13 +74,34 @@ Unchanged: one generic error for a wrong email or password; a hint for Google us
 - The server needs read access to who has an account and the power to remove a pending sign-up: this lives behind a new port (an account directory and admin interface) with a Supabase adapter, using the service role key that already exists. No service key reaches the browser.
 - All earlier rules stay: cookies httpOnly, same-site paths only for `next`, secrets never logged, the test mode refused in production.
 
+### 5.1 Binding a code or link to the person who signed up (builder-check finding, binding)
+"Newest sign-up wins" only protects the owner when the owner signs up LAST. If a stranger signs up the victim's address just after the victim, the victim's inbox would hold a code for the stranger's pending account, with the stranger's password. Rules:
+- The sign-up creates a **signed, httpOnly, short-lived "pending sign-up" cookie** that holds the pending user's id and the address (nothing secret beyond that). It is trusted only to decide the rule below and to pre-fill the address, never to authenticate anyone.
+- After creating the pending account, the server **checks the password on it** by trying to sign in with the password the person just typed: an unconfirmed account answers "email not confirmed" only when the password is right and "invalid credentials" when it is not. If it is not right (another sign-up got there first), the pending account is removed (only if still unconfirmed) and created again, once. This also closes the race of two sign-ups at once.
+- When a **code or link confirms a user who matches the cookie**, everything is normal (code: signed in; link: "verified, you can log in now").
+- When a code or link confirms a user who does NOT match the cookie, or when there is no cookie (another device), the server **replaces the account's password with a random one** immediately, and the person must **create a password** on the spot before finishing (the code path is already signed in; the link path shows "Your email is verified. Create your password to finish."). A stranger's password never survives, and a real owner on a second device sets a password in one extra step.
+- Resend and the code box always act on the pending user in the cookie.
+
+### 5.2 Reading account state and replacing pending sign-ups
+- The server reads "no account / unconfirmed sign-up / confirmed account / Google-only account" and removes pending sign-ups through a new port with an implementation in `src/server/db` that runs **SQL on the `auth` schema** over the existing database connection (read `auth.users` and `auth.identities`; delete with `... where id = $1 and email_confirmed_at is null` so a just-confirmed account can never be deleted by a race). The Supabase Admin API has no lookup by email and no conditional delete, so it is used only where SQL cannot do the job (setting a random password).
+- "Google-only" means no usable password: decide it from the account's identities and whether a password has been set, not from the identities alone, so a Google user who later added a password through Forgot password is shown the right message.
+
+### 5.3 Google repair details (builder-check finding, binding)
+- Whether Supabase already clears an unconfirmed password when a Google identity links is unknown and cannot be tested without a real Google account, so the app does it itself, defensively: after a Google sign-in the server checks the account for a pending email sign-up (unconfirmed email identity or a password set before any confirmation) and, if found, sets a random password, removes the pending email identity, and **overwrites the display name and terms with the Google user's own** (so nothing the stranger entered survives, and terms are recorded as accepted by the Google user).
+- If the repair step fails after Google has issued a session, the server signs the person out and shows "Something went wrong signing you in with Google. Please try again."
+- Google terms rule: a Google user whose accepted terms version is empty is recorded as accepted at sign-in (they pressed the button under the "By continuing you confirm..." sentence); a user whose version is out of date goes to `/welcome` to read and accept the new version.
+
+### 5.4 Session and lifetime notes (accepted for the pilot)
+- "Sign out other devices" revokes refresh tokens; a session already open elsewhere can keep working until its short access token expires (up to an hour). A recovery code signs the person in before they choose a password; if they leave at that point nothing changes elsewhere.
+- Supabase's "Email OTP expiration" governs both codes and links, so links also last 10 minutes; a person who opens a link later sees "link expired" and can request a new code.
+
 ## 6. Edge cases the redesign must handle
 - Wrong code, expired code, used code, a code from an older email after a resend, too many wrong tries: each a clear message and a way to get a new code.
 - Resend before the cooldown ends (countdown shown, button disabled).
 - Reload or close the tab on the code screen: resume through the remembered address; "Change email" starts over.
 - Typo in the email: Change email; the abandoned pending account is replaced or swept.
 - Sign-up while already signed in: go home. Log-in page while signed in: go home.
-- Code entered on a different device than the sign-up (works: the address is in the cookie only for convenience; the verify form also accepts the address typed in).
+- Code or link used on a different device than the sign-up (works, with the one-step password creation of section 5.1; the verify form also accepts the address typed in).
 - Link opened on another device or after the code was already used: the verified page or a clear "link expired" with a way to request a new code.
 - The same email through email and Google: one account (Google into an existing password account signs into it; email sign-up for a Google-only address gets the Google message).
 - Double submit of every form (button disabled while pending; server-side idempotence for the code check).
@@ -99,4 +120,4 @@ Unchanged: one generic error for a wrong email or password; a hint for Google us
 - Unconfirmed sign-ups older than 7 days are swept by hand (operations note), not automatically.
 
 ## 9. Acceptance ("done when")
-On the live site, on a phone and a desktop, with real inboxes: (1) sign up by email, enter the code, land home signed in; (2) sign up by email and use the link instead, see the verified page, log in; (3) a wrong code, an expired code and a resend each behave as described; (4) signing up with an email that already has an account shows the clear message; (5) Continue with Google shows the account chooser and lands home; (6) an email registered through Google gets the Google message on email sign-up; (7) Forgot password by code and by link both end with a new password, signed in, other devices signed out; (8) a stranger's pending sign-up cannot be used: sign up with address A and password P1, sign up again with P2, confirm: only P2 works; and tests pass in CI at phone and desktop sizes.
+On the live site, on a phone and a desktop, with real inboxes: (1) sign up by email, enter the code, land home signed in; (2) sign up by email and use the link instead, see the verified page, log in; (3) a wrong code, an expired code and a resend each behave as described; (4) signing up with an email that already has an account shows the clear message; (5) Continue with Google shows the account chooser and lands home; (6) an email registered through Google gets the Google message on email sign-up; (7) Forgot password by code and by link both end with a new password, signed in, other devices signed out; (8) a stranger's pending sign-up cannot be used: sign up with address A and password P1, sign up again with P2, confirm: only P2 works, and a code or link that confirms an account this browser did not create forces a new password; and tests pass in CI at phone and desktop sizes.
