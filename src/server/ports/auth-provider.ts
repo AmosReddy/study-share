@@ -93,6 +93,23 @@ export interface AuthProvider {
    * same session" cannot work; after a scramble the person needs a new code to get a session.
    */
   scramblePassword(userId: string): Promise<void>;
+  /**
+   * Opens a fresh session for the account with this address in THIS browser, without sending
+   * an email (server side: the provider's admin power makes a one-time recovery code and
+   * redeems it at once). It is a recovery session, so updatePassword works from it. Returns the
+   * user's id. The code or token is never returned or logged.
+   *
+   * DANGER: it signs anyone in as that account. Call it ONLY on the server, right after the
+   * same request proved ownership of the account by a code (verifyCode) or a Google sign-in,
+   * typically just after scramblePassword ended every session (ruling P9: verify, scramble,
+   * open a session, then the person creates a password). It must never be reachable from a
+   * request that has not just proved ownership. An unknown address throws unavailable.
+   *
+   * Observed (probes p, q): it works after a scramble, for accounts with and without a
+   * password; the provider records it as a recovery request (recovery_sent_at is set), which
+   * may start the recovery email interval for that address (not probed).
+   */
+  openSessionWithoutEmail(i: { email: string }): Promise<{ userId: string }>;
   acceptTerms(i: { termsVersion: string }): Promise<void>;
   updateDisplayName(name: string): Promise<void>;
   signOut(): Promise<void>;

@@ -406,6 +406,20 @@ export function createFakeAuthProvider(deps: {
       dropOutstandingCodes(store, u.id);
     },
 
+    async openSessionWithoutEmail({ email }) {
+      const u = findByEmail(email);
+      if (!u) throw new AuthProviderError("unavailable", "The account could not be signed in.");
+      // As admin generateLink(recovery) + verifyOtp (probes p, q): no email; the new recovery
+      // code replaces any earlier one and is redeemed at once; a code session in this browser.
+      // Sessions ended by a scramble stay ended. The provider records recovery_sent_at, which
+      // is assumed (not probed) to start the recovery email interval.
+      store.codes.delete(`${u.id}:recovery`);
+      store.lastEmailAt.set(`${u.email}:recovery`, Date.now());
+      confirm(u);
+      signInAs(u, "code");
+      return { userId: u.id };
+    },
+
     async acceptTerms({ termsVersion }) {
       requireUser().termsVersion = termsVersion;
     },

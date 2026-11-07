@@ -8,7 +8,7 @@
  * project's own mailbox (SMTP_USER), so no email ever goes to anyone else. It sends at
  * most five real emails in (a) to (j) and at most six in (n) (signUp, resend and
  * resetPasswordForEmail do; the admin generateLink used to obtain a code does not; (k), (l),
- * (l2), (m) and (o) send none). `--only=k,l,m,n` runs only the named probes. It always deletes every
+ * (l2), (m), (o), (p) and (q) send none; (r) sends at most two). `--only=k,l,m,n` runs only the named probes. It always deletes every
  * user it created (by recorded id, then a scan by
  * tag), including on Ctrl-C, SIGTERM, SIGHUP and SIGBREAK. It says "0 left" only when every
  * deletion was confirmed and the scan finished.
@@ -17,6 +17,7 @@
  * address. Provider errors are reported by name, HTTP status and error code, never by
  * message. Each probe is separate: one that fails prints "PROBE FAILED" and the rest run.
  */
+import { createServerClient } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { cleanUpUsers, type DeleteOutcome } from "@/server/clean-up-users";
 import { describeAuthError, describeCodeShape } from "@/server/describe-auth-error";
@@ -25,7 +26,7 @@ import { EnvError, getServerEnv, settingsPointAtProduction } from "@/server/env"
 /** Supabase's per-address email limit is about one a minute, so a repeat to one address waits this long. */
 const PER_ADDRESS_WAIT_MS = 65_000;
 const BETWEEN_CALLS_MS = 3_000;
-const TAGS = ["a", "b", "d", "e", "f", "g", "h", "unknown", "k", "l", "l2", "o", "n1", "n2", "n3"];
+const TAGS = ["a", "b", "d", "e", "f", "g", "h", "unknown", "k", "l", "l2", "o", "p", "q", "r", "n1", "n2", "n3"];
 /** After a stop signal, how long to wait for the call in flight before cleaning up anyway. */
 const ABORT_SETTLE_MS = 20_000;
 const SCAN_PAGE_SIZE = 200;
@@ -381,9 +382,9 @@ async function probeRecoverySessionPasswordChange(ctx: Ctx) {
 }
 
 /**
- * (o): the alternative order for design 5.1. A stranger's pending sign-up (password P1); the
- * signup code verifies (session S) and S sets its own password at once with updateUser. Does
- * that work, does it replace P1, and what happens to a session B made with P1 in between?
+ * (o): from a SIGN-UP-code session, does updateUser({ password }) work (or is it refused like a
+ * password session in (l))? What does it do to the stranger's earlier password P1 and to a
+ * session B made with P1? No signOut(others) is called. No email is sent.
  */
 async function probeCodeThenOwnPassword(ctx: Ctx) {
   const email = ctx.address("o");
@@ -399,12 +400,112 @@ async function probeCodeThenOwnPassword(ctx: Ctx) {
   fact("(o) a session B signed in with P1 after the confirmation", `${describeAuthError(inB.error)}; session ${yesNo(!!inB.data.session)}`);
 
   const updated = await s.auth.updateUser({ password: ctx.P2 });
-  fact("(o) S: updateUser({ password: P2 }) straight after the code", describeAuthError(updated.error));
-  const others = await s.auth.signOut({ scope: "others" });
-  fact("(o) S: signOut({ scope: others })", describeAuthError(others.error));
+  fact("(o) S (sign-up-code session): updateUser({ password: P2 }), NO signOut(others)", describeAuthError(updated.error));
   fact("(o) session S afterwards", await sessionState(ctx, verified.data.session));
   if (inB.data.session) fact("(o) session B afterwards", await sessionState(ctx, inB.data.session));
   fact("(o) passwords afterwards", await passwordsWork(ctx, email, [["P1 (the stranger's)", ctx.P1], ["P2 (set by S)", ctx.P2]]));
+}
+
+/** A server client like the app's: the session lives in this in-memory cookie jar. */
+function cookieClient(ctx: Ctx, jar: Map<string, string>) {
+  return createServerClient(ctx.url, ctx.anonKey, {
+    cookies: {
+      getAll: () => [...jar].map(([name, value]) => ({ name, value })),
+      setAll: (items) => {
+        for (const { name, value } of items) {
+          if (value) jar.set(name, value);
+          else jar.delete(name);
+        }
+      },
+    },
+  });
+}
+
+/**
+ * The chosen openSessionWithoutEmail: admin generateLink type recovery (its code comes back in
+ * the response), then verifyOtp on a cookie-bound client, then the same calls on a NEW client
+ * over the same cookies, as the next request would make. Reports each step.
+ */
+async function mintSession(ctx: Ctx, label: string, email: string, userId: string, password?: string) {
+  const before = await ctx.admin.auth.admin.getUserById(userId);
+  const link = await ctx.admin.auth.admin.generateLink({ type: "recovery", email });
+  const after = await ctx.admin.auth.admin.getUserById(userId);
+  const sentBefore = before.data.user?.recovery_sent_at ?? null;
+  const sentAfter = after.data.user?.recovery_sent_at ?? null;
+  fact(
+    `(${label}) admin generateLink type recovery`,
+    `${describeAuthError(link.error)}; code in the response ${yesNo(!!link.data?.properties?.email_otp)}; recovery_sent_at ${sentBefore === sentAfter ? "unchanged" : sentBefore ? "changed" : "set (was empty)"}`,
+  );
+  const code = link.data?.properties?.email_otp;
+  if (!code) return;
+  const jar = new Map<string, string>();
+  const minted = await cookieClient(ctx, jar).auth.verifyOtp({ email, token: code, type: "recovery" });
+  fact(`(${label}) verifyOtp type recovery with that code on a cookie-bound client`, `${acceptedOrRejected(minted)}; user id matches ${yesNo(minted.data.user?.id === userId)}; session cookies written ${yesNo(jar.size > 0)}`);
+  if (!minted.data.session) return;
+  const next = cookieClient(ctx, jar);
+  const user = await next.auth.getUser();
+  fact(`(${label}) next request on the same cookies: getUser (server check)`, `${describeAuthError(user.error)}; user ${yesNo(user.data.user?.id === userId)}`);
+  const refreshed = await next.auth.refreshSession();
+  fact(`(${label}) next request: refreshSession`, `${describeAuthError(refreshed.error)}; new session ${yesNo(!!refreshed.data.session)}`);
+  if (password) {
+    const updated = await cookieClient(ctx, jar).auth.updateUser({ password });
+    fact(`(${label}) next request: updateUser({ password: P2 }) on the minted session`, describeAuthError(updated.error));
+  }
+}
+
+/**
+ * (p): the chosen design-5.1 sequence on a fresh unconfirmed user with password P1 (admin-made,
+ * so no email): verifyOtp(signup) -> admin scramble -> openSessionWithoutEmail (generateLink
+ * recovery + verifyOtp on a cookie-bound client) -> getUser, refresh, updateUser(P2).
+ */
+async function probeChosenSequence(ctx: Ctx) {
+  const email = ctx.address("p");
+  const created = await ctx.createUser({ email, password: ctx.P1 });
+  if (created.error || !created.data.user) throw created.error ?? new Error("no user was created");
+  const id = created.data.user.id;
+  const g = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  if (!g.code) throw new Error(`no signup code (${g.error})`);
+  const s = ctx.client();
+  const verified = await s.auth.verifyOtp({ email, token: g.code, type: "signup" });
+  fact("(p) pending user with P1: verifyOtp type signup (session S)", acceptedOrRejected(verified));
+  if (!verified.data.session) return;
+  const scramble = await ctx.admin.auth.admin.updateUserById(id, { password: `${crypto.randomUUID()}Dd4!` });
+  fact("(p) admin scramble (updateUserById password)", describeAuthError(scramble.error));
+  fact("(p) session S after the scramble", await sessionState(ctx, verified.data.session));
+  await mintSession(ctx, "p", email, id, ctx.P2);
+  fact("(p) passwords afterwards", await passwordsWork(ctx, email, [["P1 (the stranger's)", ctx.P1], ["P2 (set on the minted session)", ctx.P2]]));
+}
+
+/** (q): the minted session for a confirmed account with no password (admin-made), after a scramble: the Google-repair case. */
+async function probeMintForPasswordless(ctx: Ctx) {
+  const email = ctx.address("q");
+  const created = await ctx.createUser({ email, email_confirm: true });
+  if (created.error || !created.data.user) throw created.error ?? new Error("no user was created");
+  const id = created.data.user.id;
+  const scramble = await ctx.admin.auth.admin.updateUserById(id, { password: `${crypto.randomUUID()}Ee5!` });
+  fact("(q) password-less confirmed user: admin scramble", describeAuthError(scramble.error));
+  await mintSession(ctx, "q", email, id);
+}
+
+/** (r): signUp, admin deleteUser by id, signUp of the SAME address straight away (at most two emails). */
+async function probeDeleteThenSignUpQuickly(ctx: Ctx) {
+  const email = ctx.address("r");
+  const first = await ctx.client().auth.signUp({ email, password: ctx.P1 });
+  const firstId = first.data.user?.id;
+  ctx.track(firstId);
+  fact("(r) first signUp (sends an email)", describeAuthError(first.error));
+  if (!firstId) return;
+  const deleted = await ctx.admin.auth.admin.deleteUser(firstId);
+  if (!deleted.error) ctx.forget(firstId);
+  fact("(r) admin deleteUser of that unconfirmed user", describeAuthError(deleted.error));
+  const started = Date.now();
+  await sleep(BETWEEN_CALLS_MS);
+  const second = await ctx.client().auth.signUp({ email, password: ctx.P2 });
+  ctx.track(second.data.user?.id);
+  fact(
+    "(r) signUp of the same address again",
+    `${Math.round((Date.now() - started) / 1000)} s after the delete: ${describeAuthError(second.error)}; new id ${yesNo(!!second.data.user?.id && second.data.user.id !== firstId)}`,
+  );
 }
 
 /**
@@ -453,6 +554,9 @@ const probes: Probe[] = [
   { label: "(l)(m)", run: probeSelfPasswordChange },
   { label: "(l2)(m)", run: probeRecoverySessionPasswordChange },
   { label: "(o)", run: probeCodeThenOwnPassword },
+  { label: "(p)", run: probeChosenSequence },
+  { label: "(q)", run: probeMintForPasswordless },
+  { label: "(r)", run: probeDeleteThenSignUpQuickly },
   { label: "(n)", run: probeEmailInterval },
 ];
 

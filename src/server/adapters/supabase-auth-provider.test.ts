@@ -43,10 +43,15 @@ function makeClient(overrides: Partial<Record<keyof SupabaseAuthClient["auth"], 
   return { auth } as unknown as SupabaseAuthClient & { auth: Record<string, ReturnType<typeof vi.fn>> };
 }
 
-function makeAdmin(updateUserById: unknown = ok({ user: { id: USER_ID } })) {
-  const fn = vi.isMockFunction(updateUserById) ? updateUserById : vi.fn(updateUserById as () => unknown);
-  return { auth: { admin: { updateUserById: fn } } } as unknown as SupabaseAdminClient & {
-    auth: { admin: { updateUserById: ReturnType<typeof vi.fn> } };
+const MINT_CODE = "771144";
+
+function makeAdmin(
+  updateUserById: unknown = ok({ user: { id: USER_ID } }),
+  generateLink: unknown = ok({ properties: { email_otp: MINT_CODE, hashed_token: TOKEN }, user: { id: USER_ID } }),
+) {
+  const asMock = (f: unknown) => (vi.isMockFunction(f) ? f : vi.fn(f as () => unknown));
+  return { auth: { admin: { updateUserById: asMock(updateUserById), generateLink: asMock(generateLink) } } } as unknown as SupabaseAdminClient & {
+    auth: { admin: { updateUserById: ReturnType<typeof vi.fn>; generateLink: ReturnType<typeof vi.fn> } };
   };
 }
 
@@ -359,6 +364,84 @@ describe("updatePassword", () => {
     const { provider, client } = make(makeClient({ updateUser: fails(rateLimited) }));
     await caught(provider.updatePassword(PASSWORD, { signOutOthers: true }));
     expect(client.auth.signOut).not.toHaveBeenCalled();
+  });
+});
+
+describe("openSessionWithoutEmail", () => {
+  test("asks the admin client for a recovery code, then verifies it on the cookie client, and returns the user id", async () => {
+    const { provider, client, admin } = make();
+    expect(await provider.openSessionWithoutEmail({ email: "ada@example.com" })).toEqual({ userId: "user-1" });
+    expect(admin.auth.admin.generateLink).toHaveBeenCalledWith({ type: "recovery", email: "ada@example.com" });
+    expect(client.auth.verifyOtp).toHaveBeenCalledWith({ email: "ada@example.com", token: MINT_CODE, type: "recovery" });
+    const order = (fn: unknown) => vi.mocked(fn as () => unknown).mock.invocationCallOrder[0];
+    expect(order(admin.auth.admin.generateLink)).toBeLessThan(order(client.auth.verifyOtp));
+    // No email is sent by any other call.
+    expect(client.auth.resetPasswordForEmail).not.toHaveBeenCalled();
+    expect(client.auth.resend).not.toHaveBeenCalled();
+  });
+
+  test("without a service role key it is unavailable and calls nothing", async () => {
+    const client = makeClient();
+    const provider = createSupabaseAuthProvider(
+      { url: "https://example.supabase.co", anonKey: "anon", cookies: { getAll: () => [], setAll: () => {} } },
+      client,
+    );
+    expect(((await caught(provider.openSessionWithoutEmail({ email: "a@x.com" }))) as AuthProviderError).code).toBe("unavailable");
+    expect(client.auth.verifyOtp).not.toHaveBeenCalled();
+  });
+
+  test("generateLink failures map as elsewhere and stop before verifyOtp", async () => {
+    const cases: [unknown, AuthProviderError["code"]][] = [
+      [fails(rateLimited), "rate_limited"],
+      [fails(network), "unavailable"],
+      [fails(new AuthApiError("User not found", 404, "user_not_found")), "unavailable"],
+      [ok({ properties: {}, user: null }), "unavailable"],
+      [
+        async () => {
+          throw new TypeError("fetch failed");
+        },
+        "unavailable",
+      ],
+    ];
+    for (const [generateLink, code] of cases) {
+      const { provider, client } = make(makeClient(), makeAdmin(undefined, generateLink));
+      expect(((await caught(provider.openSessionWithoutEmail({ email: "a@x.com" }))) as AuthProviderError).code).toBe(code);
+      expect(client.auth.verifyOtp).not.toHaveBeenCalled();
+    }
+  });
+
+  test("a verifyOtp failure, or a reply with no session, is unavailable (rate limits stay rate_limited)", async () => {
+    const cases: [unknown, AuthProviderError["code"]][] = [
+      [fails(new AuthApiError("Token has expired or is invalid", 403, "otp_expired")), "unavailable"],
+      [fails(rateLimited), "rate_limited"],
+      [fails(network), "unavailable"],
+      [ok({ user: null, session: null }), "unavailable"],
+    ];
+    for (const [verifyOtp, code] of cases) {
+      const { provider } = make(makeClient({ verifyOtp }));
+      expect(((await caught(provider.openSessionWithoutEmail({ email: "a@x.com" }))) as AuthProviderError).code).toBe(code);
+    }
+  });
+
+  test("never logs or returns the code or token, and errors carry no vendor text", async () => {
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
+    const leaky = new AuthApiError(`bad ${MINT_CODE} ${TOKEN} for ada@example.com`, 500, "unexpected_failure");
+    const texts: string[] = [];
+    const { provider } = make();
+    texts.push(JSON.stringify(await provider.openSessionWithoutEmail({ email: "ada@example.com" })));
+    for (const [client, admin] of [
+      [makeClient({ verifyOtp: fails(leaky) }), makeAdmin()],
+      [makeClient(), makeAdmin(undefined, fails(leaky))],
+    ] as const) {
+      const e = (await caught(make(client, admin).provider.openSessionWithoutEmail({ email: "ada@example.com" }))) as Error;
+      texts.push(e.message, String(e.stack));
+    }
+    texts.push(...spies.flatMap((s) => s.mock.calls.flat().map(String)));
+    for (const text of texts) {
+      expect(text).not.toContain(MINT_CODE);
+      expect(text).not.toContain(TOKEN);
+      expect(text).not.toContain("ada@example.com");
+    }
   });
 });
 

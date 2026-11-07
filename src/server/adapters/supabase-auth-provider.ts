@@ -32,6 +32,10 @@ import { authCookieOptions, siteUsesHttps } from "./supabase-auth-cookies";
     current_password_required and changes nothing (mapped to unavailable);
   - a second signUp, resend or resetPasswordForEmail to one address 3 s after the first
     answers 429 over_email_send_rate_limit (mapped to rate_limited).
+  - (probes p, q) after a scramble, admin generateLink({ type: "recovery" }) returns the code
+    in its response (no email; recovery_sent_at is set) and verifyOtp with it on a
+    cookie-bound client stores a working session (getUser, refresh, updateUser all work),
+    with or without an earlier password: openSessionWithoutEmail.
 */
 
 export type CookieJar = {
@@ -43,7 +47,9 @@ export type CookieJar = {
 export type SupabaseAuthClient = Pick<SupabaseClient, "auth">;
 
 /** The part of the service-role (admin) client this adapter uses. Tests pass a stand-in. */
-export type SupabaseAdminClient = { auth: { admin: Pick<SupabaseClient["auth"]["admin"], "updateUserById"> } };
+export type SupabaseAdminClient = {
+  auth: { admin: Pick<SupabaseClient["auth"]["admin"], "updateUserById" | "generateLink"> };
+};
 
 const INVALID_CODE: VerifyCodeResult = { ok: false, reason: "invalid_or_expired" };
 
@@ -161,6 +167,21 @@ export function createSupabaseAuthProvider(
         }),
       );
       if (error) throw toProviderError(error);
+    },
+
+    /** Server only, right after the request proved ownership (see the port). Never logs the code. */
+    async openSessionWithoutEmail({ email }) {
+      const adminApi = getAdmin().auth.admin;
+      // The admin client makes a recovery code and returns it instead of emailing it (probe p).
+      const link = await call(() => adminApi.generateLink({ type: "recovery", email }));
+      if (link.error) throw toProviderError(link.error);
+      const code = link.data.properties?.email_otp;
+      if (!code) throw new AuthProviderError("unavailable", "The sign-in service could not complete the request.");
+      // Redeemed on the cookie-bound client, so the new session is stored in this browser.
+      const { data, error } = await call(() => auth.verifyOtp({ email, token: code, type: "recovery" }));
+      if (error) throw toProviderError(error);
+      if (!data.user || !data.session) throw new AuthProviderError("unavailable", "The sign-in service could not complete the request.");
+      return { userId: data.user.id };
     },
 
     /** @deprecated Link flow; Task 5 removes it. */

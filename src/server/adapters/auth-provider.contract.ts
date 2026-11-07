@@ -309,6 +309,60 @@ function runCodeContract(make: () => ContractContext) {
       expect(await provider.signInWithPassword({ email: EMAIL, password: "a chosen password" })).toEqual({ ok: true });
     });
 
+    // Ruling P9, probe (p): the chosen design-5.1 order. The scramble kills every session; the
+    // server then opens a fresh one without email, from which the person sets a password.
+    test("the chosen order: verify, scramble, openSessionWithoutEmail, then updatePassword sets the password", async () => {
+      const ctx = make();
+      const { provider } = ctx;
+      const { userId } = await provider.signUpWithPassword(sign());
+      expect((await provider.verifyCode({ email: EMAIL, code: codeFor(ctx, EMAIL, "signup"), kind: "signup" })).ok).toBe(true);
+      const there = ctx.otherDevice();
+      await there.signInWithPassword({ email: EMAIL, password: PASSWORD });
+      await provider.scramblePassword(userId);
+      expect(await provider.getUser()).toBeNull();
+      const before = ctx.outbox.entries.length;
+
+      await expect(provider.openSessionWithoutEmail({ email: EMAIL })).resolves.toEqual({ userId });
+      expect(ctx.outbox.entries.length).toBe(before);
+      expect((await provider.getUser())?.id).toBe(userId);
+      // Only this browser gets the session; the stranger's device stays out.
+      expect(await there.getUser()).toBeNull();
+
+      await provider.updatePassword("a chosen password");
+      await provider.signOut();
+      expect(await provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({
+        ok: false,
+        reason: "invalid_credentials",
+      });
+      expect(await provider.signInWithPassword({ email: EMAIL, password: "a chosen password" })).toEqual({ ok: true });
+    });
+
+    // Probe (q): the same works for an account that never had a password (the Google repair).
+    test("openSessionWithoutEmail restores a session for an account that never had a password, after a scramble", async () => {
+      const ctx = make();
+      const { provider } = ctx;
+      const { url } = await provider.startGoogleSignIn({ redirectTo: "http://localhost:3000/auth/callback" });
+      expect(await provider.completeOAuth(new URL(url, "http://localhost").searchParams.get("code")!)).toBe(true);
+      const user = (await provider.getUser())!;
+      await provider.scramblePassword(user.id);
+      expect(await provider.getUser()).toBeNull();
+
+      await expect(provider.openSessionWithoutEmail({ email: user.email })).resolves.toEqual({ userId: user.id });
+      expect((await provider.getUser())?.id).toBe(user.id);
+      await provider.updatePassword("an added password");
+      await provider.signOut();
+      expect(await provider.signInWithPassword({ email: user.email, password: "an added password" })).toEqual({ ok: true });
+    });
+
+    test("openSessionWithoutEmail for an unknown address is unavailable and opens nothing", async () => {
+      const ctx = make();
+      await expect(ctx.provider.openSessionWithoutEmail({ email: "nobody@example.com" })).rejects.toMatchObject({
+        code: "unavailable",
+      });
+      expect(await ctx.provider.getUser()).toBeNull();
+      expect(ctx.outbox.entries).toHaveLength(0);
+    });
+
     // Probe (n): a second sign-up, resend or recovery email to one address within seconds gets
     // 429 over_email_send_rate_limit, which is rate_limited here.
     test("with the per-address email interval on, a second email within the interval is rate_limited", async () => {
