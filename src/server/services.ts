@@ -6,9 +6,11 @@ import { emailSendKey } from "@/server/auth/rate-limit-policy";
 import { createSmtpEmailSenderFromConfig } from "@/server/adapters/smtp-email-sender";
 import { createS3FileStorage } from "@/server/adapters/s3-file-storage";
 import { createSupabaseAuthProvider } from "@/server/adapters/supabase-auth-provider";
+import { createAccountDirectory } from "@/server/db/account-directory";
 import { getDb } from "@/server/db/client";
 import { createPostgresRateLimiter } from "@/server/db/postgres-rate-limiter";
 import { getServerEnv } from "@/server/env";
+import type { AccountDirectory } from "@/server/ports/account-directory";
 import type { AuthProvider } from "@/server/ports/auth-provider";
 import type { EmailSender } from "@/server/ports/email-sender";
 import type { FileStorage } from "@/server/ports/file-storage";
@@ -97,6 +99,7 @@ export async function getAuthProvider(): Promise<AuthProvider> {
 
 const MEMORY_LIMITER_KEY = "__studyShareMemoryRateLimiter";
 let postgresLimiter: RateLimiter | undefined;
+let accountDirectory: AccountDirectory | undefined;
 
 /** Test mode's one limiter. On globalThis, like the fake auth store, because Next.js can bundle
  * server actions and route handlers separately and each would get its own copy. */
@@ -109,6 +112,12 @@ export function getRateLimiter(): RateLimiter {
   if (getServerEnv().SERVICES_MODE === "fake") return memoryLimiter();
   postgresLimiter ??= createPostgresRateLimiter(getDb());
   return postgresLimiter;
+}
+
+/** Who has an account, and removal of unconfirmed sign-ups: SQL on the auth schema over the database connection. */
+export function getAccountDirectory(): AccountDirectory {
+  accountDirectory ??= createAccountDirectory(getDb());
+  return accountDirectory;
 }
 
 /**

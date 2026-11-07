@@ -3,21 +3,13 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { afterAll, describe, expect, test } from "vitest";
 import { runRateLimiterContract } from "@/server/adapters/rate-limiter.contract";
-import { PRODUCTION_PROJECT_REFS } from "@/server/production-projects";
 import { createPostgresRateLimiter } from "./postgres-rate-limiter";
 import * as schema from "./schema";
+import { testDatabaseUrl } from "./test-database-url";
 
-// Runs against a real Postgres. Locally it is skipped unless TEST_DATABASE_URL
-// is set. In CI it must never be skipped, so a missing URL fails loudly.
-const url = process.env.TEST_DATABASE_URL;
-if (!url && process.env.CI) {
-  throw new Error("TEST_DATABASE_URL must be set in CI");
-}
-// These tests write to auth.users and rate_limits. They clean up after themselves
-// but must never be pointed at real user data.
-if (url && PRODUCTION_PROJECT_REFS.some((ref) => url.includes(ref))) {
-  throw new Error("TEST_DATABASE_URL points at a production project. Refusing to run database tests.");
-}
+// Runs against a real Postgres. Locally it is skipped unless TEST_DATABASE_URL is set; in CI
+// a missing URL fails loudly, and a production URL is always refused.
+const url = testDatabaseUrl();
 
 class Rollback extends Error {}
 
