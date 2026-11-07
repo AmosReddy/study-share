@@ -15,10 +15,41 @@ const { getServerEnv, cookies } = vi.hoisted(() => ({
   cookies: vi.fn(),
 }));
 
+const { getDb, createAccountDirectory } = vi.hoisted(() => ({
+  getDb: vi.fn(() => ({ execute: vi.fn() })),
+  createAccountDirectory: vi.fn(() => ({ sql: true })),
+}));
+
 vi.mock("next/headers", () => ({ cookies }));
 vi.mock("@/server/env", () => ({ getServerEnv }));
+vi.mock("@/server/db/client", () => ({ getDb }));
+vi.mock("@/server/db/account-directory", () => ({ createAccountDirectory }));
 
-import { getAuthProvider } from "./services";
+import { getFakeAuthStore, resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
+import { getAccountDirectory, getAuthProvider } from "./services";
+
+describe("getAccountDirectory", () => {
+  beforeEach(() => {
+    getDb.mockClear();
+    createAccountDirectory.mockClear();
+  });
+
+  it("in fake mode is the fake directory over the shared fake auth store, and never opens the database", async () => {
+    getServerEnv.mockReturnValueOnce({ SERVICES_MODE: "fake" } as never);
+    resetFakeAuthStore();
+    const directory = getAccountDirectory();
+    expect(await directory.describeEmail("nobody@example.com")).toEqual({ kind: "none" });
+    expect(getFakeAuthStore().users.size).toBe(0);
+    expect(getDb).not.toHaveBeenCalled();
+    expect(createAccountDirectory).not.toHaveBeenCalled();
+  });
+
+  it("otherwise is the SQL directory", () => {
+    getServerEnv.mockReturnValueOnce({ SERVICES_MODE: "real" } as never);
+    expect(getAccountDirectory()).toEqual({ sql: true });
+    expect(createAccountDirectory).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("getAuthProvider", () => {
   beforeEach(() => {

@@ -1,13 +1,25 @@
-import { AuthProviderError, type AuthProvider, type AuthUser } from "../ports/auth-provider";
+import { CODE_LENGTH } from "@/shared/auth-schemas";
+import { AuthProviderError, type AuthProvider, type AuthUser, type CodeKind, type VerifyCodeResult } from "../ports/auth-provider";
 
 /*
   Test-mode sign-in. No vendor library and no network. Passwords are kept as
   plain text in memory because this fake only runs in test mode; they are never
   logged or put in an error. Emails are "sent" to an in-memory outbox so tests
-  can follow the links.
+  can read the codes (and, for the deprecated link flow, follow the links).
+
+  It mirrors the GoTrue behaviours the use-cases rely on (checked live, Task 1):
+  a repeat sign-up of an unconfirmed address keeps the FIRST password and the same
+  user id; an unconfirmed user's sign-in answers email_not_confirmed only for the
+  right password; a newer code (resend or repeat sign-up) supersedes the earlier one;
+  every bad code gets the one failure reason; signOut-others ends the user's other
+  sessions but not this one.
 */
 
-export type FakeOutboxEntry = { to: string; kind: "confirm" | "reset"; url: string };
+/** @deprecated A link email (the link flow). Task 5 deletes it. */
+export type FakeLinkEntry = { to: string; kind: "confirm" | "reset"; url: string };
+/** A code email, as the real templates send: the code only. */
+export type FakeCodeEntry = { to: string; kind: "code"; purpose: CodeKind; code: string };
+export type FakeOutboxEntry = FakeLinkEntry | FakeCodeEntry;
 
 export class FakeOutbox {
   readonly entries: FakeOutboxEntry[] = [];
@@ -16,27 +28,54 @@ export class FakeOutbox {
     this.entries.push(entry);
   }
 
-  lastFor(email: string): FakeOutboxEntry | undefined {
+  /** The newest email of any kind to an address. */
+  latestFor(email: string): FakeOutboxEntry | undefined {
+    return this.newest(email, () => true);
+  }
+
+  /** The newest code email to an address. */
+  lastCodeFor(email: string): FakeCodeEntry | undefined {
+    return this.newest(email, (e): e is FakeCodeEntry => e.kind === "code");
+  }
+
+  /** @deprecated The newest LINK email to an address (code emails are skipped). Task 5 deletes it. */
+  lastFor(email: string): FakeLinkEntry | undefined {
+    return this.newest(email, (e): e is FakeLinkEntry => e.kind !== "code");
+  }
+
+  private newest<T extends FakeOutboxEntry>(email: string, match: (e: FakeOutboxEntry) => e is T): T | undefined;
+  private newest(email: string, match: (e: FakeOutboxEntry) => boolean): FakeOutboxEntry | undefined;
+  private newest(email: string, match: (e: FakeOutboxEntry) => boolean): FakeOutboxEntry | undefined {
     const to = normaliseEmail(email);
     for (let i = this.entries.length - 1; i >= 0; i--) {
-      if (this.entries[i].to === to) return this.entries[i];
+      if (this.entries[i].to === to && match(this.entries[i])) return this.entries[i];
     }
     return undefined;
   }
 }
 
-type FakeUser = {
+export type FakeIdentity = { provider: "email" | "google"; verified: boolean };
+
+export type FakeUser = {
   id: string;
   email: string;
-  password: string;
+  /** null (or "") when no password was ever set, as for a Google-only account. */
+  password: string | null;
   displayName: string;
   termsVersion: string | null;
   confirmed: boolean;
+  identities: FakeIdentity[];
 };
+
+type FakeCode = { userId: string; kind: CodeKind; code: string; expired: boolean };
 
 export type FakeAuthStore = {
   users: Map<string, FakeUser>;
-  /** Single-use email tokens. */
+  /** Session id (the cookie value) to user id. */
+  sessions: Map<string, string>;
+  /** The one live code per user and kind, keyed `${userId}:${kind}`. A newer code replaces it. */
+  codes: Map<string, FakeCode>;
+  /** @deprecated Single-use link tokens (the link flow). Task 5 deletes them. */
   tokens: Map<string, { userId: string; type: "email" | "recovery" }>;
   /** Single-use codes handed out by startGoogleSignIn. */
   oauthCodes: Set<string>;
@@ -52,7 +91,15 @@ export type FakeCookies = {
 };
 
 export function createFakeAuthStore(): FakeAuthStore {
-  return { users: new Map(), tokens: new Map(), oauthCodes: new Set(), outbox: new FakeOutbox(), failNextSignOut: false };
+  return {
+    users: new Map(),
+    sessions: new Map(),
+    codes: new Map(),
+    tokens: new Map(),
+    oauthCodes: new Set(),
+    outbox: new FakeOutbox(),
+    failNextSignOut: false,
+  };
 }
 
 const STORE_KEY = "__studyShareFakeAuthStore";
@@ -75,18 +122,58 @@ export function getFakeAuthStore(): FakeAuthStore {
 export function resetFakeAuthStore(): void {
   const store = getFakeAuthStore();
   store.users.clear();
+  store.sessions.clear();
+  store.codes.clear();
   store.tokens.clear();
   store.oauthCodes.clear();
   store.outbox.entries.length = 0;
   store.failNextSignOut = false;
 }
 
+/**
+ * Test mode only: every code issued so far stops working, as if their ten minutes had passed.
+ * Codes sent afterwards work. Browser tests call it through POST /api/test/expire-codes.
+ */
+export function expireAllCodes(store: FakeAuthStore = getFakeAuthStore()): void {
+  for (const code of store.codes.values()) code.expired = true;
+}
+
+/** Removes a user with everything that points at it (sessions, codes, link tokens). */
+export function deleteFakeUser(store: FakeAuthStore, userId: string): void {
+  store.users.delete(userId);
+  for (const [sid, uid] of store.sessions) if (uid === userId) store.sessions.delete(sid);
+  for (const [key, code] of store.codes) if (code.userId === userId) store.codes.delete(key);
+  for (const [token, t] of store.tokens) if (t.userId === userId) store.tokens.delete(token);
+}
+
+export function findFakeUserByEmail(store: FakeAuthStore, email: string): FakeUser | undefined {
+  const wanted = normaliseEmail(email);
+  for (const u of store.users.values()) if (u.email === wanted) return u;
+  return undefined;
+}
+
 const SESSION_COOKIE = "fake-auth-session";
 const MIN_PASSWORD_LENGTH = 8;
 const GOOGLE_EMAIL = "google.user@example.test";
 
-function normaliseEmail(email: string) {
+export function normaliseEmail(email: string) {
   return email.trim().toLowerCase();
+}
+
+/** CODE_LENGTH random digits, uniformly (bytes of 250 or more are drawn again). */
+function randomDigits(): string {
+  let out = "";
+  while (out.length < CODE_LENGTH) {
+    for (const byte of crypto.getRandomValues(new Uint8Array(CODE_LENGTH * 2))) {
+      if (byte < 250 && out.length < CODE_LENGTH) out += String(byte % 10);
+    }
+  }
+  return out;
+}
+
+/** A value nobody knows, standing in for an admin-set random password. */
+function randomSecret(): string {
+  return `${crypto.randomUUID()}${crypto.randomUUID()}`;
 }
 
 export function createFakeAuthProvider(deps: {
@@ -95,14 +182,16 @@ export function createFakeAuthProvider(deps: {
 }): AuthProvider & { outbox: FakeOutbox } {
   const { store, cookies } = deps;
 
-  const findByEmail = (email: string) => {
-    const wanted = normaliseEmail(email);
-    for (const u of store.users.values()) if (u.email === wanted) return u;
-    return undefined;
+  const findByEmail = (email: string) => findFakeUserByEmail(store, email);
+
+  const currentSession = () => {
+    const sid = cookies.get(SESSION_COOKIE);
+    return sid && store.sessions.has(sid) ? sid : undefined;
   };
 
   const currentUser = () => {
-    const id = cookies.get(SESSION_COOKIE);
+    const sid = currentSession();
+    const id = sid ? store.sessions.get(sid) : undefined;
     return id ? store.users.get(id) : undefined;
   };
 
@@ -112,8 +201,28 @@ export function createFakeAuthProvider(deps: {
     return u;
   };
 
-  const signInAs = (u: FakeUser) => cookies.set(SESSION_COOKIE, u.id);
+  /** A new session for this browser (replacing the one it had). */
+  const signInAs = (u: FakeUser) => {
+    const old = cookies.get(SESSION_COOKIE);
+    if (old) store.sessions.delete(old);
+    const sid = crypto.randomUUID();
+    store.sessions.set(sid, u.id);
+    cookies.set(SESSION_COOKIE, sid);
+  };
 
+  const confirm = (u: FakeUser) => {
+    u.confirmed = true;
+    for (const identity of u.identities) if (identity.provider === "email") identity.verified = true;
+  };
+
+  /** Emails a new code; it replaces (supersedes) the user's earlier code of that kind. */
+  function issueCode(user: FakeUser, kind: CodeKind) {
+    const code = randomDigits();
+    store.codes.set(`${user.id}:${kind}`, { userId: user.id, kind, code, expired: false });
+    store.outbox.add({ to: user.email, kind: "code", purpose: kind, code });
+  }
+
+  /** @deprecated Link flow. */
   function issueToken(user: FakeUser, type: "email" | "recovery", redirectTo: string) {
     const token = crypto.randomUUID();
     store.tokens.set(token, { userId: user.id, type });
@@ -123,6 +232,12 @@ export function createFakeAuthProvider(deps: {
       kind: type === "email" ? "confirm" : "reset",
       url: `/auth/confirm?${query.toString()}`,
     });
+  }
+
+  /** The sign-up email: a code, or (deprecated, when redirectTo is given) a link. */
+  function sendSignUpEmail(user: FakeUser, redirectTo: string | undefined) {
+    if (redirectTo) issueToken(user, "email", redirectTo);
+    else issueCode(user, "signup");
   }
 
   const toAuthUser = (u: FakeUser): AuthUser => ({
@@ -144,10 +259,12 @@ export function createFakeAuthProvider(deps: {
       if (password.length < MIN_PASSWORD_LENGTH) throw new AuthProviderError("weak_password");
       const existing = findByEmail(email);
       if (existing) {
-        // Same outward result as a new sign-up. Like real Supabase (checked live with
-        // npm run check:auth-behaviour), the first password is kept, confirmed or not.
-        if (!existing.confirmed) issueToken(existing, "email", redirectTo);
-        return;
+        // Like real Supabase (checked live), the first password is kept, confirmed or not.
+        // Unconfirmed: the same user, and a new email that supersedes the earlier code.
+        // Confirmed: nothing is sent and the id is a stand-in, as Supabase obfuscates it.
+        if (existing.confirmed) return { userId: crypto.randomUUID() };
+        sendSignUpEmail(existing, redirectTo);
+        return { userId: existing.id };
       }
       const user: FakeUser = {
         id: crypto.randomUUID(),
@@ -156,19 +273,37 @@ export function createFakeAuthProvider(deps: {
         displayName,
         termsVersion,
         confirmed: false,
+        identities: [{ provider: "email", verified: false }],
       };
       store.users.set(user.id, user);
-      issueToken(user, "email", redirectTo);
+      sendSignUpEmail(user, redirectTo);
+      return { userId: user.id };
     },
 
-    async resendConfirmation({ email, redirectTo }) {
+    async resendSignUpCode({ email }) {
       const u = findByEmail(email);
-      if (u && !u.confirmed) issueToken(u, "email", redirectTo);
+      if (u && !u.confirmed) issueCode(u, "signup");
+    },
+
+    async sendPasswordResetCode({ email }) {
+      const u = findByEmail(email);
+      if (u) issueCode(u, "recovery");
+    },
+
+    async verifyCode({ email, code, kind }): Promise<VerifyCodeResult> {
+      const u = findByEmail(email);
+      const live = u ? store.codes.get(`${u.id}:${kind}`) : undefined;
+      if (!u || !live || live.expired || live.code !== code) return { ok: false, reason: "invalid_or_expired" };
+      store.codes.delete(`${u.id}:${kind}`);
+      // A recovery code proves the mailbox too, as in GoTrue.
+      confirm(u);
+      signInAs(u);
+      return { ok: true, userId: u.id };
     },
 
     async signInWithPassword({ email, password }) {
       const u = findByEmail(email);
-      if (!u || u.password !== password) return { ok: false, reason: "invalid_credentials" };
+      if (!u || !u.password || u.password !== password) return { ok: false, reason: "invalid_credentials" };
       if (!u.confirmed) return { ok: false, reason: "email_not_confirmed" };
       signInAs(u);
       return { ok: true };
@@ -177,7 +312,8 @@ export function createFakeAuthProvider(deps: {
     async startGoogleSignIn({ redirectTo }) {
       const code = crypto.randomUUID();
       store.oauthCodes.add(code);
-      const query = new URLSearchParams({ code, redirect_to: redirectTo });
+      // prompt=select_account, as the real adapter asks Google, so browser tests can check it.
+      const query = new URLSearchParams({ code, redirect_to: redirectTo, prompt: "select_account" });
       return { url: `/fake-google?${query.toString()}` };
     },
 
@@ -188,38 +324,34 @@ export function createFakeAuthProvider(deps: {
         u = {
           id: crypto.randomUUID(),
           email: GOOGLE_EMAIL,
-          password: crypto.randomUUID(),
+          password: null,
           displayName: "Google User",
           termsVersion: null,
           confirmed: true,
+          identities: [],
         };
         store.users.set(u.id, u);
       }
+      if (!u.identities.some((i) => i.provider === "google")) u.identities.push({ provider: "google", verified: true });
       u.confirmed = true;
       signInAs(u);
       return true;
     },
 
-    async confirmEmailToken({ tokenHash, type }) {
-      const pending = store.tokens.get(tokenHash);
-      if (!pending || pending.type !== type) return false;
-      store.tokens.delete(tokenHash);
-      const u = store.users.get(pending.userId);
-      if (!u) return false;
-      u.confirmed = true;
-      signInAs(u);
-      return true;
-    },
-
-    async sendPasswordReset({ email, redirectTo }) {
-      const u = findByEmail(email);
-      if (u) issueToken(u, "recovery", redirectTo);
-    },
-
-    async updatePassword(newPassword) {
+    async updatePassword(newPassword, opts) {
       const u = requireUser();
       if (newPassword.length < MIN_PASSWORD_LENGTH) throw new AuthProviderError("weak_password");
       u.password = newPassword;
+      if (opts?.signOutOthers) {
+        const here = currentSession();
+        for (const [sid, uid] of store.sessions) if (uid === u.id && sid !== here) store.sessions.delete(sid);
+      }
+    },
+
+    async scramblePassword(userId) {
+      const u = store.users.get(userId);
+      if (!u) throw new AuthProviderError("unavailable", "The account could not be updated.");
+      u.password = randomSecret();
     },
 
     async acceptTerms({ termsVersion }) {
@@ -235,7 +367,33 @@ export function createFakeAuthProvider(deps: {
         store.failNextSignOut = false;
         throw new AuthProviderError("unavailable", "Sign-out failed (test mode).");
       }
+      const sid = cookies.get(SESSION_COOKIE);
+      if (sid) store.sessions.delete(sid);
       cookies.delete(SESSION_COOKIE);
+    },
+
+    /** @deprecated Link flow; Task 5 removes it. */
+    async resendConfirmation({ email, redirectTo }) {
+      const u = findByEmail(email);
+      if (u && !u.confirmed) issueToken(u, "email", redirectTo);
+    },
+
+    /** @deprecated Link flow; Task 5 removes it. */
+    async confirmEmailToken({ tokenHash, type }) {
+      const pending = store.tokens.get(tokenHash);
+      if (!pending || pending.type !== type) return false;
+      store.tokens.delete(tokenHash);
+      const u = store.users.get(pending.userId);
+      if (!u) return false;
+      confirm(u);
+      signInAs(u);
+      return true;
+    },
+
+    /** @deprecated Link flow; Task 5 removes it. */
+    async sendPasswordReset({ email, redirectTo }) {
+      const u = findByEmail(email);
+      if (u) issueToken(u, "recovery", redirectTo);
     },
   };
 }

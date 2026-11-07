@@ -2,6 +2,16 @@ export type AuthUser = { id: string; email: string; displayName: string; termsVe
 
 export type SignInResult = { ok: true } | { ok: false; reason: "invalid_credentials" | "email_not_confirmed" };
 
+/** Which emailed code: the one that confirms a sign-up, or the one for a forgotten password. */
+export type CodeKind = "signup" | "recovery";
+
+/**
+ * The result of checking an emailed code. On success a session now exists for `userId`.
+ * There is one failure reason on purpose: the provider answers a wrong, used, superseded and
+ * expired code identically (checked live, Task 1), so nothing finer can be told honestly.
+ */
+export type VerifyCodeResult = { ok: true; userId: string } | { ok: false; reason: "invalid_or_expired" };
+
 export class AuthProviderError extends Error {
   code: "rate_limited" | "weak_password" | "unavailable";
 
@@ -12,27 +22,63 @@ export class AuthProviderError extends Error {
   }
 }
 
-/** Sign-in and account operations. `redirectTo` is always an absolute URL on the site. */
+/**
+ * Sign-in and account operations. `redirectTo` is always an absolute URL on the site.
+ *
+ * Errors are AuthProviderError with a fixed message: never vendor text, codes, passwords or
+ * addresses.
+ */
 export interface AuthProvider {
   getUser(): Promise<AuthUser | null>;
-  /** Neutral for an existing email: resolves the same way, so it does not reveal whether the address is registered. */
+  /**
+   * Creates a pending (unconfirmed) account and emails it a sign-up code. Behaves like the
+   * provider does (checked live): a repeat sign-up of an UNCONFIRMED address returns the same
+   * user id, emails a new code (the old one stops working) and keeps the FIRST password; a
+   * sign-up of a confirmed address sends nothing and returns a stand-in id. So the returned id
+   * is not proof of anything: ask the AccountDirectory for the address's state. It may be ""
+   * when the provider gave no id at all.
+   *
+   * `redirectTo` is deprecated (the link flow, removed in Task 5): when it is given, the
+   * confirmation email is the old link email instead of a code.
+   */
   signUpWithPassword(i: {
     email: string;
     password: string;
     displayName: string;
     termsVersion: string;
-    redirectTo: string;
-  }): Promise<void>;
-  /** Neutral. */
-  resendConfirmation(i: { email: string; redirectTo: string }): Promise<void>;
+    /** @deprecated Link flow only. Task 5 removes it. */
+    redirectTo?: string;
+  }): Promise<{ userId: string }>;
+  /** Emails a new sign-up code to a pending account; the earlier code stops working. Neutral for confirmed and unknown addresses. */
+  resendSignUpCode(i: { email: string }): Promise<void>;
+  /** Emails a recovery code. Neutral: resolves the same way for an unknown address. */
+  sendPasswordResetCode(i: { email: string }): Promise<void>;
+  /** Checks an emailed code; a correct sign-up code also confirms the address. Signs in on success. */
+  verifyCode(i: { email: string; code: string; kind: CodeKind }): Promise<VerifyCodeResult>;
   signInWithPassword(i: { email: string; password: string }): Promise<SignInResult>;
+  /** The Google sign-in URL. It always asks Google for the account chooser (prompt=select_account). */
   startGoogleSignIn(i: { redirectTo: string }): Promise<{ url: string }>;
   completeOAuth(code: string): Promise<boolean>;
-  confirmEmailToken(i: { tokenHash: string; type: "email" | "recovery" }): Promise<boolean>;
-  /** Neutral. */
-  sendPasswordReset(i: { email: string; redirectTo: string }): Promise<void>;
-  updatePassword(newPassword: string): Promise<void>;
+  /**
+   * Sets the signed-in user's password. With `signOutOthers`, every other session of the user
+   * is then ended (this one stays). Sessions elsewhere may keep working until their short access
+   * token expires (design 5.4).
+   */
+  updatePassword(newPassword: string, opts?: { signOutOthers?: boolean }): Promise<void>;
+  /**
+   * Replaces the user's password with a random one nobody knows (server-side, admin power). The
+   * value is never returned, logged or kept. Used when a code confirmed an account this browser
+   * did not create (design 5.1), so a stranger's password never survives.
+   */
+  scramblePassword(userId: string): Promise<void>;
   acceptTerms(i: { termsVersion: string }): Promise<void>;
   updateDisplayName(name: string): Promise<void>;
   signOut(): Promise<void>;
+
+  /** @deprecated Link flow. Task 5 removes it; use resendSignUpCode. Neutral. */
+  resendConfirmation(i: { email: string; redirectTo: string }): Promise<void>;
+  /** @deprecated Link flow. Task 5 removes it; use verifyCode. */
+  confirmEmailToken(i: { tokenHash: string; type: "email" | "recovery" }): Promise<boolean>;
+  /** @deprecated Link flow. Task 5 removes it; use sendPasswordResetCode. Neutral. */
+  sendPasswordReset(i: { email: string; redirectTo: string }): Promise<void>;
 }

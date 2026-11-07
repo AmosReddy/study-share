@@ -1,15 +1,25 @@
-import { createFakeAuthProvider, createFakeAuthStore } from "./fake-auth-provider";
+import { createFakeAuthProvider, createFakeAuthStore, expireAllCodes, type FakeAuthStore } from "./fake-auth-provider";
 import { runAuthProviderContract } from "./auth-provider.contract";
 
-runAuthProviderContract(() => {
+function deviceOn(store: FakeAuthStore) {
   const jar = new Map<string, string>();
-  const provider = createFakeAuthProvider({
-    store: createFakeAuthStore(),
+  return createFakeAuthProvider({
+    store,
     cookies: {
       get: (name) => jar.get(name),
       set: (name, value) => void jar.set(name, value),
       delete: (name) => void jar.delete(name),
     },
   });
-  return { provider, outbox: provider.outbox };
+}
+
+runAuthProviderContract(() => {
+  const store = createFakeAuthStore();
+  const provider = deviceOn(store);
+  return {
+    provider,
+    outbox: provider.outbox,
+    otherDevice: () => deviceOn(store),
+    expireAllCodes: () => expireAllCodes(store),
+  };
 });

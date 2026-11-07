@@ -37,6 +37,21 @@ export const resetPasswordSchema = z.object({
   password: newPasswordSchema,
 });
 
+/** Emailed codes are this many digits long (the Supabase "Email OTP length" must match). */
+export const CODE_LENGTH = 6;
+
+const CODE_PATTERN = new RegExp(`^[0-9]{${CODE_LENGTH}}$`);
+
+/**
+ * A typed or pasted code as the CODE_LENGTH digits, or null when it is not one. Spaces and
+ * dashes anywhere are dropped (people paste "123 456" or "123-456"); anything else, such as
+ * letters, other digit scripts or the wrong length, is refused rather than guessed at.
+ */
+export function normalizeCode(input: string): string | null {
+  const code = input.replace(/[\s-]/g, "");
+  return CODE_PATTERN.test(code) ? code : null;
+}
+
 export type SignUpInput = z.infer<typeof signUpSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;

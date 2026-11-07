@@ -1,6 +1,13 @@
+import { randomBytes } from "node:crypto";
 import { createServerClient } from "@supabase/ssr";
-import { isAuthError, isAuthRetryableFetchError, isAuthWeakPasswordError, type SupabaseClient } from "@supabase/supabase-js";
-import { AuthProviderError, type AuthProvider, type AuthUser } from "../ports/auth-provider";
+import {
+  createClient,
+  isAuthError,
+  isAuthRetryableFetchError,
+  isAuthWeakPasswordError,
+  type SupabaseClient,
+} from "@supabase/supabase-js";
+import { AuthProviderError, type AuthProvider, type AuthUser, type VerifyCodeResult } from "../ports/auth-provider";
 import { authCookieOptions, siteUsesHttps } from "./supabase-auth-cookies";
 
 /*
@@ -10,6 +17,10 @@ import { authCookieOptions, siteUsesHttps } from "./supabase-auth-cookies";
 
   Supabase's own error messages are never passed on or logged, because a
   message could echo what was sent. Our errors carry only a fixed message.
+
+  Code facts this relies on (checked live on the dev project, Task 1): verifyOtp with
+  type "signup" accepts a sign-up code and "recovery" a recovery code, both returning a
+  session; a wrong, used, superseded or expired code all answer 403 otp_expired.
 */
 
 export type CookieJar = {
@@ -20,6 +31,14 @@ export type CookieJar = {
 /** The part of the Supabase client this adapter uses. Tests pass a stand-in. */
 export type SupabaseAuthClient = Pick<SupabaseClient, "auth">;
 
+/** The part of the service-role (admin) client this adapter uses. Tests pass a stand-in. */
+export type SupabaseAdminClient = { auth: { admin: Pick<SupabaseClient["auth"]["admin"], "updateUserById"> } };
+
+const INVALID_CODE: VerifyCodeResult = { ok: false, reason: "invalid_or_expired" };
+
+/** Random bytes behind a scrambled password: 256 bits, sent as 43 base64url characters. */
+const SCRAMBLED_PASSWORD_BYTES = 32;
+
 export function createSupabaseAuthProvider(
   deps: {
     url: string;
@@ -27,8 +46,11 @@ export function createSupabaseAuthProvider(
     cookies: CookieJar;
     /** Mark the session cookies Secure. Defaults to whether the site address is https. */
     secureCookies?: boolean;
+    /** Service role key, used only by scramblePassword. Without it that method is unavailable. */
+    serviceRoleKey?: string;
   },
   client?: SupabaseAuthClient,
+  adminClient?: SupabaseAdminClient,
 ): AuthProvider {
   const { auth } =
     client ??
@@ -39,6 +61,20 @@ export function createSupabaseAuthProvider(
         setAll: (items) => deps.cookies.setAll(items),
       },
     });
+
+  /**
+   * The admin client, made on first use. It keeps no session and never sees the request's
+   * cookies: it acts with the service role key only, never as the signed-in person.
+   */
+  let admin = adminClient;
+  function getAdmin(): SupabaseAdminClient {
+    if (admin) return admin;
+    if (!deps.serviceRoleKey) throw new AuthProviderError("unavailable", "The account service is not configured.");
+    admin = createClient(deps.url, deps.serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    return admin;
+  }
 
   /** Runs one Supabase call. A thrown error (rather than a returned one) is a network failure. */
   async function call<T extends { error: unknown }>(run: () => Promise<T>): Promise<T> {
@@ -68,17 +104,51 @@ export function createSupabaseAuthProvider(
     },
 
     async signUpWithPassword({ email, password, displayName, termsVersion, redirectTo }) {
-      const { error } = await call(() =>
-        auth.signUp({
-          email,
-          password,
-          options: { emailRedirectTo: redirectTo, data: { display_name: displayName, terms_version: termsVersion } },
-        }),
-      );
-      // Already registered: answer as for a new address, so the reply does not reveal it.
-      if (error && !isAlreadyRegistered(error)) throw toProviderError(error);
+      const data = { display_name: displayName, terms_version: termsVersion };
+      // redirectTo is the deprecated link flow; without it the email carries the code only.
+      const options = redirectTo ? { emailRedirectTo: redirectTo, data } : { data };
+      const result = await call(() => auth.signUp({ email, password, options }));
+      if (result.error) {
+        // Already registered: answer as for a new address. No id is known; callers ask the AccountDirectory.
+        if (isAlreadyRegistered(result.error)) return { userId: "" };
+        throw toProviderError(result.error);
+      }
+      // For a confirmed address Supabase answers with an obfuscated stand-in user; its id is
+      // returned as is and means nothing on its own (see the port).
+      return { userId: result.data.user?.id ?? "" };
     },
 
+    async resendSignUpCode({ email }) {
+      const { error } = await call(() => auth.resend({ type: "signup", email }));
+      if (error) throw toProviderError(error);
+    },
+
+    async sendPasswordResetCode({ email }) {
+      const { error } = await call(() => auth.resetPasswordForEmail(email));
+      if (error) throw toProviderError(error);
+    },
+
+    async verifyCode({ email, code, kind }) {
+      const { data, error } = await call(() => auth.verifyOtp({ email, token: code, type: kind }));
+      if (error) {
+        // A limit or an outage is not a wrong code: say so, so the person is not told to retype it.
+        if (isRateLimited(error) || isOutage(error)) throw toProviderError(error);
+        return INVALID_CODE;
+      }
+      if (!data.user || !data.session) return INVALID_CODE;
+      return { ok: true, userId: data.user.id };
+    },
+
+    async scramblePassword(userId) {
+      const adminApi = getAdmin().auth.admin;
+      // Kept only in this call's scope: never returned, logged or stored.
+      const { error } = await call(() =>
+        adminApi.updateUserById(userId, { password: randomBytes(SCRAMBLED_PASSWORD_BYTES).toString("base64url") }),
+      );
+      if (error) throw toProviderError(error);
+    },
+
+    /** @deprecated Link flow; Task 5 removes it. */
     async resendConfirmation({ email, redirectTo }) {
       const { error } = await call(() => auth.resend({ type: "signup", email, options: { emailRedirectTo: redirectTo } }));
       if (error) throw toProviderError(error);
@@ -98,7 +168,11 @@ export function createSupabaseAuthProvider(
 
     async startGoogleSignIn({ redirectTo }) {
       const { data, error } = await call(() =>
-        auth.signInWithOAuth({ provider: "google", options: { redirectTo, skipBrowserRedirect: true } }),
+        auth.signInWithOAuth({
+          provider: "google",
+          // Google shows its account chooser every time, so a shared device never signs in as the wrong person.
+          options: { redirectTo, skipBrowserRedirect: true, queryParams: { prompt: "select_account" } },
+        }),
       );
       if (error || !data.url) throw toProviderError(error);
       return { url: data.url };
@@ -109,19 +183,26 @@ export function createSupabaseAuthProvider(
       return !error;
     },
 
+    /** @deprecated Link flow; Task 5 removes it. */
     async confirmEmailToken({ tokenHash, type }) {
       const { error } = await call(() => auth.verifyOtp({ token_hash: tokenHash, type }));
       return !error;
     },
 
+    /** @deprecated Link flow; Task 5 removes it. */
     async sendPasswordReset({ email, redirectTo }) {
       const { error } = await call(() => auth.resetPasswordForEmail(email, { redirectTo }));
       if (error) throw toProviderError(error);
     },
 
-    async updatePassword(newPassword) {
+    async updatePassword(newPassword, opts) {
       const { error } = await call(() => auth.updateUser({ password: newPassword }));
       if (error) throw toProviderError(error);
+      if (!opts?.signOutOthers) return;
+      // Revokes the user's other sessions; this one stays. If it fails the password is already
+      // changed, so the caller is told (unavailable) rather than left believing others are out.
+      const others = await call(() => auth.signOut({ scope: "others" }));
+      if (others.error) throw toProviderError(others.error);
     },
 
     async acceptTerms({ termsVersion }) {
@@ -164,9 +245,18 @@ function isAlreadyRegistered(error: { code?: string; message: string }): boolean
 
 const RATE_LIMIT_CODES = new Set(["over_request_rate_limit", "over_email_send_rate_limit", "over_sms_send_rate_limit"]);
 
+function isRateLimited(error: unknown): boolean {
+  return isAuthError(error) && (error.status === 429 || (!!error.code && RATE_LIMIT_CODES.has(error.code)));
+}
+
+/** The service could not be reached or failed on its side (as opposed to refusing the request). */
+function isOutage(error: unknown): boolean {
+  return isAuthRetryableFetchError(error) || (isAuthError(error) && (error.status ?? 0) >= 500);
+}
+
 function toProviderError(error: unknown): AuthProviderError {
   if (isAuthError(error)) {
-    if (error.status === 429 || (error.code && RATE_LIMIT_CODES.has(error.code))) {
+    if (isRateLimited(error)) {
       return new AuthProviderError("rate_limited", "Too many attempts. Try again later.");
     }
     if (isAuthWeakPasswordError(error) || error.code === "weak_password" || error.code === "same_password") {

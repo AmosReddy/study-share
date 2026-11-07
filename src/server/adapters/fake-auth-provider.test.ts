@@ -1,5 +1,13 @@
 import { describe, expect, test } from "vitest";
-import { createFakeAuthProvider, createFakeAuthStore, getFakeAuthStore, resetFakeAuthStore } from "./fake-auth-provider";
+import { CODE_LENGTH } from "@/shared/auth-schemas";
+import {
+  createFakeAuthProvider,
+  createFakeAuthStore,
+  expireAllCodes,
+  getFakeAuthStore,
+  resetFakeAuthStore,
+  type FakeLinkEntry,
+} from "./fake-auth-provider";
 
 function jar() {
   const m = new Map<string, string>();
@@ -76,7 +84,7 @@ describe("fake outbox", () => {
     const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
     await p.signUpWithPassword(input);
     await p.resendConfirmation({ email: input.email, redirectTo: input.redirectTo });
-    const [first, second] = p.outbox.entries;
+    const [first, second] = p.outbox.entries as FakeLinkEntry[];
     expect(first.to).toBe("ada@example.com");
     expect(first.kind).toBe("confirm");
     expect(first.url.startsWith("/auth/confirm?")).toBe(true);
@@ -127,6 +135,123 @@ describe("fake provider safety", () => {
       code: "weak_password",
     });
     expect(p.outbox.entries).toHaveLength(0);
+  });
+});
+
+const codeInput = { email: "Ada@Example.com", password: "correct horse", displayName: "Ada", termsVersion: "2026-11" };
+
+describe("fake codes", () => {
+  test("a code sign-up records a code email { to, kind: code, purpose, code } with CODE_LENGTH random digits", async () => {
+    const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
+    await p.signUpWithPassword(codeInput);
+    const sent = p.outbox.latestFor("ada@example.com");
+    expect(sent).toEqual({ to: "ada@example.com", kind: "code", purpose: "signup", code: expect.any(String) });
+    expect(sent?.kind === "code" && sent.code).toMatch(new RegExp(`^\\d{${CODE_LENGTH}}$`));
+    expect(p.outbox.lastCodeFor("ADA@example.com")).toBe(sent);
+    // The deprecated link lookup ignores code emails.
+    expect(p.outbox.lastFor("ada@example.com")).toBeUndefined();
+  });
+
+  test("codes are random, not a fixed or counting value", async () => {
+    const store = createFakeAuthStore();
+    const p = createFakeAuthProvider({ store, cookies: jar() });
+    const codes = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      await p.signUpWithPassword({ ...codeInput, email: `r${i}@example.com` });
+      codes.add(p.outbox.lastCodeFor(`r${i}@example.com`)!.code);
+    }
+    expect(codes.size).toBeGreaterThan(15);
+  });
+
+  test("a password reset code is recorded with purpose recovery", async () => {
+    const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
+    await p.signUpWithPassword(codeInput);
+    await p.sendPasswordResetCode({ email: "ada@example.com" });
+    expect(p.outbox.latestFor("ada@example.com")).toMatchObject({ kind: "code", purpose: "recovery" });
+  });
+
+  test("a sign-up with the deprecated redirectTo still records a link, so the existing flow keeps working", async () => {
+    const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
+    await p.signUpWithPassword(input);
+    expect(p.outbox.latestFor("ada@example.com")).toMatchObject({ kind: "confirm" });
+    expect(p.outbox.lastCodeFor("ada@example.com")).toBeUndefined();
+  });
+
+  test("expireAllCodes defaults to the shared store, and a reset clears the expiry and every code", async () => {
+    const store = getFakeAuthStore();
+    resetFakeAuthStore();
+    const p = createFakeAuthProvider({ store, cookies: jar() });
+    await p.signUpWithPassword({ ...codeInput, email: "expire@example.com" });
+    const first = p.outbox.lastCodeFor("expire@example.com")!.code;
+    expireAllCodes();
+    expect(await p.verifyCode({ email: "expire@example.com", code: first, kind: "signup" })).toEqual({
+      ok: false,
+      reason: "invalid_or_expired",
+    });
+    resetFakeAuthStore();
+    expect(store.codes.size).toBe(0);
+    expect(store.sessions.size).toBe(0);
+    await p.signUpWithPassword({ ...codeInput, email: "expire@example.com" });
+    const fresh = p.outbox.lastCodeFor("expire@example.com")!.code;
+    expect((await p.verifyCode({ email: "expire@example.com", code: fresh, kind: "signup" })).ok).toBe(true);
+    resetFakeAuthStore();
+  });
+
+  test("errors never contain a code or a password", async () => {
+    const store = createFakeAuthStore();
+    const p = createFakeAuthProvider({ store, cookies: jar() });
+    const { userId } = await p.signUpWithPassword(codeInput);
+    const code = p.outbox.lastCodeFor(codeInput.email)!.code;
+    const errors: string[] = [];
+    for (const attempt of [
+      () => p.updatePassword("short"),
+      () => p.scramblePassword("no-such-user"),
+      () => p.signUpWithPassword({ ...codeInput, email: "weak@example.com", password: "short" }),
+    ]) {
+      await attempt().catch((e: Error) => errors.push(`${e.message} ${e.stack}`));
+    }
+    expect(errors).toHaveLength(3);
+    for (const message of errors) {
+      expect(message).not.toContain(code);
+      expect(message).not.toContain(codeInput.password);
+      expect(message).not.toContain(userId);
+    }
+  });
+});
+
+describe("fake sessions", () => {
+  test("each sign-in is its own session; signing out ends only this one", async () => {
+    const store = createFakeAuthStore();
+    const a = createFakeAuthProvider({ store, cookies: jar() });
+    const b = createFakeAuthProvider({ store, cookies: jar() });
+    await a.signUpWithPassword(codeInput);
+    await a.verifyCode({ email: codeInput.email, code: a.outbox.lastCodeFor(codeInput.email)!.code, kind: "signup" });
+    await b.signInWithPassword({ email: codeInput.email, password: codeInput.password });
+    await a.signOut();
+    expect(await a.getUser()).toBeNull();
+    expect(await b.getUser()).not.toBeNull();
+  });
+
+  test("the cookie holds a session id, not the user id", async () => {
+    const store = createFakeAuthStore();
+    const cookies = jar();
+    const p = createFakeAuthProvider({ store, cookies });
+    const { userId } = await p.signUpWithPassword(codeInput);
+    await p.verifyCode({ email: codeInput.email, code: p.outbox.lastCodeFor(codeInput.email)!.code, kind: "signup" });
+    const value = cookies.get("fake-auth-session");
+    expect(value).toBeTruthy();
+    expect(value).not.toBe(userId);
+  });
+});
+
+describe("fake Google", () => {
+  test("the sign-in URL asks for the account chooser (prompt=select_account)", async () => {
+    const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
+    const { url } = await p.startGoogleSignIn({ redirectTo: "http://localhost:3000/auth/callback" });
+    const parsed = new URL(url, "http://localhost");
+    expect(parsed.pathname).toBe("/fake-google");
+    expect(parsed.searchParams.get("prompt")).toBe("select_account");
+    expect(parsed.searchParams.get("code")).toBeTruthy();
   });
 });
 

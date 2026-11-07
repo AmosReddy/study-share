@@ -1,10 +1,27 @@
 import { describe, expect, test } from "vitest";
-import type { AuthProvider } from "../ports/auth-provider";
+import { CODE_LENGTH } from "@/shared/auth-schemas";
+import type { AuthProvider, CodeKind } from "../ports/auth-provider";
+
+/** @deprecated A link email. Task 5 deletes the link flow. */
+export type ContractLinkEmail = { to: string; kind: "confirm" | "reset"; url: string };
+export type ContractCodeEmail = { to: string; kind: "code"; purpose: CodeKind; code: string };
 
 /** What the contract needs to read from the test inbox. */
 export type ContractOutbox = {
-  readonly entries: readonly { to: string; kind: "confirm" | "reset"; url: string }[];
-  lastFor(email: string): { to: string; kind: "confirm" | "reset"; url: string } | undefined;
+  readonly entries: readonly (ContractLinkEmail | ContractCodeEmail)[];
+  /** @deprecated The newest LINK email to an address. */
+  lastFor(email: string): ContractLinkEmail | undefined;
+  /** The newest CODE email to an address. */
+  lastCodeFor(email: string): ContractCodeEmail | undefined;
+};
+
+export type ContractContext = {
+  provider: AuthProvider;
+  outbox: ContractOutbox;
+  /** Another browser on the same accounts: its own session, the same users. */
+  otherDevice(): AuthProvider;
+  /** Makes every code issued so far expire, as if ten minutes had passed. */
+  expireAllCodes(): void;
 };
 
 /**
@@ -12,8 +29,252 @@ export type ContractOutbox = {
  * its own empty state, plus a view of the emails it sent (a test inbox).
  * Calling this registers tests, so call it only from a test file.
  */
-export function runAuthProviderContract(make: () => { provider: AuthProvider; outbox: ContractOutbox }) {
-  describe("AuthProvider contract", () => {
+export function runAuthProviderContract(make: () => ContractContext) {
+  runCodeContract(make);
+  runLinkContract(make);
+}
+
+/** A code of the right shape that is not `code`. */
+function otherCode(code: string) {
+  return code
+    .split("")
+    .map((d) => String((Number(d) + 1) % 10))
+    .join("");
+}
+
+function runCodeContract(make: () => ContractContext) {
+  describe("AuthProvider contract: email codes", () => {
+    const PASSWORD = "correct horse";
+    const EMAIL = "ada@example.com";
+    const sign = (email = EMAIL, password = PASSWORD) => ({ email, password, displayName: "Ada", termsVersion: "2026-11" });
+    const INVALID = { ok: false, reason: "invalid_or_expired" } as const;
+
+    function codeFor(ctx: ContractContext, email: string, purpose: CodeKind) {
+      const sent = ctx.outbox.lastCodeFor(email);
+      expect(sent?.purpose).toBe(purpose);
+      return sent!.code;
+    }
+
+    /** A confirmed, signed-out account. */
+    async function confirmed(email = EMAIL) {
+      const ctx = make();
+      const { userId } = await ctx.provider.signUpWithPassword(sign(email));
+      expect(await ctx.provider.verifyCode({ email, code: codeFor(ctx, email, "signup"), kind: "signup" })).toEqual({
+        ok: true,
+        userId,
+      });
+      await ctx.provider.signOut();
+      return { ...ctx, userId };
+    }
+
+    test("sign-up emails a code of CODE_LENGTH digits; the code confirms the address and signs in", async () => {
+      const ctx = make();
+      const { provider } = ctx;
+      const { userId } = await provider.signUpWithPassword(sign());
+      expect(userId).toBeTruthy();
+      const code = codeFor(ctx, EMAIL, "signup");
+      expect(code).toMatch(new RegExp(`^\\d{${CODE_LENGTH}}$`));
+      expect(await provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({
+        ok: false,
+        reason: "email_not_confirmed",
+      });
+
+      expect(await provider.verifyCode({ email: EMAIL, code, kind: "signup" })).toEqual({ ok: true, userId });
+      expect((await provider.getUser())?.id).toBe(userId);
+      await provider.signOut();
+      expect(await provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({ ok: true });
+    });
+
+    test("an unconfirmed account answers email_not_confirmed only for the right password", async () => {
+      const { provider } = make();
+      await provider.signUpWithPassword(sign());
+      expect(await provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({
+        ok: false,
+        reason: "email_not_confirmed",
+      });
+      expect(await provider.signInWithPassword({ email: EMAIL, password: "wrong password" })).toEqual({
+        ok: false,
+        reason: "invalid_credentials",
+      });
+    });
+
+    test("a wrong code gives invalid_or_expired and signs nobody in", async () => {
+      const ctx = make();
+      await ctx.provider.signUpWithPassword(sign());
+      const code = codeFor(ctx, EMAIL, "signup");
+      expect(await ctx.provider.verifyCode({ email: EMAIL, code: otherCode(code), kind: "signup" })).toEqual(INVALID);
+      expect(await ctx.provider.getUser()).toBeNull();
+    });
+
+    test("a code for an unknown address, or of the other kind, gives invalid_or_expired", async () => {
+      const ctx = make();
+      await ctx.provider.signUpWithPassword(sign());
+      const code = codeFor(ctx, EMAIL, "signup");
+      expect(await ctx.provider.verifyCode({ email: "nobody@example.com", code, kind: "signup" })).toEqual(INVALID);
+      expect(await ctx.provider.verifyCode({ email: EMAIL, code, kind: "recovery" })).toEqual(INVALID);
+      expect(await ctx.provider.getUser()).toBeNull();
+    });
+
+    test("a code works once: using it again gives invalid_or_expired", async () => {
+      const ctx = make();
+      await ctx.provider.signUpWithPassword(sign());
+      const code = codeFor(ctx, EMAIL, "signup");
+      expect((await ctx.provider.verifyCode({ email: EMAIL, code, kind: "signup" })).ok).toBe(true);
+      await ctx.provider.signOut();
+      expect(await ctx.provider.verifyCode({ email: EMAIL, code, kind: "signup" })).toEqual(INVALID);
+      expect(await ctx.provider.getUser()).toBeNull();
+    });
+
+    test("a resend supersedes the earlier code: only the newest works", async () => {
+      const ctx = make();
+      const { userId } = await ctx.provider.signUpWithPassword(sign());
+      const first = codeFor(ctx, EMAIL, "signup");
+      await ctx.provider.resendSignUpCode({ email: EMAIL });
+      const second = codeFor(ctx, EMAIL, "signup");
+      if (first !== second) {
+        expect(await ctx.provider.verifyCode({ email: EMAIL, code: first, kind: "signup" })).toEqual(INVALID);
+      }
+      expect(await ctx.provider.verifyCode({ email: EMAIL, code: second, kind: "signup" })).toEqual({ ok: true, userId });
+    });
+
+    test("an expired code gives invalid_or_expired, and a resend gives a code that works", async () => {
+      const ctx = make();
+      const { userId } = await ctx.provider.signUpWithPassword(sign());
+      const code = codeFor(ctx, EMAIL, "signup");
+      ctx.expireAllCodes();
+      expect(await ctx.provider.verifyCode({ email: EMAIL, code, kind: "signup" })).toEqual(INVALID);
+      await ctx.provider.resendSignUpCode({ email: EMAIL });
+      expect(await ctx.provider.verifyCode({ email: EMAIL, code: codeFor(ctx, EMAIL, "signup"), kind: "signup" })).toEqual({
+        ok: true,
+        userId,
+      });
+    });
+
+    // GoTrue does this (Task 1 probe): a repeat sign-up of an UNCONFIRMED address returns the same
+    // user, emails a new code (the old one stops working) and keeps the FIRST password. The
+    // sign-up use-case defends against it (design 5.1).
+    test("signing up twice before confirming returns the same id, supersedes the code and keeps the FIRST password", async () => {
+      const ctx = make();
+      const { provider } = ctx;
+      const first = await provider.signUpWithPassword(sign());
+      const firstCode = codeFor(ctx, EMAIL, "signup");
+      const second = await provider.signUpWithPassword(sign(EMAIL, "another password"));
+      expect(second.userId).toBe(first.userId);
+      const secondCode = codeFor(ctx, EMAIL, "signup");
+      if (firstCode !== secondCode) {
+        expect(await provider.verifyCode({ email: EMAIL, code: firstCode, kind: "signup" })).toEqual(INVALID);
+      }
+      expect(await provider.signInWithPassword({ email: EMAIL, password: "another password" })).toEqual({
+        ok: false,
+        reason: "invalid_credentials",
+      });
+      expect(await provider.verifyCode({ email: EMAIL, code: secondCode, kind: "signup" })).toEqual({
+        ok: true,
+        userId: first.userId,
+      });
+      await provider.signOut();
+      expect(await provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({ ok: true });
+    });
+
+    test("signing up with a confirmed address sends nothing and keeps the password", async () => {
+      const ctx = await confirmed();
+      const before = ctx.outbox.entries.length;
+      await expect(ctx.provider.signUpWithPassword(sign(EMAIL, "another password"))).resolves.toEqual({
+        userId: expect.any(String),
+      });
+      expect(ctx.outbox.entries.length).toBe(before);
+      expect(await ctx.provider.signInWithPassword({ email: EMAIL, password: "another password" })).toEqual({
+        ok: false,
+        reason: "invalid_credentials",
+      });
+      expect(await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({ ok: true });
+    });
+
+    test("resendSignUpCode is neutral: it resolves and sends nothing for a confirmed or unknown address", async () => {
+      const ctx = await confirmed();
+      const before = ctx.outbox.entries.length;
+      await expect(ctx.provider.resendSignUpCode({ email: EMAIL })).resolves.toBeUndefined();
+      await expect(ctx.provider.resendSignUpCode({ email: "nobody@example.com" })).resolves.toBeUndefined();
+      expect(ctx.outbox.entries.length).toBe(before);
+    });
+
+    test("sendPasswordResetCode is neutral: it resolves for an unknown address and sends nothing", async () => {
+      const ctx = make();
+      await expect(ctx.provider.sendPasswordResetCode({ email: "nobody@example.com" })).resolves.toBeUndefined();
+      expect(ctx.outbox.entries).toHaveLength(0);
+    });
+
+    test("a recovery code signs in; updatePassword then sets a new password and the old one stops working", async () => {
+      const ctx = await confirmed();
+      const { provider, userId } = ctx;
+      await expect(provider.sendPasswordResetCode({ email: EMAIL })).resolves.toBeUndefined();
+      const code = codeFor(ctx, EMAIL, "recovery");
+      expect(code).toMatch(new RegExp(`^\\d{${CODE_LENGTH}}$`));
+      expect(await provider.verifyCode({ email: EMAIL, code, kind: "signup" })).toEqual(INVALID);
+      expect(await provider.verifyCode({ email: EMAIL, code, kind: "recovery" })).toEqual({ ok: true, userId });
+      expect((await provider.getUser())?.id).toBe(userId);
+      await provider.updatePassword("a brand new password");
+      await provider.signOut();
+      expect(await provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({
+        ok: false,
+        reason: "invalid_credentials",
+      });
+      expect(await provider.signInWithPassword({ email: EMAIL, password: "a brand new password" })).toEqual({ ok: true });
+    });
+
+    test("updatePassword with signOutOthers keeps this session and ends the one on another device", async () => {
+      const ctx = await confirmed();
+      const here = ctx.provider;
+      const there = ctx.otherDevice();
+      expect(await here.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({ ok: true });
+      expect(await there.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({ ok: true });
+
+      await here.updatePassword("a brand new password", { signOutOthers: true });
+      expect((await here.getUser())?.id).toBe(ctx.userId);
+      expect(await there.getUser()).toBeNull();
+    });
+
+    test("updatePassword without signOutOthers leaves other devices signed in", async () => {
+      const ctx = await confirmed();
+      const there = ctx.otherDevice();
+      await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD });
+      await there.signInWithPassword({ email: EMAIL, password: PASSWORD });
+      await ctx.provider.updatePassword("a brand new password");
+      expect((await there.getUser())?.id).toBe(ctx.userId);
+    });
+
+    test("scramblePassword makes the old password stop working without revealing the new one", async () => {
+      const ctx = await confirmed();
+      const before = ctx.outbox.entries.length;
+      await expect(ctx.provider.scramblePassword(ctx.userId)).resolves.toBeUndefined();
+      expect(ctx.outbox.entries.length).toBe(before);
+      expect(await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({
+        ok: false,
+        reason: "invalid_credentials",
+      });
+      // The person can still choose a password through a recovery code.
+      await ctx.provider.sendPasswordResetCode({ email: EMAIL });
+      await ctx.provider.verifyCode({ email: EMAIL, code: codeFor(ctx, EMAIL, "recovery"), kind: "recovery" });
+      await ctx.provider.updatePassword("a chosen password");
+      await ctx.provider.signOut();
+      expect(await ctx.provider.signInWithPassword({ email: EMAIL, password: "a chosen password" })).toEqual({ ok: true });
+    });
+
+    test("scramblePassword works on an unconfirmed sign-up too, so a stranger's password never survives", async () => {
+      const ctx = make();
+      const { userId } = await ctx.provider.signUpWithPassword(sign());
+      await ctx.provider.scramblePassword(userId);
+      expect(await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({
+        ok: false,
+        reason: "invalid_credentials",
+      });
+    });
+  });
+}
+
+/** @deprecated The link flow. Task 5 deletes these cases with the link methods. */
+function runLinkContract(make: () => ContractContext) {
+  describe("AuthProvider contract (deprecated link flow and shared behaviour)", () => {
     const REDIRECT = "http://localhost:3000/after";
     const PASSWORD = "correct horse";
     const sign = (email = "ada@example.com", password = PASSWORD) => ({
@@ -63,9 +324,11 @@ export function runAuthProviderContract(make: () => { provider: AuthProvider; ou
     // a sign-up confirmation (src/server/auth/email-link.ts).
     test("signing up twice before confirming looks the same and keeps the FIRST password", async () => {
       const { provider, outbox } = make();
-      await expect(provider.signUpWithPassword(sign())).resolves.toBeUndefined();
+      await expect(provider.signUpWithPassword(sign())).resolves.toEqual({ userId: expect.any(String) });
       const afterFirst = outbox.entries.length;
-      await expect(provider.signUpWithPassword(sign("ada@example.com", "another password"))).resolves.toBeUndefined();
+      await expect(provider.signUpWithPassword(sign("ada@example.com", "another password"))).resolves.toEqual({
+        userId: expect.any(String),
+      });
       expect(outbox.entries.length - afterFirst).toBe(afterFirst);
       const link = outbox.lastFor("ada@example.com")!;
       expect(await provider.confirmEmailToken({ tokenHash: tokenOf(link.url), type: "email" })).toBe(true);
@@ -79,7 +342,9 @@ export function runAuthProviderContract(make: () => { provider: AuthProvider; ou
 
     test("signing up again with a confirmed email does not throw or replace the password", async () => {
       const { provider } = await confirmed();
-      await expect(provider.signUpWithPassword(sign("ada@example.com", "another password"))).resolves.toBeUndefined();
+      await expect(provider.signUpWithPassword(sign("ada@example.com", "another password"))).resolves.toEqual({
+        userId: expect.any(String),
+      });
       expect(await provider.signInWithPassword({ email: "ada@example.com", password: "another password" })).toEqual({
         ok: false,
         reason: "invalid_credentials",

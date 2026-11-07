@@ -1,5 +1,6 @@
 import "server-only";
 import { cookies } from "next/headers";
+import { createFakeAccountDirectory } from "@/server/adapters/fake-account-directory";
 import { createFakeAuthProvider, getFakeAuthStore } from "@/server/adapters/fake-auth-provider";
 import { createMemoryRateLimiter, type MemoryRateLimiter } from "@/server/adapters/memory-rate-limiter";
 import { emailSendKey } from "@/server/auth/rate-limit-policy";
@@ -90,6 +91,8 @@ export async function getAuthProvider(): Promise<AuthProvider> {
   return createSupabaseAuthProvider({
     url: env.NEXT_PUBLIC_SUPABASE_URL,
     anonKey: env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    // Only for scramblePassword; the adapter keeps its admin client apart from the cookies.
+    serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
     cookies: {
       getAll: () => store.getAll().map(({ name, value }) => ({ name, value })),
       setAll: (items) => write(() => items.forEach(({ name, value, options }) => store.set(name, value, options))),
@@ -114,8 +117,12 @@ export function getRateLimiter(): RateLimiter {
   return postgresLimiter;
 }
 
-/** Who has an account, and removal of unconfirmed sign-ups: SQL on the auth schema over the database connection. */
+/**
+ * Who has an account, and removal of unconfirmed sign-ups: SQL on the auth schema over the
+ * database connection. In SERVICES_MODE=fake it is the fake directory over the fake auth store.
+ */
 export function getAccountDirectory(): AccountDirectory {
+  if (getServerEnv().SERVICES_MODE === "fake") return createFakeAccountDirectory(getFakeAuthStore());
   accountDirectory ??= createAccountDirectory(getDb());
   return accountDirectory;
 }

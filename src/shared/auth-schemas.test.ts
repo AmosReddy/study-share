@@ -1,11 +1,46 @@
 import { describe, expect, it } from "vitest";
 import {
+  CODE_LENGTH,
   displayNameSchema,
   forgotPasswordSchema,
   loginSchema,
+  normalizeCode,
   resetPasswordSchema,
   signUpSchema,
 } from "./auth-schemas";
+
+describe("normalizeCode", () => {
+  it("is 6 digits long by design", () => {
+    expect(CODE_LENGTH).toBe(6);
+  });
+
+  it.each([
+    ["123456", "123456"],
+    ["123 456", "123456"],
+    ["123-456", "123456"],
+    [" 123456 ", "123456"],
+    ["1 2-3 4-5 6", "123456"],
+    ["\t123456\n", "123456"],
+  ])("accepts %j as %j", (input, expected) => {
+    expect(normalizeCode(input)).toBe(expected);
+  });
+
+  it.each([
+    ["12345", "5 digits"],
+    ["1234567", "7 digits"],
+    ["12345678", "8 digits"],
+    ["12a456", "a letter"],
+    ["abcdef", "letters only"],
+    ["１２３４５６", "full-width digits"],
+    ["١٢٣٤٥٦", "Arabic-Indic digits"],
+    ["123.456", "a dot"],
+    ["", "empty"],
+    ["   ", "spaces only"],
+    ["--", "dashes only"],
+  ])("rejects %j (%s)", (input) => {
+    expect(normalizeCode(input)).toBeNull();
+  });
+});
 
 const valid = {
   displayName: "Ana",

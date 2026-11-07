@@ -1,7 +1,7 @@
 import { AuthApiError, AuthRetryableFetchError, AuthSessionMissingError, AuthWeakPasswordError } from "@supabase/supabase-js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AuthProviderError, type AuthProvider } from "../ports/auth-provider";
-import { createSupabaseAuthProvider, type SupabaseAuthClient } from "./supabase-auth-provider";
+import { createSupabaseAuthProvider, type SupabaseAdminClient, type SupabaseAuthClient } from "./supabase-auth-provider";
 
 /*
   The Supabase client is replaced by a stand-in whose methods return what the
@@ -10,6 +10,8 @@ import { createSupabaseAuthProvider, type SupabaseAuthClient } from "./supabase-
 
 const PASSWORD = "correct horse battery";
 const TOKEN = "secret-token-hash-123";
+const CODE = "482913";
+const USER_ID = "6aa5d0d4-2a9f-4483-b6c8-0cf4c6c98ac4";
 const REDIRECT = "http://localhost:3000/auth/callback";
 
 const ok = (data: unknown = {}) => async () => ({ data, error: null });
@@ -18,12 +20,12 @@ const fails = (error: Error) => async () => ({ data: { user: null, session: null
 function makeClient(overrides: Partial<Record<keyof SupabaseAuthClient["auth"], unknown>> = {}) {
   const auth = {
     getClaims: vi.fn(ok({ claims: null })),
-    signUp: vi.fn(ok({ user: null, session: null })),
+    signUp: vi.fn(ok({ user: { id: "user-1" }, session: null })),
     resend: vi.fn(ok({ user: null, session: null })),
     signInWithPassword: vi.fn(ok({ user: {}, session: {} })),
     signInWithOAuth: vi.fn(ok({ provider: "google", url: "https://accounts.example/authorize" })),
     exchangeCodeForSession: vi.fn(ok({ user: {}, session: {} })),
-    verifyOtp: vi.fn(ok({ user: {}, session: {} })),
+    verifyOtp: vi.fn(ok({ user: { id: "user-1" }, session: { access_token: "a", refresh_token: "r" } })),
     resetPasswordForEmail: vi.fn(ok({})),
     updateUser: vi.fn(ok({ user: {} })),
     refreshSession: vi.fn(ok({ user: {}, session: {} })),
@@ -35,12 +37,25 @@ function makeClient(overrides: Partial<Record<keyof SupabaseAuthClient["auth"], 
   return { auth } as unknown as SupabaseAuthClient & { auth: Record<string, ReturnType<typeof vi.fn>> };
 }
 
-function make(client = makeClient()) {
+function makeAdmin(updateUserById: unknown = ok({ user: { id: USER_ID } })) {
+  const fn = vi.isMockFunction(updateUserById) ? updateUserById : vi.fn(updateUserById as () => unknown);
+  return { auth: { admin: { updateUserById: fn } } } as unknown as SupabaseAdminClient & {
+    auth: { admin: { updateUserById: ReturnType<typeof vi.fn> } };
+  };
+}
+
+function make(client = makeClient(), admin = makeAdmin()) {
   const provider = createSupabaseAuthProvider(
-    { url: "https://example.supabase.co", anonKey: "anon", cookies: { getAll: () => [], setAll: () => {} } },
+    {
+      url: "https://example.supabase.co",
+      anonKey: "anon",
+      serviceRoleKey: "service-role",
+      cookies: { getAll: () => [], setAll: () => {} },
+    },
     client,
+    admin,
   );
-  return { provider, client };
+  return { provider, client, admin };
 }
 
 const rateLimited = new AuthApiError("Request rate limit reached", 429, "over_request_rate_limit");
@@ -66,6 +81,9 @@ const throwingCalls: [string, keyof SupabaseAuthClient["auth"], (p: AuthProvider
   ["updatePassword", "updateUser", (p) => p.updatePassword(PASSWORD)],
   ["acceptTerms", "updateUser", (p) => p.acceptTerms({ termsVersion: "2026-11" })],
   ["updateDisplayName", "updateUser", (p) => p.updateDisplayName("Ada")],
+  ["resendSignUpCode", "resend", (p) => p.resendSignUpCode({ email: "ada@example.com" })],
+  ["sendPasswordResetCode", "resetPasswordForEmail", (p) => p.sendPasswordResetCode({ email: "ada@example.com" })],
+  ["updatePassword (signOutOthers)", "signOut", (p) => p.updatePassword(PASSWORD, { signOutOthers: true })],
 ];
 
 async function caught(promise: Promise<unknown>): Promise<unknown> {
@@ -203,8 +221,184 @@ describe("signUpWithPassword", () => {
       new AuthApiError("Email address already exists", 422, "email_exists"),
     ]) {
       const { provider } = make(makeClient({ signUp: fails(failure) }));
-      await expect(provider.signUpWithPassword(signUpInput)).resolves.toBeUndefined();
+      // No id is known here; the caller asks the AccountDirectory for the address's state.
+      await expect(provider.signUpWithPassword(signUpInput)).resolves.toEqual({ userId: "" });
     }
+  });
+
+  test("returns the pending user's id from the response", async () => {
+    const { provider } = make();
+    expect(await provider.signUpWithPassword(signUpInput)).toEqual({ userId: "user-1" });
+  });
+
+  test("returns the obfuscated id Supabase answers for an already-confirmed address", async () => {
+    const { provider } = make(makeClient({ signUp: ok({ user: { id: "obfuscated-id", identities: [] }, session: null }) }));
+    expect(await provider.signUpWithPassword(signUpInput)).toEqual({ userId: "obfuscated-id" });
+  });
+
+  test("without redirectTo it sends no emailRedirectTo (codes only)", async () => {
+    const { provider, client } = make();
+    const { redirectTo: _unused, ...withoutRedirect } = signUpInput;
+    void _unused;
+    await provider.signUpWithPassword(withoutRedirect);
+    expect(client.auth.signUp).toHaveBeenCalledWith({
+      email: "ada@example.com",
+      password: PASSWORD,
+      options: { data: { display_name: "Ada", terms_version: "2026-11" } },
+    });
+  });
+});
+
+describe("verifyCode", () => {
+  test.each(["signup", "recovery"] as const)("calls verifyOtp with { email, token, type: %s } and returns the user id", async (kind) => {
+    const { provider, client } = make();
+    expect(await provider.verifyCode({ email: "ada@example.com", code: CODE, kind })).toEqual({ ok: true, userId: "user-1" });
+    expect(client.auth.verifyOtp).toHaveBeenCalledWith({ email: "ada@example.com", token: CODE, type: kind });
+  });
+
+  test("every code failure is invalid_or_expired, with no vendor text", async () => {
+    for (const failure of [
+      new AuthApiError("Token has expired or is invalid", 403, "otp_expired"),
+      new AuthApiError("Token has expired or is invalid", 403, undefined),
+      new AuthApiError(`bad ${CODE} for ada@example.com`, 400, "validation_failed"),
+      new AuthApiError("User not found", 404, "user_not_found"),
+    ]) {
+      const { provider } = make(makeClient({ verifyOtp: fails(failure) }));
+      const result = await provider.verifyCode({ email: "ada@example.com", code: CODE, kind: "signup" });
+      expect(result).toEqual({ ok: false, reason: "invalid_or_expired" });
+      expect(JSON.stringify(result)).not.toMatch(/token|expired or|ada@|validation|otp/i);
+    }
+  });
+
+  test("a success with no user or session is not reported as signed in", async () => {
+    const { provider } = make(makeClient({ verifyOtp: ok({ user: null, session: null }) }));
+    expect(await provider.verifyCode({ email: "ada@example.com", code: CODE, kind: "signup" })).toEqual({
+      ok: false,
+      reason: "invalid_or_expired",
+    });
+  });
+
+  test("a rate limit is rate_limited and an outage is unavailable, not a wrong code", async () => {
+    const limited = make(makeClient({ verifyOtp: fails(rateLimited) }));
+    expect(((await caught(limited.provider.verifyCode({ email: "a@x.com", code: CODE, kind: "signup" }))) as AuthProviderError).code).toBe(
+      "rate_limited",
+    );
+    for (const failure of [network, serverDown]) {
+      const down = make(makeClient({ verifyOtp: fails(failure) }));
+      expect(((await caught(down.provider.verifyCode({ email: "a@x.com", code: CODE, kind: "signup" }))) as AuthProviderError).code).toBe(
+        "unavailable",
+      );
+    }
+    const throwing = make(
+      makeClient({
+        verifyOtp: async () => {
+          throw new TypeError("fetch failed");
+        },
+      }),
+    );
+    expect(((await caught(throwing.provider.verifyCode({ email: "a@x.com", code: CODE, kind: "recovery" }))) as AuthProviderError).code).toBe(
+      "unavailable",
+    );
+  });
+});
+
+describe("code emails", () => {
+  test('resendSignUpCode calls resend({ type: "signup", email }) with no redirect', async () => {
+    const { provider, client } = make();
+    await expect(provider.resendSignUpCode({ email: "ada@example.com" })).resolves.toBeUndefined();
+    expect(client.auth.resend).toHaveBeenCalledWith({ type: "signup", email: "ada@example.com" });
+  });
+
+  test("sendPasswordResetCode calls resetPasswordForEmail without a redirect", async () => {
+    const { provider, client } = make();
+    await expect(provider.sendPasswordResetCode({ email: "ada@example.com" })).resolves.toBeUndefined();
+    expect(client.auth.resetPasswordForEmail).toHaveBeenCalledWith("ada@example.com");
+  });
+});
+
+describe("updatePassword", () => {
+  test("with signOutOthers it calls updateUser, then signOut({ scope: others })", async () => {
+    const { provider, client } = make();
+    await provider.updatePassword(PASSWORD, { signOutOthers: true });
+    expect(client.auth.updateUser).toHaveBeenCalledWith({ password: PASSWORD });
+    expect(client.auth.signOut).toHaveBeenCalledWith({ scope: "others" });
+    const order = (fn: unknown) => vi.mocked(fn as () => unknown).mock.invocationCallOrder[0];
+    expect(order(client.auth.updateUser)).toBeLessThan(order(client.auth.signOut));
+  });
+
+  test("without the option it does not sign out other devices", async () => {
+    const { provider, client } = make();
+    await provider.updatePassword(PASSWORD);
+    await provider.updatePassword(PASSWORD, { signOutOthers: false });
+    expect(client.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  test("a failed password change signs nobody out", async () => {
+    const { provider, client } = make(makeClient({ updateUser: fails(rateLimited) }));
+    await caught(provider.updatePassword(PASSWORD, { signOutOthers: true }));
+    expect(client.auth.signOut).not.toHaveBeenCalled();
+  });
+});
+
+describe("scramblePassword", () => {
+  test("sets a strong random password through the admin client and returns nothing", async () => {
+    const { provider, admin, client } = make();
+    await expect(provider.scramblePassword(USER_ID)).resolves.toBeUndefined();
+    expect(admin.auth.admin.updateUserById).toHaveBeenCalledTimes(1);
+    const [userId, attributes] = admin.auth.admin.updateUserById.mock.calls[0] as [string, { password: string }];
+    expect(userId).toBe(USER_ID);
+    expect(Object.keys(attributes)).toEqual(["password"]);
+    // At least 32 characters of a 64-symbol alphabet: 192 bits or more.
+    expect(attributes.password.length).toBeGreaterThanOrEqual(32);
+    expect(attributes.password).toMatch(/^[A-Za-z0-9_-]+$/);
+    // The user's own session client is not used.
+    expect(client.auth.updateUser).not.toHaveBeenCalled();
+  });
+
+  test("uses a new value every time", async () => {
+    const { provider, admin } = make();
+    await provider.scramblePassword(USER_ID);
+    await provider.scramblePassword(USER_ID);
+    const [a, b] = admin.auth.admin.updateUserById.mock.calls.map((c) => (c[1] as { password: string }).password);
+    expect(a).not.toBe(b);
+  });
+
+  test("never logs the value or puts it in an error", async () => {
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
+    let password = "";
+    const leaky = vi.fn(async (_id: string, attrs: { password: string }) => {
+      password = attrs.password;
+      return { data: { user: null }, error: new AuthApiError(`rejected ${attrs.password}`, 500, "unexpected_failure") };
+    });
+    const { provider } = make(makeClient(), makeAdmin(leaky));
+    const error = (await caught(provider.scramblePassword(USER_ID))) as AuthProviderError;
+    expect(error.code).toBe("unavailable");
+    expect(password.length).toBeGreaterThanOrEqual(32);
+    const texts = [error.message, String(error.stack), ...spies.flatMap((s) => s.mock.calls.flat().map(String))];
+    for (const text of texts) expect(text).not.toContain(password);
+  });
+
+  test("errors map as elsewhere: rate limit, outage, a throwing client", async () => {
+    expect(((await caught(make(makeClient(), makeAdmin(fails(rateLimited))).provider.scramblePassword(USER_ID))) as AuthProviderError).code).toBe(
+      "rate_limited",
+    );
+    expect(((await caught(make(makeClient(), makeAdmin(fails(network))).provider.scramblePassword(USER_ID))) as AuthProviderError).code).toBe(
+      "unavailable",
+    );
+    const throwing = makeAdmin(async () => {
+      throw new TypeError("fetch failed");
+    });
+    expect(((await caught(make(makeClient(), throwing).provider.scramblePassword(USER_ID))) as AuthProviderError).code).toBe("unavailable");
+  });
+
+  test("without a service role key it is unavailable", async () => {
+    const provider = createSupabaseAuthProvider(
+      { url: "https://example.supabase.co", anonKey: "anon", cookies: { getAll: () => [], setAll: () => {} } },
+      makeClient(),
+    );
+    const error = (await caught(provider.scramblePassword(USER_ID))) as AuthProviderError;
+    expect(error).toBeInstanceOf(AuthProviderError);
+    expect(error.code).toBe("unavailable");
   });
 });
 
@@ -261,14 +455,14 @@ describe("other operations", () => {
     });
   });
 
-  test('startGoogleSignIn passes provider "google" and the redirectTo, and returns the URL', async () => {
+  test('startGoogleSignIn passes provider "google", the redirectTo and prompt=select_account, and returns the URL', async () => {
     const { provider, client } = make();
     expect(await provider.startGoogleSignIn({ redirectTo: REDIRECT })).toEqual({
       url: "https://accounts.example/authorize",
     });
     expect(client.auth.signInWithOAuth).toHaveBeenCalledWith({
       provider: "google",
-      options: { redirectTo: REDIRECT, skipBrowserRedirect: true },
+      options: { redirectTo: REDIRECT, skipBrowserRedirect: true, queryParams: { prompt: "select_account" } },
     });
   });
 
