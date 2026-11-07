@@ -38,6 +38,12 @@ export interface AuthProvider {
    * is not proof of anything: ask the AccountDirectory for the address's state. It may be ""
    * when the provider gave no id at all.
    *
+   * Email interval (checked live, probe n): the provider allows one sign-up/resend email per
+   * address per about 60 s; a repeat sign-up 3 s after the first throws
+   * AuthProviderError("rate_limited") instead of emailing a new code. Callers must handle
+   * rate_limited, and the sign-up use-case's own one-email-a-minute cooldown must decide first,
+   * so the provider's 429 (which only a pending address gets) is never what the person sees.
+   *
    * `redirectTo` is deprecated (the link flow, removed in Task 5): when it is given, the
    * confirmation email is the old link email instead of a code.
    */
@@ -49,9 +55,16 @@ export interface AuthProvider {
     /** @deprecated Link flow only. Task 5 removes it. */
     redirectTo?: string;
   }): Promise<{ userId: string }>;
-  /** Emails a new sign-up code to a pending account; the earlier code stops working. Neutral for confirmed and unknown addresses. */
+  /**
+   * Emails a new sign-up code to a pending account; the earlier code stops working. Neutral for
+   * confirmed and unknown addresses. Shares the sign-up email interval: a second resend within
+   * about 60 s (observed: 3 s) throws rate_limited (probe n).
+   */
   resendSignUpCode(i: { email: string }): Promise<void>;
-  /** Emails a recovery code. Neutral: resolves the same way for an unknown address. */
+  /**
+   * Emails a recovery code. Neutral: resolves the same way for an unknown address. A second
+   * request for one address within about 60 s (observed: 3 s) throws rate_limited (probe n).
+   */
   sendPasswordResetCode(i: { email: string }): Promise<void>;
   /** Checks an emailed code; a correct sign-up code also confirms the address. Signs in on success. */
   verifyCode(i: { email: string; code: string; kind: CodeKind }): Promise<VerifyCodeResult>;
@@ -60,15 +73,24 @@ export interface AuthProvider {
   startGoogleSignIn(i: { redirectTo: string }): Promise<{ url: string }>;
   completeOAuth(code: string): Promise<boolean>;
   /**
-   * Sets the signed-in user's password. With `signOutOthers`, every other session of the user
-   * is then ended (this one stays). Sessions elsewhere may keep working until their short access
-   * token expires (design 5.4).
+   * Sets the signed-in user's password. Observed (probes l, l2, m):
+   * - it works only from a CODE session (verifyCode, or the deprecated link); from a password
+   *   sign-in session the provider refuses (current_password_required), which is thrown as
+   *   AuthProviderError("unavailable"), and nothing changes;
+   * - on success this session stays, every OTHER session of the user ends at once (access
+   *   token and refresh) even without `signOutOthers`, and outstanding codes stop working.
+   * `signOutOthers` also asks for the sign-out explicitly, so the promise does not depend on
+   * that provider behaviour.
    */
   updatePassword(newPassword: string, opts?: { signOutOthers?: boolean }): Promise<void>;
   /**
    * Replaces the user's password with a random one nobody knows (server-side, admin power). The
-   * value is never returned, logged or kept. Used when a code confirmed an account this browser
-   * did not create (design 5.1), so a stranger's password never survives.
+   * value is never returned, logged or kept, so a stranger's password never survives.
+   *
+   * Observed (probes k, m): it ends EVERY session of the user at once, INCLUDING the caller's
+   * (a session verifyCode just made is gone: getUser is null, updatePassword fails), and
+   * outstanding codes stop working. So "verify a code, scramble, then updatePassword in the
+   * same session" cannot work; after a scramble the person needs a new code to get a session.
    */
   scramblePassword(userId: string): Promise<void>;
   acceptTerms(i: { termsVersion: string }): Promise<void>;

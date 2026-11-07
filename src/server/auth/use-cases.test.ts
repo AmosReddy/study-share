@@ -390,10 +390,13 @@ describe("requestPasswordReset", () => {
 });
 
 describe("resetPassword", () => {
+  /** Signed in by a recovery link: the provider refuses a password change from a password sign-in session. */
   async function signedIn() {
     const ctx = setup();
     await registerConfirmed(ctx.auth, "me@x.com", "old password");
-    await ctx.auth.signInWithPassword({ email: "me@x.com", password: "old password" });
+    await ctx.auth.sendPasswordReset({ email: "me@x.com", redirectTo: `${SITE}/reset-password` });
+    const url = new URL(ctx.auth.outbox.lastFor("me@x.com")!.url, SITE);
+    await ctx.auth.confirmEmailToken({ tokenHash: url.searchParams.get("token_hash")!, type: "recovery" });
     return ctx;
   }
 

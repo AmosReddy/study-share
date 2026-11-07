@@ -22,6 +22,8 @@ export type ContractContext = {
   otherDevice(): AuthProvider;
   /** Makes every code issued so far expire, as if ten minutes had passed. */
   expireAllCodes(): void;
+  /** Turns on the provider's per-address email interval (the real provider always has it). */
+  enforceEmailInterval(): void;
 };
 
 /**
@@ -222,42 +224,109 @@ function runCodeContract(make: () => ContractContext) {
       expect(await provider.signInWithPassword({ email: EMAIL, password: "a brand new password" })).toEqual({ ok: true });
     });
 
+    /** Signs `provider` in with a recovery code: a code session, the kind that may change the password. */
+    async function signInByRecoveryCode(ctx: ContractContext, provider: AuthProvider, email = EMAIL) {
+      await provider.sendPasswordResetCode({ email });
+      expect((await provider.verifyCode({ email, code: codeFor(ctx, email, "recovery"), kind: "recovery" })).ok).toBe(true);
+    }
+
+    test("updatePassword rejects a password under 8 characters with weak_password", async () => {
+      const ctx = await confirmed();
+      await signInByRecoveryCode(ctx, ctx.provider);
+      await expect(ctx.provider.updatePassword("short")).rejects.toMatchObject({ code: "weak_password" });
+    });
+
+    // Probe (l): GoTrue answers 400 current_password_required to a password change from a
+    // password sign-in session, and nothing changes. Password changes happen after a code.
+    test("a password sign-in session cannot change the password: refused as unavailable, nothing changes", async () => {
+      const ctx = await confirmed();
+      const there = ctx.otherDevice();
+      await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD });
+      await there.signInWithPassword({ email: EMAIL, password: PASSWORD });
+      await expect(ctx.provider.updatePassword("a brand new password")).rejects.toMatchObject({ code: "unavailable" });
+      expect((await ctx.provider.getUser())?.id).toBe(ctx.userId);
+      expect((await there.getUser())?.id).toBe(ctx.userId);
+      expect(await ctx.otherDevice().signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({ ok: true });
+    });
+
     test("updatePassword with signOutOthers keeps this session and ends the one on another device", async () => {
       const ctx = await confirmed();
       const here = ctx.provider;
       const there = ctx.otherDevice();
-      expect(await here.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({ ok: true });
       expect(await there.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({ ok: true });
+      await signInByRecoveryCode(ctx, here);
 
       await here.updatePassword("a brand new password", { signOutOthers: true });
       expect((await here.getUser())?.id).toBe(ctx.userId);
       expect(await there.getUser()).toBeNull();
     });
 
-    test("updatePassword without signOutOthers leaves other devices signed in", async () => {
+    // Probes (l2) and (m): a password change from a code session ends the user's other sessions
+    // even without signOut(others), and a recovery code issued before it stops working.
+    test("a password change ends other sessions even without signOutOthers, and outstanding codes stop working", async () => {
       const ctx = await confirmed();
       const there = ctx.otherDevice();
-      await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD });
       await there.signInWithPassword({ email: EMAIL, password: PASSWORD });
+      await signInByRecoveryCode(ctx, ctx.provider);
+      await ctx.provider.sendPasswordResetCode({ email: EMAIL });
+      const outstanding = codeFor(ctx, EMAIL, "recovery");
+
       await ctx.provider.updatePassword("a brand new password");
-      expect((await there.getUser())?.id).toBe(ctx.userId);
+      expect((await ctx.provider.getUser())?.id).toBe(ctx.userId);
+      expect(await there.getUser()).toBeNull();
+      expect(await ctx.otherDevice().verifyCode({ email: EMAIL, code: outstanding, kind: "recovery" })).toEqual(INVALID);
     });
 
-    test("scramblePassword makes the old password stop working without revealing the new one", async () => {
-      const ctx = await confirmed();
+    // Probe (k): an admin password update ends EVERY session of the user, the caller's too, and
+    // (m) outstanding codes. So "verify a code, scramble, then updatePassword in the same
+    // session" does not work: the session is gone. A new code gives a new session.
+    test("the design path: verify a code, then scramblePassword, ends that session; only a new code lets a password be set", async () => {
+      const ctx = make();
+      const { provider } = ctx;
+      const { userId } = await provider.signUpWithPassword(sign());
+      expect((await provider.verifyCode({ email: EMAIL, code: codeFor(ctx, EMAIL, "signup"), kind: "signup" })).ok).toBe(true);
+      const there = ctx.otherDevice();
+      await there.signInWithPassword({ email: EMAIL, password: PASSWORD });
+      await provider.sendPasswordResetCode({ email: EMAIL });
+      const outstanding = codeFor(ctx, EMAIL, "recovery");
       const before = ctx.outbox.entries.length;
-      await expect(ctx.provider.scramblePassword(ctx.userId)).resolves.toBeUndefined();
+
+      await expect(provider.scramblePassword(userId)).resolves.toBeUndefined();
       expect(ctx.outbox.entries.length).toBe(before);
-      expect(await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({
+      expect(await provider.getUser()).toBeNull();
+      expect(await there.getUser()).toBeNull();
+      await expect(provider.updatePassword("a chosen password")).rejects.toMatchObject({ code: "unavailable" });
+      expect(await provider.verifyCode({ email: EMAIL, code: outstanding, kind: "recovery" })).toEqual(INVALID);
+      expect(await ctx.otherDevice().signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({
         ok: false,
         reason: "invalid_credentials",
       });
-      // The person can still choose a password through a recovery code.
-      await ctx.provider.sendPasswordResetCode({ email: EMAIL });
-      await ctx.provider.verifyCode({ email: EMAIL, code: codeFor(ctx, EMAIL, "recovery"), kind: "recovery" });
-      await ctx.provider.updatePassword("a chosen password");
-      await ctx.provider.signOut();
-      expect(await ctx.provider.signInWithPassword({ email: EMAIL, password: "a chosen password" })).toEqual({ ok: true });
+
+      // A recovery code sent afterwards gives a code session that can set the password.
+      await signInByRecoveryCode(ctx, provider);
+      await provider.updatePassword("a chosen password");
+      await provider.signOut();
+      expect(await provider.signInWithPassword({ email: EMAIL, password: "a chosen password" })).toEqual({ ok: true });
+    });
+
+    // Probe (n): a second sign-up, resend or recovery email to one address within seconds gets
+    // 429 over_email_send_rate_limit, which is rate_limited here.
+    test("with the per-address email interval on, a second email within the interval is rate_limited", async () => {
+      const ctx = make();
+      ctx.enforceEmailInterval();
+      const { provider } = ctx;
+      await provider.signUpWithPassword(sign());
+      await expect(provider.signUpWithPassword(sign())).rejects.toMatchObject({ code: "rate_limited" });
+      await expect(provider.resendSignUpCode({ email: EMAIL })).rejects.toMatchObject({ code: "rate_limited" });
+      // Another address is not affected.
+      await expect(provider.signUpWithPassword(sign("bo@example.com"))).resolves.toEqual({ userId: expect.any(String) });
+
+      const reset = await confirmed("cy@example.com");
+      reset.enforceEmailInterval();
+      await reset.provider.sendPasswordResetCode({ email: "cy@example.com" });
+      await expect(reset.provider.sendPasswordResetCode({ email: "cy@example.com" })).rejects.toMatchObject({
+        code: "rate_limited",
+      });
     });
 
     test("scramblePassword works on an unconfirmed sign-up too, so a stranger's password never survives", async () => {
@@ -466,9 +535,10 @@ function runLinkContract(make: () => ContractContext) {
       expect(await provider.confirmEmailToken({ tokenHash: token, type: "recovery" })).toBe(false);
     });
 
-    test("updatePassword rejects a password under 8 characters with weak_password", async () => {
-      const { provider } = await confirmed();
-      await provider.signInWithPassword({ email: "ada@example.com", password: PASSWORD });
+    test("updatePassword after a recovery link rejects a password under 8 characters with weak_password", async () => {
+      const { provider, outbox } = await confirmed();
+      await provider.sendPasswordReset({ email: "ada@example.com", redirectTo: REDIRECT });
+      expect(await provider.confirmEmailToken({ tokenHash: tokenOf(outbox.lastFor("ada@example.com")!.url), type: "recovery" })).toBe(true);
       await expect(provider.updatePassword("short")).rejects.toMatchObject({ code: "weak_password" });
     });
 

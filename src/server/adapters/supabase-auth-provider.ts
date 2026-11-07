@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { createServerClient } from "@supabase/ssr";
 import {
+  AuthUnknownError,
   createClient,
   isAuthError,
   isAuthRetryableFetchError,
@@ -21,6 +22,16 @@ import { authCookieOptions, siteUsesHttps } from "./supabase-auth-cookies";
   Code facts this relies on (checked live on the dev project, Task 1): verifyOtp with
   type "signup" accepts a sign-up code and "recovery" a recovery code, both returning a
   session; a wrong, used, superseded or expired code all answer 403 otp_expired.
+
+  Password facts (checked live, Task 3 fix round, probes k to n):
+  - admin updateUserById({ password }) (scramblePassword) ends EVERY session of the user at
+    once, the caller's too (access token rejected, refresh refused), and outstanding codes;
+  - updateUser({ password }) from a code session works, keeps that session and ends the
+    user's other sessions even without signOut(others), and outstanding codes;
+  - updateUser({ password }) from a password sign-in session answers 400
+    current_password_required and changes nothing (mapped to unavailable);
+  - a second signUp, resend or resetPasswordForEmail to one address 3 s after the first
+    answers 429 over_email_send_rate_limit (mapped to rate_limited).
 */
 
 export type CookieJar = {
@@ -38,6 +49,8 @@ const INVALID_CODE: VerifyCodeResult = { ok: false, reason: "invalid_or_expired"
 
 /** Random bytes behind a scrambled password: 256 bits, sent as 43 base64url characters. */
 const SCRAMBLED_PASSWORD_BYTES = 32;
+/** Fixed suffix so any password policy (lower, upper, digit, symbol) accepts the random value. */
+const POLICY_SUFFIX = "!aA1";
 
 export function createSupabaseAuthProvider(
   deps: {
@@ -143,7 +156,9 @@ export function createSupabaseAuthProvider(
       const adminApi = getAdmin().auth.admin;
       // Kept only in this call's scope: never returned, logged or stored.
       const { error } = await call(() =>
-        adminApi.updateUserById(userId, { password: randomBytes(SCRAMBLED_PASSWORD_BYTES).toString("base64url") }),
+        adminApi.updateUserById(userId, {
+          password: `${randomBytes(SCRAMBLED_PASSWORD_BYTES).toString("base64url")}${POLICY_SUFFIX}`,
+        }),
       );
       if (error) throw toProviderError(error);
     },
@@ -199,8 +214,9 @@ export function createSupabaseAuthProvider(
       const { error } = await call(() => auth.updateUser({ password: newPassword }));
       if (error) throw toProviderError(error);
       if (!opts?.signOutOthers) return;
-      // Revokes the user's other sessions; this one stays. If it fails the password is already
-      // changed, so the caller is told (unavailable) rather than left believing others are out.
+      // GoTrue already ended the other sessions with the password change (probe l2); this asks
+      // for it explicitly, so the promise does not rest on that. If it fails the password is
+      // already changed, and the caller is told (unavailable).
       const others = await call(() => auth.signOut({ scope: "others" }));
       if (others.error) throw toProviderError(others.error);
     },
@@ -251,7 +267,11 @@ function isRateLimited(error: unknown): boolean {
 
 /** The service could not be reached or failed on its side (as opposed to refusing the request). */
 function isOutage(error: unknown): boolean {
-  return isAuthRetryableFetchError(error) || (isAuthError(error) && (error.status ?? 0) >= 500);
+  return (
+    isAuthRetryableFetchError(error) ||
+    error instanceof AuthUnknownError ||
+    (isAuthError(error) && (error.status ?? 0) >= 500)
+  );
 }
 
 function toProviderError(error: unknown): AuthProviderError {

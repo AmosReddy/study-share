@@ -1,6 +1,7 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { CODE_LENGTH } from "@/shared/auth-schemas";
 import {
+  EMAIL_INTERVAL_MS,
   createFakeAuthProvider,
   createFakeAuthStore,
   expireAllCodes,
@@ -216,6 +217,45 @@ describe("fake codes", () => {
       expect(message).not.toContain(codeInput.password);
       expect(message).not.toContain(userId);
     }
+  });
+});
+
+describe("fake email interval (test switch)", () => {
+  test("is off by default, so repeat emails work as the existing browser tests expect", async () => {
+    const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
+    await p.signUpWithPassword(codeInput);
+    await p.signUpWithPassword(codeInput);
+    await p.resendSignUpCode({ email: codeInput.email });
+    expect(p.outbox.entries).toHaveLength(3);
+  });
+
+  test("when on, refuses a second email of the same kind to one address until EMAIL_INTERVAL_MS has passed", async () => {
+    vi.useFakeTimers({ now: new Date("2026-11-07T10:00:00Z") });
+    try {
+      const store = createFakeAuthStore();
+      store.enforceEmailInterval = true;
+      const p = createFakeAuthProvider({ store, cookies: jar() });
+      await p.signUpWithPassword(codeInput);
+      await expect(p.resendSignUpCode({ email: codeInput.email })).rejects.toMatchObject({ code: "rate_limited" });
+      // A different kind of email is tracked on its own (GoTrue keeps a time per kind).
+      await expect(p.sendPasswordResetCode({ email: codeInput.email })).resolves.toBeUndefined();
+      vi.advanceTimersByTime(EMAIL_INTERVAL_MS);
+      await expect(p.resendSignUpCode({ email: codeInput.email })).resolves.toBeUndefined();
+      // Nothing is sent (and nothing limited) for an unknown address.
+      await expect(p.resendSignUpCode({ email: "nobody@example.com" })).resolves.toBeUndefined();
+      await expect(p.resendSignUpCode({ email: "nobody@example.com" })).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("is switched off and forgotten by a reset", () => {
+    const store = getFakeAuthStore();
+    store.enforceEmailInterval = true;
+    store.lastEmailAt.set("x@example.com:signup", Date.now());
+    resetFakeAuthStore();
+    expect(store.enforceEmailInterval).toBe(false);
+    expect(store.lastEmailAt.size).toBe(0);
   });
 });
 

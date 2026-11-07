@@ -6,8 +6,10 @@
  * DEV PROJECT ONLY. It creates and deletes test users, so it refuses to run when the
  * settings are (or point at) production. Test addresses are plus-addresses of the
  * project's own mailbox (SMTP_USER), so no email ever goes to anyone else. It sends at
- * most five real emails (signUp and resend do; the admin generateLink used to obtain a
- * code does not) and always deletes every user it created (by recorded id, then a scan by
+ * most five real emails in (a) to (j) and at most six in (n) (signUp, resend and
+ * resetPasswordForEmail do; the admin generateLink used to obtain a code does not; (k), (l),
+ * (l2), (m) and (o) send none). `--only=k,l,m,n` runs only the named probes. It always deletes every
+ * user it created (by recorded id, then a scan by
  * tag), including on Ctrl-C, SIGTERM, SIGHUP and SIGBREAK. It says "0 left" only when every
  * deletion was confirmed and the scan finished.
  *
@@ -23,7 +25,7 @@ import { EnvError, getServerEnv, settingsPointAtProduction } from "@/server/env"
 /** Supabase's per-address email limit is about one a minute, so a repeat to one address waits this long. */
 const PER_ADDRESS_WAIT_MS = 65_000;
 const BETWEEN_CALLS_MS = 3_000;
-const TAGS = ["a", "b", "d", "e", "f", "g", "h", "unknown"];
+const TAGS = ["a", "b", "d", "e", "f", "g", "h", "unknown", "k", "l", "l2", "o", "n1", "n2", "n3"];
 /** After a stop signal, how long to wait for the call in flight before cleaning up anyway. */
 const ABORT_SETTLE_MS = 20_000;
 const SCAN_PAGE_SIZE = 200;
@@ -267,6 +269,177 @@ async function probeSettings(ctx: Ctx) {
   fact("(j) related public setting mailer_autoconfirm (true means Confirm email is OFF)", String(settings.mailer_autoconfirm ?? "not present"));
 }
 
+/** How a session stands now: checked at the server by its access token, and by its refresh token. */
+async function sessionState(ctx: Ctx, session: { access_token: string; refresh_token: string }): Promise<string> {
+  const access = await ctx.admin.auth.getUser(session.access_token);
+  const refresh = await ctx.client().auth.refreshSession({ refresh_token: session.refresh_token });
+  return `access token at the server ${access.error ? `rejected (${describeAuthError(access.error)})` : "accepted"}; refresh ${refresh.error ? `rejected (${describeAuthError(refresh.error)})` : "works"}`;
+}
+
+async function passwordsWork(ctx: Ctx, email: string, labels: [string, string][]): Promise<string> {
+  const parts: string[] = [];
+  for (const [name, password] of labels) {
+    const r = await ctx.client().auth.signInWithPassword({ email, password });
+    parts.push(`${name} ${r.data.session ? "signs in" : `refused (${describeAuthError(r.error)})`}`);
+  }
+  return parts.join("; ");
+}
+
+/**
+ * (k), (m admin): a sign-up code verifies (session S), then an admin password update (the
+ * app's scramblePassword). What happens to S, to another session, and to a recovery code
+ * issued before the change. No email is sent (admin-created user, codes from generateLink).
+ */
+async function probeAdminScramble(ctx: Ctx) {
+  const email = ctx.address("k");
+  const created = await ctx.createUser({ email, password: ctx.P1 });
+  if (created.error || !created.data.user) throw created.error ?? new Error("no user was created");
+  const id = created.data.user.id;
+  const g = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  if (!g.code) throw new Error(`no signup code (${g.error})`);
+  const s = ctx.client();
+  const verified = await s.auth.verifyOtp({ email, token: g.code, type: "signup" });
+  fact("(k) fresh user: verifyOtp type signup (session S)", acceptedOrRejected(verified));
+  const sessionS = verified.data.session;
+  if (!sessionS) return;
+  const other = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  const sessionB = other.data.session;
+  fact("(k) a second session B of the same user (password sign-in)", `${describeAuthError(other.error)}; session ${yesNo(!!sessionB)}`);
+  const recovery = await generateCode(ctx, { type: "recovery", email });
+  fact("(m) recovery code generated BEFORE the admin password update", recovery.error);
+
+  const scramble = await ctx.admin.auth.admin.updateUserById(id, { password: `${crypto.randomUUID()}Cc3!` });
+  fact("(k) admin updateUserById({ password: random })", describeAuthError(scramble.error));
+
+  // updateUser first, on S's own client: a server-side getUser failure would make the client
+  // drop its local session, and updateUser would then fail locally instead of at the server.
+  const sUpdate = await s.auth.updateUser({ password: ctx.P2 });
+  fact("(k) session S afterwards: updateUser({ password }) with S", describeAuthError(sUpdate.error));
+  fact("(k) session S afterwards (server check of its access token; refresh)", await sessionState(ctx, sessionS));
+  if (sessionB) fact("(k) session B afterwards", await sessionState(ctx, sessionB));
+  fact("(k) passwords afterwards", await passwordsWork(ctx, email, [["OLD (pre-scramble)", ctx.P1], ["the one S tried to set", ctx.P2]]));
+  if (recovery.code) {
+    const late = await verify(ctx, email, recovery.code, "recovery");
+    fact("(m) that recovery code used AFTER the admin password update", acceptedOrRejected(late, "outstanding code survives the admin update"));
+  }
+}
+
+/**
+ * (l), (m self): two sessions A and B; A changes its own password with updateUser and does
+ * NOT call signOut(others). No email is sent.
+ */
+async function probeSelfPasswordChange(ctx: Ctx) {
+  const email = ctx.address("l");
+  await ctx.createConfirmed(email);
+  const a = ctx.client();
+  const inA = await a.auth.signInWithPassword({ email, password: ctx.P1 });
+  const inB = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  const sessionB = inB.data.session;
+  fact("(l) confirmed user signed in twice (A, B)", `${describeAuthError(inA.error)} / ${describeAuthError(inB.error)}`);
+  if (!inA.data.session || !sessionB) return;
+  const recovery = await generateCode(ctx, { type: "recovery", email });
+  fact("(m) recovery code generated BEFORE the self password change", recovery.error);
+
+  const updated = await a.auth.updateUser({ password: ctx.P2 });
+  fact("(l) A: updateUser({ password }) WITHOUT signOut(others)", describeAuthError(updated.error));
+  fact("(l) session A afterwards", await sessionState(ctx, inA.data.session));
+  fact("(l) session B afterwards", await sessionState(ctx, sessionB));
+  fact("(l) passwords afterwards", await passwordsWork(ctx, email, [["OLD", ctx.P1], ["NEW", ctx.P2]]));
+  if (recovery.code) {
+    const late = await verify(ctx, email, recovery.code, "recovery");
+    fact("(m) that recovery code used AFTER the self password change", acceptedOrRejected(late, "outstanding code survives the self update"));
+  }
+}
+
+/**
+ * (l2), (m self): as (l), but A is a RECOVERY-code session (the reset flow), since (l) showed a
+ * password-sign-in session may be refused a password change. B is a password sign-in.
+ */
+async function probeRecoverySessionPasswordChange(ctx: Ctx) {
+  const email = ctx.address("l2");
+  await ctx.createConfirmed(email);
+  const inB = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  const sessionB = inB.data.session;
+  const g = await generateCode(ctx, { type: "recovery", email });
+  if (!g.code) throw new Error(`no recovery code (${g.error})`);
+  const a = ctx.client();
+  const inA = await a.auth.verifyOtp({ email, token: g.code, type: "recovery" });
+  fact("(l2) session B by password, then session A by a recovery code", `${describeAuthError(inB.error)} / ${acceptedOrRejected(inA)}`);
+  if (!inA.data.session || !sessionB) return;
+  const later = await generateCode(ctx, { type: "recovery", email });
+  fact("(m) another recovery code generated BEFORE the self password change", later.error);
+
+  const updated = await a.auth.updateUser({ password: ctx.P2 });
+  fact("(l2) A (recovery session): updateUser({ password }) WITHOUT signOut(others)", describeAuthError(updated.error));
+  fact("(l2) session A afterwards", await sessionState(ctx, inA.data.session));
+  fact("(l2) session B afterwards", await sessionState(ctx, sessionB));
+  fact("(l2) passwords afterwards", await passwordsWork(ctx, email, [["OLD", ctx.P1], ["NEW", ctx.P2]]));
+  if (later.code) {
+    const late = await verify(ctx, email, later.code, "recovery");
+    fact("(m) that recovery code used AFTER the self password change", acceptedOrRejected(late, "outstanding code survives the self update"));
+  }
+}
+
+/**
+ * (o): the alternative order for design 5.1. A stranger's pending sign-up (password P1); the
+ * signup code verifies (session S) and S sets its own password at once with updateUser. Does
+ * that work, does it replace P1, and what happens to a session B made with P1 in between?
+ */
+async function probeCodeThenOwnPassword(ctx: Ctx) {
+  const email = ctx.address("o");
+  const created = await ctx.createUser({ email, password: ctx.P1 });
+  if (created.error) throw created.error;
+  const g = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  if (!g.code) throw new Error(`no signup code (${g.error})`);
+  const s = ctx.client();
+  const verified = await s.auth.verifyOtp({ email, token: g.code, type: "signup" });
+  fact("(o) pending user with password P1: verifyOtp type signup (session S)", acceptedOrRejected(verified));
+  if (!verified.data.session) return;
+  const inB = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  fact("(o) a session B signed in with P1 after the confirmation", `${describeAuthError(inB.error)}; session ${yesNo(!!inB.data.session)}`);
+
+  const updated = await s.auth.updateUser({ password: ctx.P2 });
+  fact("(o) S: updateUser({ password: P2 }) straight after the code", describeAuthError(updated.error));
+  const others = await s.auth.signOut({ scope: "others" });
+  fact("(o) S: signOut({ scope: others })", describeAuthError(others.error));
+  fact("(o) session S afterwards", await sessionState(ctx, verified.data.session));
+  if (inB.data.session) fact("(o) session B afterwards", await sessionState(ctx, inB.data.session));
+  fact("(o) passwords afterwards", await passwordsWork(ctx, email, [["P1 (the stranger's)", ctx.P1], ["P2 (set by S)", ctx.P2]]));
+}
+
+/**
+ * (n): two calls of the same email-sending method for one address, a few seconds apart,
+ * one address per method. At most two calls per method (so at most six emails, fewer when
+ * the second call is refused).
+ */
+async function probeEmailInterval(ctx: Ctx) {
+  const twice = async (label: string, call: () => Promise<{ error: unknown }>) => {
+    const first = await call();
+    const started = Date.now();
+    await sleep(BETWEEN_CALLS_MS);
+    const second = await call();
+    fact(`(n) ${label}`, `first: ${describeAuthError(first.error)}; second, ${Math.round((Date.now() - started) / 1000)} s later: ${describeAuthError(second.error)}`);
+  };
+
+  const signUpEmail = ctx.address("n1");
+  await twice("signUp twice for one new address", async () => {
+    const r = await ctx.client().auth.signUp({ email: signUpEmail, password: ctx.P1 });
+    ctx.track(r.data.user?.id);
+    return r;
+  });
+
+  const resendEmail = ctx.address("n2");
+  const pending = await ctx.createUser({ email: resendEmail, password: ctx.P1 });
+  if (pending.error) throw pending.error;
+  await twice("resend type signup twice for one UNCONFIRMED (admin-created, never emailed) address", () =>
+    ctx.client().auth.resend({ type: "signup", email: resendEmail }),
+  );
+
+  const resetEmail = ctx.address("n3");
+  await ctx.createConfirmed(resetEmail);
+  await twice("resetPasswordForEmail twice for one CONFIRMED address", () => ctx.client().auth.resetPasswordForEmail(resetEmail));
+}
+
 const probes: Probe[] = [
   { label: "(a)(b)(c)(i)", run: probeSignupCode },
   { label: "(a) email type", run: probeEmailType },
@@ -276,7 +449,23 @@ const probes: Probe[] = [
   { label: "(g)", run: probeAddPassword },
   { label: "(h)", run: probeResend },
   { label: "(j)", run: probeSettings },
+  { label: "(k)(m)", run: probeAdminScramble },
+  { label: "(l)(m)", run: probeSelfPasswordChange },
+  { label: "(l2)(m)", run: probeRecoverySessionPasswordChange },
+  { label: "(o)", run: probeCodeThenOwnPassword },
+  { label: "(n)", run: probeEmailInterval },
 ];
+
+/**
+ * `--only=k,l,n` runs only the probes whose label contains one of those letters in brackets,
+ * so a later question can be probed without re-sending the earlier emails.
+ */
+function selectedProbes(): Probe[] {
+  const arg = process.argv.find((a) => a.startsWith("--only="));
+  if (!arg) return probes;
+  const wanted = arg.slice("--only=".length).split(",").map((s) => s.trim()).filter(Boolean);
+  return probes.filter((p) => wanted.some((w) => p.label.includes(`(${w})`)));
+}
 
 async function main(): Promise<void> {
   let env;
@@ -400,7 +589,7 @@ async function main(): Promise<void> {
 
   console.log(`Probing the dev project's code-based Auth behaviour (test addresses are plus-addresses of the project mailbox, tag check${stamp}).`);
   try {
-    for (const probe of probes) {
+    for (const probe of selectedProbes()) {
       if (aborting) break;
       inFlight = probe.run(ctx);
       try {

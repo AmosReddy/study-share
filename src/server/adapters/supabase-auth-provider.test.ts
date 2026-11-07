@@ -1,4 +1,10 @@
-import { AuthApiError, AuthRetryableFetchError, AuthSessionMissingError, AuthWeakPasswordError } from "@supabase/supabase-js";
+import {
+  AuthApiError,
+  AuthRetryableFetchError,
+  AuthSessionMissingError,
+  AuthUnknownError,
+  AuthWeakPasswordError,
+} from "@supabase/supabase-js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { AuthProviderError, type AuthProvider } from "../ports/auth-provider";
 import { createSupabaseAuthProvider, type SupabaseAdminClient, type SupabaseAuthClient } from "./supabase-auth-provider";
@@ -300,6 +306,13 @@ describe("verifyCode", () => {
       "unavailable",
     );
   });
+
+  test("an unknown error (a response that could not be read) is unavailable, not a wrong code", async () => {
+    const { provider } = make(makeClient({ verifyOtp: fails(new AuthUnknownError("bad response", new Error("x"))) }));
+    expect(((await caught(provider.verifyCode({ email: "a@x.com", code: CODE, kind: "signup" }))) as AuthProviderError).code).toBe(
+      "unavailable",
+    );
+  });
 });
 
 describe("code emails", () => {
@@ -333,6 +346,15 @@ describe("updatePassword", () => {
     expect(client.auth.signOut).not.toHaveBeenCalled();
   });
 
+  test("current_password_required (a password sign-in session) is unavailable, with no vendor text", async () => {
+    const refused = new AuthApiError("Current password required when setting new password.", 400, "current_password_required");
+    const { provider, client } = make(makeClient({ updateUser: fails(refused) }));
+    const error = (await caught(provider.updatePassword(PASSWORD, { signOutOthers: true }))) as AuthProviderError;
+    expect(error.code).toBe("unavailable");
+    expect(error.message).not.toMatch(/current password/i);
+    expect(client.auth.signOut).not.toHaveBeenCalled();
+  });
+
   test("a failed password change signs nobody out", async () => {
     const { provider, client } = make(makeClient({ updateUser: fails(rateLimited) }));
     await caught(provider.updatePassword(PASSWORD, { signOutOthers: true }));
@@ -348,9 +370,14 @@ describe("scramblePassword", () => {
     const [userId, attributes] = admin.auth.admin.updateUserById.mock.calls[0] as [string, { password: string }];
     expect(userId).toBe(USER_ID);
     expect(Object.keys(attributes)).toEqual(["password"]);
-    // At least 32 characters of a 64-symbol alphabet: 192 bits or more.
+    // At least 32 random base64url characters (192 bits or more), plus a fixed suffix so any
+    // password policy (letters, digits, symbols) accepts it.
     expect(attributes.password.length).toBeGreaterThanOrEqual(32);
-    expect(attributes.password).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(attributes.password).toMatch(/^[A-Za-z0-9_-]{32,}!aA1$/);
+    expect(attributes.password).toMatch(/[a-z]/);
+    expect(attributes.password).toMatch(/[A-Z]/);
+    expect(attributes.password).toMatch(/[0-9]/);
+    expect(attributes.password).toMatch(/[^A-Za-z0-9]/);
     // The user's own session client is not used.
     expect(client.auth.updateUser).not.toHaveBeenCalled();
   });

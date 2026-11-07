@@ -21,5 +21,6 @@ runAuthProviderContract(() => {
     outbox: provider.outbox,
     otherDevice: () => deviceOn(store),
     expireAllCodes: () => expireAllCodes(store),
+    enforceEmailInterval: () => void (store.enforceEmailInterval = true),
   };
 });

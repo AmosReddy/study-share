@@ -69,10 +69,24 @@ export type FakeUser = {
 
 type FakeCode = { userId: string; kind: CodeKind; code: string; expired: boolean };
 
+/** How a session was made. GoTrue refuses a password change from a password sign-in session (probe l). */
+export type FakeSession = { userId: string; via: "password" | "code" | "oauth" };
+
+/** GoTrue's per-address interval between two emails of one kind (probe n: a second within 3 s gets 429). */
+export const EMAIL_INTERVAL_MS = 60_000;
+
 export type FakeAuthStore = {
   users: Map<string, FakeUser>;
-  /** Session id (the cookie value) to user id. */
-  sessions: Map<string, string>;
+  /** Session id (the cookie value) to its session. */
+  sessions: Map<string, FakeSession>;
+  /**
+   * Test switch, off by default so existing browser tests are unaffected: when on, a second
+   * sign-up/resend email (or a second recovery email) to one address within EMAIL_INTERVAL_MS
+   * is refused with rate_limited, as GoTrue does.
+   */
+  enforceEmailInterval: boolean;
+  /** When each address was last sent each kind of email, keyed `${email}:${kind}`. */
+  lastEmailAt: Map<string, number>;
   /** The one live code per user and kind, keyed `${userId}:${kind}`. A newer code replaces it. */
   codes: Map<string, FakeCode>;
   /** @deprecated Single-use link tokens (the link flow). Task 5 deletes them. */
@@ -94,6 +108,8 @@ export function createFakeAuthStore(): FakeAuthStore {
   return {
     users: new Map(),
     sessions: new Map(),
+    enforceEmailInterval: false,
+    lastEmailAt: new Map(),
     codes: new Map(),
     tokens: new Map(),
     oauthCodes: new Set(),
@@ -123,11 +139,24 @@ export function resetFakeAuthStore(): void {
   const store = getFakeAuthStore();
   store.users.clear();
   store.sessions.clear();
+  store.enforceEmailInterval = false;
+  store.lastEmailAt.clear();
   store.codes.clear();
   store.tokens.clear();
   store.oauthCodes.clear();
   store.outbox.entries.length = 0;
   store.failNextSignOut = false;
+}
+
+/** Ends every session of a user, or every session but `keep`. */
+function endSessions(store: FakeAuthStore, userId: string, keep?: string): void {
+  for (const [sid, s] of store.sessions) if (s.userId === userId && sid !== keep) store.sessions.delete(sid);
+}
+
+/** Drops a user's outstanding codes and link tokens (GoTrue does on any password change, probe m). */
+function dropOutstandingCodes(store: FakeAuthStore, userId: string): void {
+  for (const [key, code] of store.codes) if (code.userId === userId) store.codes.delete(key);
+  for (const [token, t] of store.tokens) if (t.userId === userId) store.tokens.delete(token);
 }
 
 /**
@@ -141,9 +170,8 @@ export function expireAllCodes(store: FakeAuthStore = getFakeAuthStore()): void 
 /** Removes a user with everything that points at it (sessions, codes, link tokens). */
 export function deleteFakeUser(store: FakeAuthStore, userId: string): void {
   store.users.delete(userId);
-  for (const [sid, uid] of store.sessions) if (uid === userId) store.sessions.delete(sid);
-  for (const [key, code] of store.codes) if (code.userId === userId) store.codes.delete(key);
-  for (const [token, t] of store.tokens) if (t.userId === userId) store.tokens.delete(token);
+  endSessions(store, userId);
+  dropOutstandingCodes(store, userId);
 }
 
 export function findFakeUserByEmail(store: FakeAuthStore, email: string): FakeUser | undefined {
@@ -191,8 +219,8 @@ export function createFakeAuthProvider(deps: {
 
   const currentUser = () => {
     const sid = currentSession();
-    const id = sid ? store.sessions.get(sid) : undefined;
-    return id ? store.users.get(id) : undefined;
+    const session = sid ? store.sessions.get(sid) : undefined;
+    return session ? store.users.get(session.userId) : undefined;
   };
 
   const requireUser = () => {
@@ -202,11 +230,11 @@ export function createFakeAuthProvider(deps: {
   };
 
   /** A new session for this browser (replacing the one it had). */
-  const signInAs = (u: FakeUser) => {
+  const signInAs = (u: FakeUser, via: FakeSession["via"]) => {
     const old = cookies.get(SESSION_COOKIE);
     if (old) store.sessions.delete(old);
     const sid = crypto.randomUUID();
-    store.sessions.set(sid, u.id);
+    store.sessions.set(sid, { userId: u.id, via });
     cookies.set(SESSION_COOKIE, sid);
   };
 
@@ -215,8 +243,22 @@ export function createFakeAuthProvider(deps: {
     for (const identity of u.identities) if (identity.provider === "email") identity.verified = true;
   };
 
+  /**
+   * Called before each email is sent. With the test switch on, a second email of the same kind
+   * to one address within EMAIL_INTERVAL_MS is refused, as GoTrue answers 429 (probe n).
+   */
+  function beforeEmail(user: FakeUser, kind: CodeKind) {
+    const key = `${user.email}:${kind}`;
+    const last = store.lastEmailAt.get(key);
+    if (store.enforceEmailInterval && last !== undefined && Date.now() - last < EMAIL_INTERVAL_MS) {
+      throw new AuthProviderError("rate_limited", "Too many attempts. Try again later.");
+    }
+    store.lastEmailAt.set(key, Date.now());
+  }
+
   /** Emails a new code; it replaces (supersedes) the user's earlier code of that kind. */
   function issueCode(user: FakeUser, kind: CodeKind) {
+    beforeEmail(user, kind);
     const code = randomDigits();
     store.codes.set(`${user.id}:${kind}`, { userId: user.id, kind, code, expired: false });
     store.outbox.add({ to: user.email, kind: "code", purpose: kind, code });
@@ -224,6 +266,7 @@ export function createFakeAuthProvider(deps: {
 
   /** @deprecated Link flow. */
   function issueToken(user: FakeUser, type: "email" | "recovery", redirectTo: string) {
+    beforeEmail(user, type === "email" ? "signup" : "recovery");
     const token = crypto.randomUUID();
     store.tokens.set(token, { userId: user.id, type });
     const query = new URLSearchParams({ token_hash: token, type, redirect_to: redirectTo });
@@ -297,7 +340,7 @@ export function createFakeAuthProvider(deps: {
       store.codes.delete(`${u.id}:${kind}`);
       // A recovery code proves the mailbox too, as in GoTrue.
       confirm(u);
-      signInAs(u);
+      signInAs(u, "code");
       return { ok: true, userId: u.id };
     },
 
@@ -305,7 +348,7 @@ export function createFakeAuthProvider(deps: {
       const u = findByEmail(email);
       if (!u || !u.password || u.password !== password) return { ok: false, reason: "invalid_credentials" };
       if (!u.confirmed) return { ok: false, reason: "email_not_confirmed" };
-      signInAs(u);
+      signInAs(u, "password");
       return { ok: true };
     },
 
@@ -334,24 +377,33 @@ export function createFakeAuthProvider(deps: {
       }
       if (!u.identities.some((i) => i.provider === "google")) u.identities.push({ provider: "google", verified: true });
       u.confirmed = true;
-      signInAs(u);
+      signInAs(u, "oauth");
       return true;
     },
 
-    async updatePassword(newPassword, opts) {
+    async updatePassword(newPassword) {
       const u = requireUser();
+      const here = currentSession()!;
       if (newPassword.length < MIN_PASSWORD_LENGTH) throw new AuthProviderError("weak_password");
-      u.password = newPassword;
-      if (opts?.signOutOthers) {
-        const here = currentSession();
-        for (const [sid, uid] of store.sessions) if (uid === u.id && sid !== here) store.sessions.delete(sid);
+      // Probe (l): GoTrue answers 400 current_password_required from a password sign-in session.
+      if (store.sessions.get(here)?.via === "password") {
+        throw new AuthProviderError("unavailable", "The password could not be changed from this session.");
       }
+      u.password = newPassword;
+      // Probes (l2), (m): the user's other sessions end and outstanding codes stop working,
+      // with or without signOutOthers (the option only asks for what already happens).
+      endSessions(store, u.id, here);
+      dropOutstandingCodes(store, u.id);
     },
 
     async scramblePassword(userId) {
       const u = store.users.get(userId);
       if (!u) throw new AuthProviderError("unavailable", "The account could not be updated.");
       u.password = randomSecret();
+      // Probes (k), (m): an admin password update ends EVERY session of the user, the caller's
+      // too, and outstanding codes stop working.
+      endSessions(store, u.id);
+      dropOutstandingCodes(store, u.id);
     },
 
     async acceptTerms({ termsVersion }) {
@@ -386,7 +438,7 @@ export function createFakeAuthProvider(deps: {
       const u = store.users.get(pending.userId);
       if (!u) return false;
       confirm(u);
-      signInAs(u);
+      signInAs(u, "code");
       return true;
     },
 
