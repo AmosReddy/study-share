@@ -7,13 +7,16 @@
  * settings are (or point at) production. Test addresses are plus-addresses of the
  * project's own mailbox (SMTP_USER), so no email ever goes to anyone else. It sends at
  * most five real emails (signUp and resend do; the admin generateLink used to obtain a
- * code does not) and always deletes every user it created, including on Ctrl-C.
+ * code does not) and always deletes every user it created (by recorded id, then a scan by
+ * tag), including on Ctrl-C, SIGTERM, SIGHUP and SIGBREAK. It says "0 left" only when every
+ * deletion was confirmed and the scan finished.
  *
  * It prints labelled FACT lines only: never a password, token, code, key or full email
  * address. Provider errors are reported by name, HTTP status and error code, never by
  * message. Each probe is separate: one that fails prints "PROBE FAILED" and the rest run.
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { cleanUpUsers, type DeleteOutcome } from "@/server/clean-up-users";
 import { describeAuthError, describeCodeShape } from "@/server/describe-auth-error";
 import { EnvError, getServerEnv, settingsPointAtProduction } from "@/server/env";
 
@@ -21,8 +24,23 @@ import { EnvError, getServerEnv, settingsPointAtProduction } from "@/server/env"
 const PER_ADDRESS_WAIT_MS = 65_000;
 const BETWEEN_CALLS_MS = 3_000;
 const TAGS = ["a", "b", "d", "e", "f", "g", "h", "unknown"];
+/** After a stop signal, how long to wait for the call in flight before cleaning up anyway. */
+const ABORT_SETTLE_MS = 20_000;
+const SCAN_PAGE_SIZE = 200;
+const SCAN_MAX_PAGES = 50;
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Set by the signal handler: probes stop at their next wait, and no new probe starts. */
+let aborting = false;
+
+/** Waits in short slices so a stop signal ends the wait quickly; throws once aborting. */
+async function sleep(ms: number): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (aborting) throw new Error("stopped by a signal");
+    await new Promise((resolve) => setTimeout(resolve, Math.min(500, end - Date.now())));
+  }
+  if (aborting) throw new Error("stopped by a signal");
+}
 
 function fact(label: string, value: string) {
   console.log(`FACT  ${label}: ${value}`);
@@ -40,6 +58,12 @@ type Ctx = {
   P1: string;
   P2: string;
   createConfirmed: (email: string, password?: string) => Promise<string>;
+  /** Admin createUser that records the new user's id for the clean-up. */
+  createUser: (attributes: Parameters<SupabaseClient["auth"]["admin"]["createUser"]>[0]) => ReturnType<SupabaseClient["auth"]["admin"]["createUser"]>;
+  /** Records a user id (for example from signUp) so the clean-up deletes it by id. */
+  track: (id: string | undefined) => void;
+  /** Stops tracking an id the probe itself deleted. */
+  forget: (id: string) => void;
 };
 
 type Probe = { label: string; run: (ctx: Ctx) => Promise<void> };
@@ -68,6 +92,7 @@ function acceptedOrRejected(result: Verified, reusableNote?: string): string {
 async function probeSignupCode(ctx: Ctx) {
   const email = ctx.address("a");
   const signUp = await ctx.client().auth.signUp({ email, password: ctx.P1 });
+  ctx.track(signUp.data.user?.id);
   fact(
     "(a) signUp of a new address (sends email 1)",
     `${describeAuthError(signUp.error)}; user returned ${yesNo(!!signUp.data.user)}; session returned ${yesNo(!!signUp.data.session)}; confirmed ${yesNo(!!signUp.data.user?.email_confirmed_at)}`,
@@ -80,21 +105,22 @@ async function probeSignupCode(ctx: Ctx) {
   fact("(c) signInWithPassword, UNCONFIRMED user, WRONG password", `${describeAuthError(wrong.error)}; session ${yesNo(!!wrong.data.session)}`);
 
   const g1 = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
-  fact("(a) admin generateLink type signup for the unconfirmed user (sends no email)", g1.error);
+  fact("(a) admin generateLink type signup for the unconfirmed user (sends no email; code from admin generateLink, not the emailed message)", g1.error);
   fact("(i) signup code shape", describeCodeShape(g1.code));
 
   // (b) a wrong code (nothing is consumed by a wrong code).
   const wrongCode = g1.code?.replace(/\d/g, (d) => String((Number(d) + 1) % 10)) ?? "00000000";
   const wrongTry = await verify(ctx, email, wrongCode, "signup");
-  fact("(b) verifyOtp type signup with a WRONG code", acceptedOrRejected(wrongTry));
+  fact("(b) verifyOtp type signup with a WRONG code (a digit-shifted copy of a generateLink code)", acceptedOrRejected(wrongTry));
 
   console.log(`      waiting ${PER_ADDRESS_WAIT_MS / 1000} s so the per-address email limit does not decide the second sign-up...`);
   await sleep(PER_ADDRESS_WAIT_MS);
   const second = await ctx.client().auth.signUp({ email, password: ctx.P1 });
+  ctx.track(second.data.user?.id);
   fact("(b) second signUp of the same unconfirmed address (sends email 2)", `${describeAuthError(second.error)}; session returned ${yesNo(!!second.data.session)}`);
   if (g1.code) {
     const old = await verify(ctx, email, g1.code, "signup");
-    fact("(b) code generated BEFORE the second signUp, used after it", acceptedOrRejected(old, "earlier code NOT invalidated"));
+    fact("(b) code generated BEFORE the second signUp, used after it (code from admin generateLink, not the emailed message)", acceptedOrRejected(old, "earlier code NOT invalidated"));
   }
 
   // Two generateLink calls in a row: is the first of them superseded by the second?
@@ -103,41 +129,43 @@ async function probeSignupCode(ctx: Ctx) {
   fact("(b) two admin generateLink calls in a row", `${g2.error} / ${g3.error}; codes differ ${yesNo(!!g2.code && g2.code !== g3.code)}`);
   if (g2.code && g2.code !== g3.code) {
     const earlier = await verify(ctx, email, g2.code, "signup");
-    fact("(b) the EARLIER of two generated codes, used after the later one was issued", acceptedOrRejected(earlier, "earlier code NOT invalidated"));
+    fact("(b) the EARLIER of two generated codes, used after the later one was issued (code from admin generateLink, not the emailed message)", acceptedOrRejected(earlier, "earlier code NOT invalidated"));
   }
 
   // (a) the right code, type signup.
   const latest = g3.code ?? g2.code ?? g1.code;
   if (!latest) throw new Error("no code was generated");
   const ok = await verify(ctx, email, latest, "signup");
-  fact("(a) verifyOtp type signup with the LATEST correct code", acceptedOrRejected(ok));
+  fact("(a) verifyOtp type signup with the LATEST correct code (code from admin generateLink, not the emailed message)", acceptedOrRejected(ok));
   // (b) the same code a second time.
   const again = await verify(ctx, email, latest, "signup");
-  fact("(b) the SAME code used a second time", acceptedOrRejected(again, "code is reusable"));
+  fact("(b) the SAME code used a second time (code from admin generateLink, not the emailed message)", acceptedOrRejected(again, "code is reusable"));
 }
 
 /** (a): does type "email" also verify a signup code, on its own fresh user (admin-created, unconfirmed, no email sent). */
 async function probeEmailType(ctx: Ctx) {
   const email = ctx.address("b");
-  const created = await ctx.admin.auth.admin.createUser({ email, password: ctx.P1 });
+  const created = await ctx.createUser({ email, password: ctx.P1 });
   if (created.error) throw created.error;
   const g = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
   fact("(a) fresh unconfirmed user B (admin-created, no email): generateLink type signup", g.error);
   if (!g.code) return;
   const viaEmail = await verify(ctx, email, g.code, "email");
-  fact("(a) verifyOtp type email with a signup code", acceptedOrRejected(viaEmail));
+  fact("(a) verifyOtp type email with a signup code (code from admin generateLink, not the emailed message)", acceptedOrRejected(viaEmail));
 }
 
 /** (d): admin.deleteUser of an unconfirmed user, then signUp again for the same address (sends email 3). */
 async function probeDeleteThenSignUp(ctx: Ctx) {
   const email = ctx.address("d");
-  const created = await ctx.admin.auth.admin.createUser({ email, password: ctx.P1 });
+  const created = await ctx.createUser({ email, password: ctx.P1 });
   if (created.error || !created.data.user) throw created.error ?? new Error("no user was created");
   const oldId = created.data.user.id;
   const deleted = await ctx.admin.auth.admin.deleteUser(oldId);
-  fact("(d) admin.deleteUser of an UNCONFIRMED user", describeAuthError(deleted.error));
+  if (!deleted.error) ctx.forget(oldId);
+  fact("(d) admin.deleteUser of an UNCONFIRMED user (admin-created user)", describeAuthError(deleted.error));
   const signUp = await ctx.client().auth.signUp({ email, password: ctx.P2 });
   const newId = signUp.data.user?.id;
+  ctx.track(newId);
   const stored = newId ? await ctx.admin.auth.admin.getUserById(newId) : undefined;
   fact(
     "(d) signUp again for the same address right after the delete (sends email 3, no wait)",
@@ -193,7 +221,7 @@ async function probeSignOutOthers(ctx: Ctx) {
 /** (g): a user created without a password gets one through a recovery code. */
 async function probeAddPassword(ctx: Ctx) {
   const email = ctx.address("g");
-  const created = await ctx.admin.auth.admin.createUser({ email, email_confirm: true });
+  const created = await ctx.createUser({ email, email_confirm: true });
   fact("(g) admin createUser with email_confirm and NO password", describeAuthError(created.error));
   if (created.error) return;
   const before = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
@@ -277,15 +305,26 @@ async function main(): Promise<void> {
   const admin = createClient(url, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
   const client = () => createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
 
-  async function findUserId(email: string): Promise<string | undefined> {
-    for (let page = 1; page <= 20; page++) {
-      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+  // Every user this run creates is recorded by id as soon as it exists, so clean-up can delete by id.
+  const createdIds = new Set<string>();
+
+  /** The tagged users still on the project, found by address. Reports whether it saw every page. */
+  async function scanForTaggedUsers(): Promise<{ ids: string[]; complete: boolean }> {
+    const wanted = new Set(TAGS.map((tag) => address(tag).toLowerCase()));
+    const ids: string[] = [];
+    for (let page = 1; page <= SCAN_MAX_PAGES; page++) {
+      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: SCAN_PAGE_SIZE });
       if (error) throw new Error(`Could not list users (status ${error.status ?? "none"})`);
-      const found = data.users.find((u) => u.email?.toLowerCase() === email.toLowerCase());
-      if (found) return found.id;
-      if (data.users.length < 200) return undefined;
+      for (const user of data.users) if (user.email && wanted.has(user.email.toLowerCase())) ids.push(user.id);
+      if (data.nextPage === null || data.users.length === 0) return { ids, complete: true };
     }
-    return undefined;
+    return { ids, complete: false };
+  }
+
+  async function deleteById(id: string): Promise<DeleteOutcome> {
+    const { error } = await admin.auth.admin.deleteUser(id);
+    if (!error) return "deleted";
+    return error.status === 404 || error.code === "user_not_found" ? "gone" : "failed";
   }
 
   const P1 = `${crypto.randomUUID()}Aa1!`;
@@ -298,47 +337,83 @@ async function main(): Promise<void> {
     address,
     P1,
     P2,
+    createUser: async (attributes) => {
+      const result = await admin.auth.admin.createUser(attributes);
+      if (result.data.user) createdIds.add(result.data.user.id);
+      return result;
+    },
+    track: (id) => {
+      if (id) createdIds.add(id);
+    },
+    forget: (id) => {
+      createdIds.delete(id);
+    },
     createConfirmed: async (email, password = P1) => {
-      const created = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+      const created = await ctx.createUser({ email, password, email_confirm: true });
       if (created.error || !created.data.user) throw new Error(`Could not create a confirmed test user (status ${created.error?.status ?? "none"})`);
       return created.data.user.id;
     },
   };
 
-  // Always delete every user this run created, found by its unique tag. Safe to call twice.
+  // Delete every user this run created: by recorded id first, then a scan by tag as a fallback.
+  // Runs once (the shared promise); "0 left" is printed only when every deletion was confirmed.
   let cleanedUp: Promise<void> | undefined;
   const cleanUp = () =>
     (cleanedUp ??= (async () => {
-      let deleted = 0;
-      let left = 0;
-      for (const tag of TAGS) {
-        const id = await findUserId(address(tag)).catch(() => undefined);
-        if (!id) continue;
-        const result = await admin.auth.admin.deleteUser(id).catch(() => ({ error: new Error("request failed") }));
-        if (result.error) {
-          left++;
-          console.log(`WARN  test user ${id} was not deleted; remove it in the dashboard`);
-        } else deleted++;
-      }
-      console.log(`Clean-up: ${deleted} test user(s) deleted, ${left} left.`);
+      const result = await cleanUpUsers({ knownIds: [...createdIds], scan: scanForTaggedUsers, deleteUser: deleteById });
+      for (const warning of result.warnings) console.log(`WARN  ${warning}`);
+      console.log(result.summary);
+      if (result.left > 0) process.exitCode = 1;
     })());
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => {
-      console.log(`\n${signal} received: cleaning up the test users before exiting.`);
-      void cleanUp().finally(() => process.exit(130));
-    });
+
+  // A stop signal: stop the probes, wait for the call in flight, clean up, exit non-zero.
+  // Further signals are ignored while that runs, so a second Ctrl-C cannot cut the clean-up short.
+  let inFlight: Promise<unknown> = Promise.resolve();
+  let handlingSignal = false;
+  const onSignal = (signal: string) => {
+    if (handlingSignal) {
+      console.log(`${signal} ignored: clean-up is already running.`);
+      return;
+    }
+    handlingSignal = true;
+    aborting = true;
+    process.exitCode = 130;
+    console.log(`\n${signal} received: stopping, then cleaning up the test users before exiting.`);
+    void (async () => {
+      const settled = await Promise.race([
+        inFlight.then(() => true, () => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ABORT_SETTLE_MS)),
+      ]);
+      if (!settled) console.log("WARN  the call in flight did not finish in time; cleaning up anyway (a user it creates after this scan would be missed)");
+      await cleanUp().catch(() => {});
+      process.exit(130);
+    })();
+  };
+  // SIGBREAK exists on Windows only and SIGHUP is emulated there (console close); register what the platform accepts.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
+    try {
+      process.on(signal, () => onSignal(signal));
+    } catch {
+      // This platform does not support this signal.
+    }
   }
 
   console.log(`Probing the dev project's code-based Auth behaviour (test addresses are plus-addresses of the project mailbox, tag check${stamp}).`);
   try {
     for (const probe of probes) {
+      if (aborting) break;
+      inFlight = probe.run(ctx);
       try {
-        await probe.run(ctx);
+        await inFlight;
       } catch (error) {
-        fact(probe.label, `PROBE FAILED: ${describeAuthError(error)}`);
-        process.exitCode = 1;
+        fact(probe.label, `PROBE FAILED: ${aborting ? "stopped by a signal" : describeAuthError(error)}`);
+        if (!aborting) process.exitCode = 1;
       }
-      await sleep(BETWEEN_CALLS_MS);
+      try {
+        await sleep(BETWEEN_CALLS_MS);
+      } catch {
+        break;
+      }
     }
   } finally {
     await cleanUp();
