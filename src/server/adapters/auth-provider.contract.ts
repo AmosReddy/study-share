@@ -322,7 +322,7 @@ function runCodeContract(make: () => ContractContext) {
       expect(await provider.getUser()).toBeNull();
       const before = ctx.outbox.entries.length;
 
-      await expect(provider.openSessionWithoutEmail({ email: EMAIL })).resolves.toEqual({ userId });
+      await expect(provider.openSessionWithoutEmail({ email: EMAIL, expectedUserId: userId })).resolves.toEqual({ userId });
       expect(ctx.outbox.entries.length).toBe(before);
       expect((await provider.getUser())?.id).toBe(userId);
       // Only this browser gets the session; the stranger's device stays out.
@@ -347,7 +347,9 @@ function runCodeContract(make: () => ContractContext) {
       await provider.scramblePassword(user.id);
       expect(await provider.getUser()).toBeNull();
 
-      await expect(provider.openSessionWithoutEmail({ email: user.email })).resolves.toEqual({ userId: user.id });
+      await expect(provider.openSessionWithoutEmail({ email: user.email, expectedUserId: user.id })).resolves.toEqual({
+        userId: user.id,
+      });
       expect((await provider.getUser())?.id).toBe(user.id);
       await provider.updatePassword("an added password");
       await provider.signOut();
@@ -356,11 +358,25 @@ function runCodeContract(make: () => ContractContext) {
 
     test("openSessionWithoutEmail for an unknown address is unavailable and opens nothing", async () => {
       const ctx = make();
-      await expect(ctx.provider.openSessionWithoutEmail({ email: "nobody@example.com" })).rejects.toMatchObject({
-        code: "unavailable",
-      });
+      await expect(
+        ctx.provider.openSessionWithoutEmail({ email: "nobody@example.com", expectedUserId: crypto.randomUUID() }),
+      ).rejects.toMatchObject({ code: "unavailable" });
       expect(await ctx.provider.getUser()).toBeNull();
       expect(ctx.outbox.entries).toHaveLength(0);
+    });
+
+    // Misuse hardening (ruling P11): the session is opened only for the user the caller proved.
+    test("openSessionWithoutEmail for an address whose account is not the expected user is unavailable and leaves no session", async () => {
+      const ctx = make();
+      const { userId } = await ctx.provider.signUpWithPassword(sign());
+      const otherId = crypto.randomUUID();
+      const error = (await ctx.provider
+        .openSessionWithoutEmail({ email: EMAIL, expectedUserId: otherId })
+        .catch((e: unknown) => e)) as Error & { code?: string };
+      expect(error.code).toBe("unavailable");
+      expect(`${error.message} ${error.stack}`).not.toContain(userId);
+      expect(`${error.message} ${error.stack}`).not.toContain(otherId);
+      expect(await ctx.provider.getUser()).toBeNull();
     });
 
     // Probe (n): a second sign-up, resend or recovery email to one address within seconds gets

@@ -24,10 +24,13 @@ import { authCookieOptions, siteUsesHttps } from "./supabase-auth-cookies";
   session; a wrong, used, superseded or expired code all answer 403 otp_expired.
 
   Password facts (checked live, Task 3 fix round, probes k to n):
-  - admin updateUserById({ password }) (scramblePassword) ends EVERY session of the user at
-    once, the caller's too (access token rejected, refresh refused), and outstanding codes;
-  - updateUser({ password }) from a code session works, keeps that session and ends the
-    user's other sessions even without signOut(others), and outstanding codes;
+  - admin updateUserById({ password }) (scramblePassword): the auth server rejects the tokens
+    of EVERY session of the user, the caller's too (refresh refused, access token refused at
+    the server; the access JWT itself stays valid until it expires), and outstanding codes
+    stop working;
+  - updateUser({ password }) from a code session works and keeps that session; the server
+    rejects the user's other sessions' tokens even without signOut(others), and outstanding
+    codes stop working;
   - updateUser({ password }) from a password sign-in session answers 400
     current_password_required and changes nothing (mapped to unavailable);
   - a second signUp, resend or resetPasswordForEmail to one address 3 s after the first
@@ -170,7 +173,7 @@ export function createSupabaseAuthProvider(
     },
 
     /** Server only, right after the request proved ownership (see the port). Never logs the code. */
-    async openSessionWithoutEmail({ email }) {
+    async openSessionWithoutEmail({ email, expectedUserId }) {
       const adminApi = getAdmin().auth.admin;
       // The admin client makes a recovery code and returns it instead of emailing it (probe p).
       const link = await call(() => adminApi.generateLink({ type: "recovery", email }));
@@ -181,6 +184,12 @@ export function createSupabaseAuthProvider(
       const { data, error } = await call(() => auth.verifyOtp({ email, token: code, type: "recovery" }));
       if (error) throw toProviderError(error);
       if (!data.user || !data.session) throw new AuthProviderError("unavailable", "The sign-in service could not complete the request.");
+      if (data.user.id !== expectedUserId) {
+        // The address belongs to someone other than the user the caller proved: end just this
+        // new session (at the server and in the cookies) and name neither id.
+        await call(() => auth.signOut({ scope: "local" })).catch(() => {});
+        throw new AuthProviderError("unavailable", "The sign-in service could not complete the request.");
+      }
       return { userId: data.user.id };
     },
 

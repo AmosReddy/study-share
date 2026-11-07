@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { CODE_LENGTH } from "@/shared/auth-schemas";
+import { createFakeAccountDirectory } from "./fake-account-directory";
 import {
   EMAIL_INTERVAL_MS,
   createFakeAuthProvider,
@@ -247,6 +248,17 @@ describe("fake email interval (test switch)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test("follows the account, not the address: delete the pending account, then a new sign-up of the address within the interval works (fact r)", async () => {
+    const store = createFakeAuthStore();
+    store.enforceEmailInterval = true;
+    const p = createFakeAuthProvider({ store, cookies: jar() });
+    const first = await p.signUpWithPassword(codeInput);
+    expect(await createFakeAccountDirectory(store).removePendingSignup(codeInput.email)).toBe(true);
+    const second = await p.signUpWithPassword({ ...codeInput, password: "a newer password" });
+    expect(second.userId).not.toBe(first.userId);
+    expect(p.outbox.entries).toHaveLength(2);
   });
 
   test("is switched off and forgotten by a reset", () => {

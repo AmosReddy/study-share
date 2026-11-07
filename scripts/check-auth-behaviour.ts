@@ -487,7 +487,7 @@ async function probeMintForPasswordless(ctx: Ctx) {
   await mintSession(ctx, "q", email, id);
 }
 
-/** (r): signUp, admin deleteUser by id, signUp of the SAME address straight away (at most two emails). */
+/** (r): signUp, admin deleteUser by id, then signUp of the SAME address about 3 s (BETWEEN_CALLS_MS) later (at most two emails). */
 async function probeDeleteThenSignUpQuickly(ctx: Ctx) {
   const email = ctx.address("r");
   const first = await ctx.client().auth.signUp({ email, password: ctx.P1 });
@@ -498,13 +498,15 @@ async function probeDeleteThenSignUpQuickly(ctx: Ctx) {
   const deleted = await ctx.admin.auth.admin.deleteUser(firstId);
   if (!deleted.error) ctx.forget(firstId);
   fact("(r) admin deleteUser of that unconfirmed user", describeAuthError(deleted.error));
-  const started = Date.now();
+  const deletedAt = Date.now();
   await sleep(BETWEEN_CALLS_MS);
+  // Measured to the moment the call is sent, not to its reply.
+  const waited = Math.round((Date.now() - deletedAt) / 1000);
   const second = await ctx.client().auth.signUp({ email, password: ctx.P2 });
   ctx.track(second.data.user?.id);
   fact(
     "(r) signUp of the same address again",
-    `${Math.round((Date.now() - started) / 1000)} s after the delete: ${describeAuthError(second.error)}; new id ${yesNo(!!second.data.user?.id && second.data.user.id !== firstId)}`,
+    `sent ${waited} s after the delete returned: ${describeAuthError(second.error)}; new id ${yesNo(!!second.data.user?.id && second.data.user.id !== firstId)}`,
   );
 }
 

@@ -77,8 +77,10 @@ export interface AuthProvider {
    * - it works only from a CODE session (verifyCode, or the deprecated link); from a password
    *   sign-in session the provider refuses (current_password_required), which is thrown as
    *   AuthProviderError("unavailable"), and nothing changes;
-   * - on success this session stays, every OTHER session of the user ends at once (access
-   *   token and refresh) even without `signOutOthers`, and outstanding codes stop working.
+   * - on success this session stays; for every OTHER session of the user the auth server
+   *   rejects its tokens (refresh refused, the access token refused at the server; the access
+   *   JWT itself stays valid until it expires), even without `signOutOthers`; outstanding
+   *   codes stop working.
    * `signOutOthers` also asks for the sign-out explicitly, so the promise does not depend on
    * that provider behaviour.
    */
@@ -87,8 +89,10 @@ export interface AuthProvider {
    * Replaces the user's password with a random one nobody knows (server-side, admin power). The
    * value is never returned, logged or kept, so a stranger's password never survives.
    *
-   * Observed (probes k, m): it ends EVERY session of the user at once, INCLUDING the caller's
-   * (a session verifyCode just made is gone: getUser is null, updatePassword fails), and
+   * Observed (probes k, m): the auth server rejects the tokens of EVERY session of the user,
+   * INCLUDING the caller's (the access JWT itself stays valid until it expires, but the
+   * server refuses it: updatePassword fails, refresh fails; the adapter's getUser may check
+   * the JWT locally and still see a user, so treat the person as signed out), and
    * outstanding codes stop working. So "verify a code, scramble, then updatePassword in the
    * same session" cannot work; after a scramble the person needs a new code to get a session.
    */
@@ -103,13 +107,17 @@ export interface AuthProvider {
    * same request proved ownership of the account by a code (verifyCode) or a Google sign-in,
    * typically just after scramblePassword ended every session (ruling P9: verify, scramble,
    * open a session, then the person creates a password). It must never be reachable from a
-   * request that has not just proved ownership. An unknown address throws unavailable.
+   * request that has not just proved ownership. `expectedUserId` MUST be the id that proof
+   * returned (verifyCode's userId, or the Google session's user id): if the address now
+   * belongs to another user, that session is signed out at once and unavailable is thrown,
+   * naming neither id. An unknown address throws unavailable.
    *
    * Observed (probes p, q): it works after a scramble, for accounts with and without a
-   * password; the provider records it as a recovery request (recovery_sent_at is set), which
-   * may start the recovery email interval for that address (not probed).
+   * password. The provider records it as a recovery request (recovery_sent_at is set), so a
+   * recovery email to that address within about 60 s can get rate_limited from the provider:
+   * the caller must start the app's own email-send cooldown for the address (ruling P11).
    */
-  openSessionWithoutEmail(i: { email: string }): Promise<{ userId: string }>;
+  openSessionWithoutEmail(i: { email: string; expectedUserId: string }): Promise<{ userId: string }>;
   acceptTerms(i: { termsVersion: string }): Promise<void>;
   updateDisplayName(name: string): Promise<void>;
   signOut(): Promise<void>;

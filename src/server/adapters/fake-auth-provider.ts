@@ -85,7 +85,7 @@ export type FakeAuthStore = {
    * is refused with rate_limited, as GoTrue does.
    */
   enforceEmailInterval: boolean;
-  /** When each address was last sent each kind of email, keyed `${email}:${kind}`. */
+  /** When each account was last sent each kind of email, keyed `${userId}:${kind}`. */
   lastEmailAt: Map<string, number>;
   /** The one live code per user and kind, keyed `${userId}:${kind}`. A newer code replaces it. */
   codes: Map<string, FakeCode>;
@@ -245,10 +245,12 @@ export function createFakeAuthProvider(deps: {
 
   /**
    * Called before each email is sent. With the test switch on, a second email of the same kind
-   * to one address within EMAIL_INTERVAL_MS is refused, as GoTrue answers 429 (probe n).
+   * to one account within EMAIL_INTERVAL_MS is refused, as GoTrue answers 429 (probe n). It is
+   * kept per user (GoTrue stores the times on the user row), so a deleted pending account's
+   * address can be signed up again at once (probe r).
    */
   function beforeEmail(user: FakeUser, kind: CodeKind) {
-    const key = `${user.email}:${kind}`;
+    const key = `${user.id}:${kind}`;
     const last = store.lastEmailAt.get(key);
     if (store.enforceEmailInterval && last !== undefined && Date.now() - last < EMAIL_INTERVAL_MS) {
       throw new AuthProviderError("rate_limited", "Too many attempts. Try again later.");
@@ -406,7 +408,7 @@ export function createFakeAuthProvider(deps: {
       dropOutstandingCodes(store, u.id);
     },
 
-    async openSessionWithoutEmail({ email }) {
+    async openSessionWithoutEmail({ email, expectedUserId }) {
       const u = findByEmail(email);
       if (!u) throw new AuthProviderError("unavailable", "The account could not be signed in.");
       // As admin generateLink(recovery) + verifyOtp (probes p, q): no email; the new recovery
@@ -414,9 +416,16 @@ export function createFakeAuthProvider(deps: {
       // Sessions ended by a scramble stay ended. The provider records recovery_sent_at, which
       // is assumed (not probed) to start the recovery email interval.
       store.codes.delete(`${u.id}:recovery`);
-      store.lastEmailAt.set(`${u.email}:recovery`, Date.now());
+      store.lastEmailAt.set(`${u.id}:recovery`, Date.now());
       confirm(u);
       signInAs(u, "code");
+      if (u.id !== expectedUserId) {
+        // As the adapter: the unexpected user's new session is signed out at once; no id is named.
+        const sid = cookies.get(SESSION_COOKIE);
+        if (sid) store.sessions.delete(sid);
+        cookies.delete(SESSION_COOKIE);
+        throw new AuthProviderError("unavailable", "The account could not be signed in.");
+      }
       return { userId: u.id };
     },
 
