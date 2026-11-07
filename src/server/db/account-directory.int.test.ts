@@ -156,6 +156,26 @@ describe.skipIf(!url)("account directory", () => {
         });
       }));
 
+    test("a user with a Google identity is never pending, even when email_confirmed_at is null", () =>
+      rolledBack(async (tx) => {
+        const email = newAddress();
+        const userId = await createUser(tx, {
+          email,
+          confirmed: false,
+          password: "hash",
+          identities: [
+            { provider: "email", verified: false },
+            { provider: "google", verified: true },
+          ],
+        });
+        expect(await createAccountDirectory(tx).describeEmail(email)).toEqual({
+          kind: "confirmed",
+          userId,
+          providers: ["email", "google"],
+          hasPassword: true,
+        });
+      }));
+
     test("ignores case and surrounding spaces in the address", () =>
       rolledBack(async (tx) => {
         const email = newAddress();
@@ -207,6 +227,23 @@ describe.skipIf(!url)("account directory", () => {
         expect(await createAccountDirectory(tx).removePendingSignup(email)).toBe(false);
         expect(await userExists(tx, userId)).toBe(true);
         expect(await identityProviders(tx, userId)).toEqual(["email:true"]);
+      }));
+
+    test("does not delete an unconfirmed user who has a Google identity", () =>
+      rolledBack(async (tx) => {
+        const email = newAddress();
+        const userId = await createUser(tx, {
+          email,
+          confirmed: false,
+          password: "hash",
+          identities: [
+            { provider: "email", verified: false },
+            { provider: "google", verified: true },
+          ],
+        });
+        expect(await createAccountDirectory(tx).removePendingSignup(email)).toBe(false);
+        expect(await userExists(tx, userId)).toBe(true);
+        expect(await identityProviders(tx, userId)).toEqual(["email:false", "google:true"]);
       }));
 
     test("returns false for an address nobody signed up with", () =>
@@ -261,10 +298,13 @@ describe.skipIf(!url)("account directory", () => {
         const userId = await createUser(tx, {
           email: newAddress(),
           confirmed: true,
-          identities: [{ provider: "email", verified: null }],
+          identities: [
+            { provider: "email", verified: null },
+            { provider: "google", verified: true },
+          ],
         });
         expect(await createAccountDirectory(tx).repairAfterGoogle(userId)).toEqual({ hadPendingEmailSignup: true });
-        expect(await identityProviders(tx, userId)).toEqual([]);
+        expect(await identityProviders(tx, userId)).toEqual(["google:true"]);
       }));
 
     test("reports false when there is no email identity", () =>
@@ -276,6 +316,18 @@ describe.skipIf(!url)("account directory", () => {
         });
         expect(await createAccountDirectory(tx).repairAfterGoogle(userId)).toEqual({ hadPendingEmailSignup: false });
         expect(await identityProviders(tx, userId)).toEqual(["google:true"]);
+      }));
+
+    test("removes nothing for a user without a Google identity, even with an unverified email identity", () =>
+      rolledBack(async (tx) => {
+        const userId = await createUser(tx, {
+          email: newAddress(),
+          confirmed: true,
+          password: "hash",
+          identities: [{ provider: "email", verified: false }],
+        });
+        expect(await createAccountDirectory(tx).repairAfterGoogle(userId)).toEqual({ hadPendingEmailSignup: false });
+        expect(await identityProviders(tx, userId)).toEqual(["email:false"]);
       }));
 
     test("never touches a verified email identity", () =>
