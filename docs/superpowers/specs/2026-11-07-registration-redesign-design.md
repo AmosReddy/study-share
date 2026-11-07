@@ -32,7 +32,7 @@ SMS codes, two-factor authentication, CAPTCHA, passwordless "email me a login co
 | Existing email on sign-up | Tell the person clearly: "This email already has an account. Log in or reset your password." Log-in errors and Forgot password stay private ("email or password is wrong"; "if an account exists we sent a code"). |
 
 **My calls, for the owner to check**
-- Codes are 6 digits, last **10 minutes**, and a wrong-code limit of **5 tries per 15 minutes per email** applies; "Resend code" has the existing 60-second cooldown and a visible countdown.
+- Codes are 6 digits (the Supabase project setting "Email OTP length" must be 6; the app rejects other lengths), last **10 minutes**, and a wrong-code limit of **5 tries per 15 minutes per email** applies; "Resend code" has the existing 60-second cooldown and a visible countdown.
 - Google users accept the 18+ and Terms by the sentence "By continuing you confirm you are 18 or older and accept the Terms and Privacy Notice" shown under both buttons; the acceptance is recorded automatically when the Google sign-up completes. The `/welcome` step remains only for people whose accepted terms version is out of date.
 - After a password reset the person is signed in and **every other device is signed out**.
 - An email that exists only as a Google account: sign-up says "This email is registered with Google. Continue with Google, or reset your password to add one." The same hint ("Signed up with Google? Use Continue with Google.") sits on the log-in page.
@@ -93,7 +93,7 @@ Unchanged: one generic error for a wrong email or password; a hint for Google us
 - Codes last 10 minutes (Supabase's "Email OTP expiration"); a person who types a late code sees "This code has expired" and can request a new one.
 
 ## 6. Edge cases the redesign must handle
-- Wrong code, expired code, used code, a code from an older email after a resend, too many wrong tries: each a clear message and a way to get a new code.
+- Wrong code, expired code, used code, a code from an older email after a resend: Supabase answers all four identically, so the app shows one honest message ("That code is wrong or has expired. Request a new one.") with a way to get a new code; too many wrong tries has its own lock message from our own counter.
 - Resend before the cooldown ends (countdown shown, button disabled).
 - Reload or close the tab on the code screen: resume through the remembered address; "Change email" starts over.
 - Typo in the email: Change email; the abandoned pending account is replaced or swept.
