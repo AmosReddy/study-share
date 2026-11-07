@@ -1,0 +1,86 @@
+import { expect, type APIRequestContext, type Page } from "@playwright/test";
+
+/** Shared by the browser specs; all of it runs against the fake auth provider (SERVICES_MODE=fake). */
+
+export const PASSWORD = "correct horse 1";
+
+export function uniqueEmail(tag: string) {
+  return `${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+}
+
+/**
+ * Gives the page its own made-up client address, so the per-IP rate limits of one test
+ * (or of an earlier run against the same server) never block another. Call it from
+ * `test.beforeEach`.
+ */
+export async function isolateRateLimits(page: Page) {
+  const part = () => Math.floor(Math.random() * 250) + 1;
+  await page.setExtraHTTPHeaders({ "x-forwarded-for": `10.${part()}.${part()}.${part()}` });
+}
+
+/** The newest link the fake provider "emailed" to this address. */
+export async function lastEmailedLink(request: APIRequestContext, email: string): Promise<string> {
+  let url = "";
+  await expect(async () => {
+    const response = await request.get(`/api/test/outbox?email=${encodeURIComponent(email)}`);
+    expect(response.status()).toBe(200);
+    url = ((await response.json()) as { url: string | null }).url ?? "";
+    expect(url).not.toBe("");
+  }).toPass({ timeout: 5000 });
+  return url;
+}
+
+/**
+ * Opens an emailed link and taps Continue, as a person does. Opening the link alone never
+ * uses its token (mail scanners open links too); only the Continue button does.
+ */
+export async function followEmailLink(page: Page, link: string): Promise<void> {
+  await page.goto(link);
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+}
+
+/**
+ * Clears the address's one-email-a-minute cooldown (test mode only), so the test can send it
+ * another email without waiting a minute.
+ */
+export async function forgetEmailCooldown(request: APIRequestContext, email: string): Promise<void> {
+  const response = await request.post(`/api/test/forget-email-cooldown?email=${encodeURIComponent(email)}`);
+  expect(response.status()).toBe(204);
+}
+
+/**
+ * After a confirmation link: the log-in page says the email is confirmed (the link itself does
+ * not sign in), and the person logs in with their password.
+ */
+export async function logInAfterConfirming(page: Page, email: string, password = PASSWORD): Promise<void> {
+  await expect(page).toHaveURL(/\/login\?confirmed=1/);
+  // By role: while the page streams in, a hidden copy of the message can briefly exist too.
+  await expect(page.getByRole("status").filter({ hasText: "Your email is confirmed. Log in to continue." })).toBeVisible();
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Log in", exact: true }).click();
+}
+
+/**
+ * Signs up through the real form, opens the emailed confirmation link, logs in, and leaves
+ * the page signed in on `/`. The sign-up form records the terms, so no /welcome step follows.
+ */
+export async function signUpAndConfirm(page: Page, { name, email }: { name: string; email?: string }): Promise<string> {
+  const address = email ?? uniqueEmail("person");
+  await page.goto("/signup");
+  await page.getByLabel("Name", { exact: true }).fill(name);
+  await page.getByLabel("Email", { exact: true }).fill(address);
+  await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
+  await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+  await followEmailLink(page, await lastEmailedLink(page.request, address));
+  await logInAfterConfirming(page, address);
+  await expect(page).toHaveURL("/");
+  return address;
+}
+
+/** The sideways overflow of the whole document, in pixels (0 or less means none). */
+export function sidewaysOverflow(page: Page): Promise<number> {
+  return page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+}

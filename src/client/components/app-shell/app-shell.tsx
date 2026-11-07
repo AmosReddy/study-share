@@ -1,7 +1,7 @@
 "use client";
 
 import { Menu } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Button } from "@/client/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/client/components/ui/sheet";
 import { GroupSidebar, type SidebarGroup } from "./group-sidebar";
@@ -10,11 +10,14 @@ import { ThemeToggle } from "./theme-toggle";
 type AppShellProps = {
   groups: SidebarGroup[];
   activeGroupId?: string;
+  /** The account menu, shown at the right of the header. */
+  accountMenu: ReactNode;
   children: ReactNode;
 };
 
-export function AppShell({ groups, activeGroupId, children }: AppShellProps) {
+export function AppShell({ groups, activeGroupId, accountMenu, children }: AppShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const openerRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="flex min-h-dvh">
@@ -28,10 +31,11 @@ export function AppShell({ groups, activeGroupId, children }: AppShellProps) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 items-center gap-2 border-b px-3 lg:px-6">
           <Button
+            ref={openerRef}
             type="button"
             variant="ghost"
             size="icon"
-            className="lg:hidden"
+            className="size-11 lg:hidden"
             aria-label="Open group list"
             onClick={() => setMenuOpen(true)}
           >
@@ -40,7 +44,8 @@ export function AppShell({ groups, activeGroupId, children }: AppShellProps) {
           <p className="font-heading min-w-0 flex-1 truncate font-semibold lg:hidden">
             <span className="marker px-0.5">study-share</span>
           </p>
-          <div className="ml-auto">
+          <div className="flex min-w-0 shrink-0 items-center gap-1 lg:ml-auto">
+            {accountMenu}
             <ThemeToggle />
           </div>
         </header>
@@ -49,7 +54,15 @@ export function AppShell({ groups, activeGroupId, children }: AppShellProps) {
       </div>
 
       <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
-        <SheetContent side="left" className="w-80 max-w-[85vw] bg-sidebar p-0 text-sidebar-foreground">
+        <SheetContent
+          side="left"
+          className="w-80 max-w-[85vw] bg-sidebar p-0 text-sidebar-foreground"
+          onCloseAutoFocus={(event) => {
+            // The sheet is opened by a plain button, not a Radix trigger, so give focus back to it by hand.
+            event.preventDefault();
+            openerRef.current?.focus();
+          }}
+        >
           <SheetTitle className="sr-only">Your groups</SheetTitle>
           <SheetDescription className="sr-only">Choose a group to open its library.</SheetDescription>
           <GroupSidebar groups={groups} activeGroupId={activeGroupId} />

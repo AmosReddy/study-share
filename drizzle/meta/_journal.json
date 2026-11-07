@@ -8,6 +8,27 @@
       "when": 1793903746800,
       "tag": "0000_ordinary_doctor_strange",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793968834528,
+      "tag": "0001_rate_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793968836431,
+      "tag": "0002_profile_trigger",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793969127760,
+      "tag": "0003_profile_trigger_strict_metadata",
+      "breakpoints": true
     }
   ]
 }

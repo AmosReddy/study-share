@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -67,10 +70,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      # Playwright builds the production app (npm run build) and starts it (npm run start) on port
+      # 3917 in SERVICES_MODE=fake, with dummy settings from playwright.config.ts. No secrets.
       - run: npm run test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-report
-          path: test-results/
+          name: playwright-output
+          path: |
+            test-results/
+            playwright-report/
           retention-days: 7

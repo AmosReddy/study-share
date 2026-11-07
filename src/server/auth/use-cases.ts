@@ -1,0 +1,784 @@
+import { z } from "zod";
+import type { AccountDirectory, EmailAccountState } from "@/server/ports/account-directory";
+import { AuthProviderError, type AuthProvider, type AuthUser, type CodeKind } from "@/server/ports/auth-provider";
+import type { RateLimiter } from "@/server/ports/rate-limiter";
+import { AUTH_MESSAGES } from "@/shared/auth-messages";
+import {
+  displayNameSchema,
+  forgotPasswordSchema,
+  loginSchema,
+  normalizeCode,
+  resetPasswordSchema,
+  signUpSchema,
+} from "@/shared/auth-schemas";
+import { TERMS_VERSION } from "@/shared/legal";
+import { safeNextPath } from "@/shared/safe-next-path";
+import type { PendingSignup } from "./pending-signup-cookie";
+import {
+  CODE_ATTEMPTS,
+  CODE_ATTEMPTS_IP,
+  EMAIL_SEND_COOLDOWN,
+  emailSendKey,
+  LOGIN_EMAIL_LIMIT,
+  LOGIN_IP_LIMIT,
+  PASSWORD_RESET_EMAIL_LIMIT,
+  PASSWORD_RESET_IP_LIMIT,
+  PASSWORD_UPDATE_USER_LIMIT,
+  RESEND_EMAIL_LIMIT,
+  SIGN_UP_EMAIL_LIMIT,
+  SIGN_UP_IP_LIMIT,
+  type Limit,
+} from "./rate-limit-policy";
+
+/*
+  Sign-in and account use-cases. Plain functions over ports, so they run in unit
+  tests with the fakes. They validate, rate limit, call the provider and return
+  results that do not say whether an address is registered (one known exception, see
+  emailFlowFailure), and never contain vendor text, tokens or passwords.
+*/
+
+export type Deps = {
+  auth: AuthProvider;
+  limiter: RateLimiter;
+  siteUrl: string;
+  ip: string;
+  /** Who has an account; removes unconfirmed sign-ups. */
+  directory: AccountDirectory;
+  /**
+   * The pending sign-up this browser created, read by the caller from the signed cookie
+   * (readPendingSignup), or null. Trusted only to tell this browser's own pending account from
+   * someone else's (spec 5.1) and to know the address; never to sign anyone in.
+   */
+  pending: PendingSignup | null;
+};
+
+export type ActionResult<T = void> =
+  | { ok: true; data: T }
+  | { ok: false; fieldErrors?: Record<string, string>; formError?: string; retryAfterSeconds?: number };
+
+type Failure = Extract<ActionResult, { ok: false }>;
+
+/** Set as `formError` when the email is not confirmed yet. The screen turns it into copy and a Resend button. */
+export const CONFIRM_EMAIL_CODE = "confirm_email";
+
+/** All wording lives in src/shared/auth-messages.ts. */
+const MESSAGES = AUTH_MESSAGES;
+
+/** `termsVersion` is checked by hand so a mismatch is a form error, not a field error. */
+const termsSchema = z.object({ acceptTerms: signUpSchema.shape.acceptTerms, termsVersion: z.unknown() });
+const profileSchema = z.object({ displayName: displayNameSchema });
+const newPasswordSchema = resetPasswordSchema.extend({ confirmPassword: z.string() });
+
+function parse<S extends z.ZodType>(schema: S, raw: unknown): { data: z.output<S> } | { failure: Failure } {
+  const result = schema.safeParse(raw);
+  if (result.success) return { data: result.data };
+  const fieldErrors: Record<string, string> = {};
+  let formError: string | undefined;
+  for (const issue of result.error.issues) {
+    const field = issue.path[0];
+    if (typeof field === "string") fieldErrors[field] ??= issue.message;
+    else formError ??= MESSAGES.badForm;
+  }
+  return {
+    failure: {
+      ok: false,
+      ...(Object.keys(fieldErrors).length > 0 ? { fieldErrors } : {}),
+      ...(formError ? { formError } : {}),
+    },
+  };
+}
+
+/** One limit to count. `message` replaces the usual "too many attempts" when this one refuses. */
+type Check = { key: string; limit: Limit; message?: string };
+
+/**
+ * The shared one-email-a-minute cooldown. It comes first, so a quick repeat (a double tap)
+ * is refused before it uses up any hourly allowance.
+ */
+const emailSendCheck = (email: string): Check => ({
+  key: emailSendKey(email),
+  limit: EMAIL_SEND_COOLDOWN,
+  message: MESSAGES.justSent,
+});
+
+const MAX_IP_LENGTH = 64;
+
+/**
+ * The per-IP check, or none when the address is unknown (empty). Skipping is deliberate:
+ * a shared "unknown" bucket would let one visitor use up the limit for everyone.
+ */
+function ipCheck(prefix: string, ip: string, limit: Limit): Check[] {
+  const address = ip.trim().slice(0, MAX_IP_LENGTH);
+  return address === "" ? [] : [{ key: `${prefix}:ip:${address}`, limit }];
+}
+
+/**
+ * For the flows that send an email (sign-up, resend, reset). A provider rate limit (per address,
+ * per IP, or the project's hourly email quota) means nothing was sent, so the person is told so
+ * instead of "check your email". This code gives the same answer for every address, and our own
+ * cooldown keeps quick repeats from reaching the provider. That is not a guarantee that the message
+ * hides whether an address has an account: Supabase only reaches its email limits when it actually
+ * sends an email, so someone who deliberately drains the project's email quota first could still
+ * learn something from which addresses get this message. Accepted for the pilot, see "Known risks
+ * accepted for the pilot" in the Phase 1 spec. The fixed line has no email, key or IP.
+ */
+function emailFlowFailure(error: unknown): Failure {
+  if (error instanceof AuthProviderError && error.code === "rate_limited") {
+    console.warn("Auth provider refused to send an email (rate limited); told the person to try again later.");
+    return { ok: false, formError: MESSAGES.couldNotSend };
+  }
+  return providerFailure(error);
+}
+
+/** How long one limiter hit may take before it counts as a store failure (fail open). */
+const LIMITER_TIMEOUT_MS = 2000;
+
+/** The hit, or a rejection once LIMITER_TIMEOUT_MS has passed. The timer never outlives the hit. */
+async function hitWithTimeout(limiter: RateLimiter, input: Parameters<RateLimiter["hit"]>[0]) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Rate limit store timed out")), LIMITER_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([limiter.hit(input), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Counts each check and returns a failure for the first one that is over its limit.
+ * A limiter that throws, or takes over 2 seconds, never blocks anyone: one warning is logged
+ * (with no key, email, IP or error text) and that hit counts as allowed.
+ */
+async function overLimit(limiter: RateLimiter, checks: Check[]): Promise<Failure | null> {
+  let storeFailed = false;
+  let refusal: Failure | null = null;
+  for (const { key, limit, message } of checks) {
+    try {
+      const result = await hitWithTimeout(limiter, { key, limit: limit.limit, windowSeconds: limit.windowSeconds });
+      if (!result.allowed) {
+        refusal = {
+          ok: false,
+          formError: message ?? MESSAGES.tooMany,
+          retryAfterSeconds: Math.max(1, result.retryAfterSeconds),
+        };
+        break;
+      }
+    } catch {
+      storeFailed = true;
+    }
+  }
+  if (storeFailed) console.warn("Rate limit store unavailable; allowing the request.");
+  return refusal;
+}
+
+/** Turns a provider error into a safe result. Anything that is not a provider error is a bug and is rethrown. */
+function providerFailure(error: unknown): Failure {
+  if (!(error instanceof AuthProviderError)) throw error;
+  switch (error.code) {
+    case "rate_limited":
+      return { ok: false, formError: MESSAGES.tooMany };
+    case "weak_password":
+      return { ok: false, fieldErrors: { password: MESSAGES.weakPassword } };
+    default:
+      return { ok: false, formError: MESSAGES.generic };
+  }
+}
+
+const confirmRedirect = (deps: Deps, next: unknown) => deps.siteUrl + safeNextPath(next);
+
+/** @deprecated The link flow (the email carries a link). Task 5 deletes it; use signUp. */
+export async function signUpWithLink(deps: Deps, raw: unknown, next: unknown): Promise<ActionResult<{ status: "check_email" }>> {
+  const parsed = parse(signUpSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+  const { email, password, displayName } = parsed.data;
+
+  const refused = await overLimit(deps.limiter, [
+    emailSendCheck(email),
+    { key: `signup:email:${email}`, limit: SIGN_UP_EMAIL_LIMIT },
+    ...ipCheck("signup", deps.ip, SIGN_UP_IP_LIMIT),
+  ]);
+  if (refused) return refused;
+
+  try {
+    await deps.auth.signUpWithPassword({
+      email,
+      password,
+      displayName,
+      termsVersion: TERMS_VERSION,
+      redirectTo: confirmRedirect(deps, next),
+    });
+  } catch (error) {
+    return emailFlowFailure(error);
+  }
+  return { ok: true, data: { status: "check_email" } };
+}
+
+export async function logIn(deps: Deps, raw: unknown, next: unknown): Promise<ActionResult<{ redirectTo: string }>> {
+  const parsed = parse(loginSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+  const { email, password } = parsed.data;
+
+  const refused = await overLimit(deps.limiter, [
+    { key: `login:email:${email}`, limit: LOGIN_EMAIL_LIMIT },
+    ...ipCheck("login", deps.ip, LOGIN_IP_LIMIT),
+  ]);
+  if (refused) return refused;
+
+  try {
+    const result = await deps.auth.signInWithPassword({ email, password });
+    if (!result.ok) {
+      return {
+        ok: false,
+        formError: result.reason === "email_not_confirmed" ? CONFIRM_EMAIL_CODE : MESSAGES.badLogin,
+      };
+    }
+  } catch (error) {
+    return providerFailure(error);
+  }
+  return { ok: true, data: { redirectTo: safeNextPath(next) } };
+}
+
+/** @deprecated The link flow. Task 5 deletes it; use resendSignUpCode. */
+export async function resendConfirmation(deps: Deps, raw: unknown, next: unknown): Promise<ActionResult> {
+  const parsed = parse(forgotPasswordSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+  const { email } = parsed.data;
+
+  const refused = await overLimit(deps.limiter, [
+    emailSendCheck(email),
+    { key: `resend:email:${email}`, limit: RESEND_EMAIL_LIMIT },
+  ]);
+  if (refused) return refused;
+
+  try {
+    await deps.auth.resendConfirmation({ email, redirectTo: confirmRedirect(deps, next) });
+  } catch (error) {
+    return emailFlowFailure(error);
+  }
+  return { ok: true, data: undefined };
+}
+
+/** @deprecated The link flow (the email carries a link). Task 5 deletes it; use requestPasswordReset. */
+export async function requestPasswordResetLink(deps: Deps, raw: unknown): Promise<ActionResult<{ status: "check_email" }>> {
+  const parsed = parse(forgotPasswordSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+  const { email } = parsed.data;
+
+  const refused = await overLimit(deps.limiter, [
+    emailSendCheck(email),
+    { key: `reset:email:${email}`, limit: PASSWORD_RESET_EMAIL_LIMIT },
+    ...ipCheck("reset", deps.ip, PASSWORD_RESET_IP_LIMIT),
+  ]);
+  if (refused) return refused;
+
+  try {
+    await deps.auth.sendPasswordReset({ email, redirectTo: `${deps.siteUrl}/reset-password` });
+  } catch (error) {
+    return emailFlowFailure(error);
+  }
+  return { ok: true, data: { status: "check_email" } };
+}
+
+/** @deprecated Sets a new password for the person the reset LINK just signed in. Task 5 deletes it; use setPassword. */
+export async function resetPassword(deps: Deps, raw: unknown): Promise<ActionResult> {
+  const parsed = parse(newPasswordSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+  const { password, confirmPassword } = parsed.data;
+  if (password !== confirmPassword) {
+    return { ok: false, fieldErrors: { confirmPassword: MESSAGES.passwordsDiffer } };
+  }
+
+  try {
+    const user = await deps.auth.getUser();
+    if (!user) return { ok: false, formError: MESSAGES.signInAgain };
+
+    const refused = await overLimit(deps.limiter, [
+      { key: `password-update:user:${user.id}`, limit: PASSWORD_UPDATE_USER_LIMIT },
+    ]);
+    if (refused) return refused;
+
+    await deps.auth.updatePassword(password);
+  } catch (error) {
+    return providerFailure(error);
+  }
+  return { ok: true, data: undefined };
+}
+
+export async function startGoogle(deps: Deps, next: unknown): Promise<ActionResult<{ url: string }>> {
+  try {
+    const { url } = await deps.auth.startGoogleSignIn({ redirectTo: confirmRedirect(deps, next) });
+    return { ok: true, data: { url } };
+  } catch (error) {
+    return providerFailure(error);
+  }
+}
+
+export async function acceptTerms(deps: Deps, raw: unknown, next: unknown): Promise<ActionResult<{ redirectTo: string }>> {
+  const parsed = parse(termsSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+  // Only accept the version the person was shown. The version we record is always TERMS_VERSION.
+  if (parsed.data.termsVersion !== TERMS_VERSION) return { ok: false, formError: MESSAGES.termsChanged };
+
+  try {
+    await deps.auth.acceptTerms({ termsVersion: TERMS_VERSION });
+  } catch (error) {
+    return providerFailure(error);
+  }
+  return { ok: true, data: { redirectTo: safeNextPath(next) } };
+}
+
+export async function updateProfile(deps: Deps, raw: unknown): Promise<ActionResult> {
+  const parsed = parse(profileSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+
+  try {
+    await deps.auth.updateDisplayName(parsed.data.displayName);
+  } catch (error) {
+    return providerFailure(error);
+  }
+  return { ok: true, data: undefined };
+}
+
+/**
+ * Signs the person out. A failure is reported, never swallowed: the session may still be live,
+ * and the screen must say so. The provider's own text is never shown or logged.
+ */
+export async function logOut(deps: Pick<Deps, "auth">): Promise<ActionResult> {
+  try {
+    await deps.auth.signOut();
+  } catch (error) {
+    if (!(error instanceof AuthProviderError)) throw error;
+    console.warn("Log out failed at the auth provider.");
+    return { ok: false, formError: MESSAGES.logOutFailed };
+  }
+  return { ok: true, data: undefined };
+}
+
+/* ------------------------------------------------------------------------------------------
+   Emailed codes (registration redesign, spec 2026-11-07, sections 4 to 6).
+
+   Nothing below logs or returns a code, password, address, user id or IP; the few warnings
+   are fixed sentences.
+------------------------------------------------------------------------------------------ */
+
+const normaliseEmail = (email: string) => email.trim().toLowerCase();
+
+/**
+ * Runs an AccountDirectory call. Its failures are database errors (not AuthProviderError), so
+ * they become one fixed warning and AuthProviderError("unavailable"): the person sees the plain
+ * "something went wrong" instead of an error page, and no SQL text or address is logged.
+ */
+async function fromDirectory<T>(call: Promise<T>): Promise<T> {
+  try {
+    return await call;
+  } catch (error) {
+    if (error instanceof AuthProviderError) throw error;
+    console.warn("Account directory unavailable.");
+    throw new AuthProviderError("unavailable");
+  }
+}
+
+/** Signs out after a step failed. A failed sign-out is logged (fixed line) and otherwise ignored. */
+async function signOutQuietly(auth: AuthProvider): Promise<void> {
+  try {
+    await auth.signOut();
+  } catch {
+    console.warn("Signing out after a failed step also failed.");
+  }
+}
+
+/**
+ * Starts the shared one-email-a-minute cooldown for an address, without sending anything. Used
+ * whenever openSessionWithoutEmail runs (or is about to): the provider records that as a
+ * recovery request and would answer a recovery email within about a minute with a rate limit,
+ * so the app's own countdown must be the one the person sees (ruling P11). Fails open.
+ */
+async function startEmailCooldown(limiter: RateLimiter, email: string): Promise<void> {
+  try {
+    await hitWithTimeout(limiter, {
+      key: emailSendKey(email),
+      limit: EMAIL_SEND_COOLDOWN.limit,
+      windowSeconds: EMAIL_SEND_COOLDOWN.windowSeconds,
+    });
+  } catch {
+    console.warn("Rate limit store unavailable; the email cooldown was not started.");
+  }
+}
+
+/** "Google-only": a Google identity and no email identity. Not from hasPassword (see the port doc). */
+function isGoogleOnly(state: Extract<EmailAccountState, { kind: "confirmed" }>): boolean {
+  return state.providers.includes("google") && !state.providers.includes("email");
+}
+
+type SignUpInput = z.output<typeof signUpSchema>;
+type CreateOutcome = { kind: "ok"; userId: string } | { kind: "taken" } | { kind: "mismatch" };
+
+/**
+ * Creates the pending account and proves the password on it is the one this person typed
+ * (spec 5.1). The provider keeps the FIRST password of an unconfirmed address and its returned
+ * id may be "" or a stand-in, so neither is trusted: the directory names the pending account
+ * before and after the self-check, and only an unchanged id counts. Ids are never reused, so
+ * the same id at both reads means the self-check ran against that very account.
+ */
+async function createAndCheck(deps: Deps, input: SignUpInput): Promise<CreateOutcome> {
+  const { email, password, displayName } = input;
+  await deps.auth.signUpWithPassword({ email, password, displayName, termsVersion: TERMS_VERSION });
+
+  const before = await fromDirectory(deps.directory.describeEmail(email));
+  if (before.kind === "confirmed") return { kind: "taken" };
+  if (before.kind === "none") return { kind: "mismatch" };
+
+  // An unconfirmed account answers email_not_confirmed only for its own password (checked live).
+  const check = await deps.auth.signInWithPassword({ email, password });
+  if (check.ok) {
+    // Confirmed in the meantime, with this very password: not a sign-up any more. Leave no session.
+    await signOutQuietly(deps.auth);
+    return { kind: "taken" };
+  }
+  if (check.reason !== "email_not_confirmed") return { kind: "mismatch" };
+
+  const after = await fromDirectory(deps.directory.describeEmail(email));
+  if (after.kind !== "pending" || after.userId !== before.userId) return { kind: "mismatch" };
+  return { kind: "ok", userId: after.userId };
+}
+
+/**
+ * Email sign-up (spec 4.1, 5.1, 5.2). Says clearly when the address already has an account (the
+ * owner's choice), and creates and sends nothing then. Otherwise replaces any unconfirmed
+ * sign-up for the address (newest wins), creates the pending account (which emails a code),
+ * proves the password on it and, if someone else's sign-up got there first, removes and
+ * recreates it once.
+ *
+ * On success the caller sets the pending sign-up cookie to `{ userId: pendingUserId, email }`
+ * (signPendingSignup) and shows the code screen. `next` is not used here: the code screen
+ * carries it on to verifySignUpCode.
+ */
+export async function signUp(
+  deps: Deps,
+  raw: unknown,
+  next: unknown,
+): Promise<ActionResult<{ pendingUserId: string; email: string }>> {
+  void next;
+  const parsed = parse(signUpSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+  const { email } = parsed.data;
+
+  // The cooldown and limits come before the lookup, so the "already registered" answer is
+  // protected by them too (spec 5).
+  const refused = await overLimit(deps.limiter, [
+    emailSendCheck(email),
+    { key: `signup:email:${email}`, limit: SIGN_UP_EMAIL_LIMIT },
+    ...ipCheck("signup", deps.ip, SIGN_UP_IP_LIMIT),
+  ]);
+  if (refused) return refused;
+
+  try {
+    const state = await fromDirectory(deps.directory.describeEmail(email));
+    if (state.kind === "confirmed") {
+      return { ok: false, formError: isGoogleOnly(state) ? MESSAGES.googleOnly : MESSAGES.emailTaken };
+    }
+    if (state.kind === "pending") await fromDirectory(deps.directory.removePendingSignup(email));
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) await fromDirectory(deps.directory.removePendingSignup(email));
+      const outcome = await createAndCheck(deps, parsed.data);
+      if (outcome.kind === "ok") return { ok: true, data: { pendingUserId: outcome.userId, email } };
+      if (outcome.kind === "taken") return { ok: false, formError: MESSAGES.emailTaken };
+    }
+    console.warn("Sign-up could not prove the password on the pending account twice; gave up.");
+    return { ok: false, formError: MESSAGES.generic };
+  } catch (error) {
+    return emailFlowFailure(error);
+  }
+}
+
+/** The address and the normalised code from a code form, or field errors. Nothing is counted yet. */
+function parseCodeForm(
+  raw: unknown,
+  knownEmail: string | null,
+): { data: { email: string; code: string } } | { failure: Failure } {
+  const fields = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const fieldErrors: Record<string, string> = {};
+
+  let email = knownEmail === null ? null : normaliseEmail(knownEmail);
+  if (email === null) {
+    const parsed = parse(forgotPasswordSchema, { email: fields.email });
+    if ("failure" in parsed) Object.assign(fieldErrors, parsed.failure.fieldErrors);
+    else email = parsed.data.email;
+  }
+  const code = typeof fields.code === "string" ? normalizeCode(fields.code) : null;
+  if (code === null) fieldErrors.code = MESSAGES.codeFormat;
+
+  if (email === null || code === null) return { failure: { ok: false, fieldErrors } };
+  return { data: { email, code } };
+}
+
+/**
+ * Counts the attempt (5 per address per 15 minutes, shared by both kinds of code and not reset
+ * by a resend; 30 per IP per hour), then checks the code. A provider limit or outage is told as
+ * such, never as a wrong code, so nobody is told to retype a right code during an outage.
+ */
+async function checkCode(
+  deps: Deps,
+  email: string,
+  code: string,
+  kind: CodeKind,
+): Promise<{ userId: string } | { failure: Failure }> {
+  const refused = await overLimit(deps.limiter, [
+    { key: `code:email:${email}`, limit: CODE_ATTEMPTS, message: MESSAGES.tooManyCodes },
+    ...ipCheck("code", deps.ip, CODE_ATTEMPTS_IP),
+  ]);
+  if (refused) return { failure: refused };
+
+  try {
+    const result = await deps.auth.verifyCode({ email, code, kind });
+    if (!result.ok) return { failure: { ok: false, formError: MESSAGES.codeInvalid } };
+    return { userId: result.userId };
+  } catch (error) {
+    if (!(error instanceof AuthProviderError)) throw error;
+    const formError = error.code === "rate_limited" ? MESSAGES.tooMany : MESSAGES.codeCheckUnavailable;
+    return { failure: { ok: false, formError } };
+  }
+}
+
+/** How many times the scramble is tried before giving up (it is the step that kills a stranger's password). */
+const SCRAMBLE_ATTEMPTS = 2;
+
+/**
+ * A code confirmed an account this browser did not create, or there is no cookie (spec 5.1,
+ * ruling P9). Order: replace the password with a random one (the auth server then rejects every
+ * session of the account, including the one the code just made, so a stranger's password and
+ * sessions are dead), start the email cooldown, then open a fresh session here for exactly the
+ * user the code proved. The person must then create a password (setPassword).
+ * Returns a failure, after signing the person out, when any step fails.
+ */
+async function takeOverForeignCode(deps: Deps, email: string, userId: string): Promise<Failure | null> {
+  let scrambled = false;
+  for (let attempt = 0; attempt < SCRAMBLE_ATTEMPTS && !scrambled; attempt++) {
+    try {
+      await deps.auth.scramblePassword(userId);
+      scrambled = true;
+    } catch {
+      // Any error counts as "not scrambled": tried again, then the person is signed out.
+    }
+  }
+  if (!scrambled) {
+    console.warn("Could not replace the password after a code from another sign-up; signed the person out.");
+    await signOutQuietly(deps.auth);
+    return { ok: false, formError: MESSAGES.confirmedSetPassword };
+  }
+
+  // Started before the attempt: even a failed one may have recorded a recovery request.
+  await startEmailCooldown(deps.limiter, email);
+  try {
+    await deps.auth.openSessionWithoutEmail({ email, expectedUserId: userId });
+  } catch {
+    console.warn("Could not open a session after replacing the password; signed the person out.");
+    await signOutQuietly(deps.auth);
+    return { ok: false, formError: MESSAGES.confirmedSetPassword };
+  }
+  return null;
+}
+
+/**
+ * Checks a sign-up code (spec 4.1, 5.1). With a cookie, the code box acts on the cookie's
+ * address; without one, on the address typed in. A code that confirms the cookie's own pending
+ * account signs the person in (`needsPassword: false`). Any other confirmed account (another
+ * sign-up's, or no cookie at all) has its password replaced and gets a fresh session here, and
+ * the person must create a password next (`needsPassword: true`, then setPassword).
+ *
+ * The caller clears the pending cookie once this succeeds.
+ */
+export async function verifySignUpCode(
+  deps: Deps,
+  raw: unknown,
+  next: unknown,
+): Promise<ActionResult<{ redirectTo: string; needsPassword: boolean }>> {
+  const form = parseCodeForm(raw, deps.pending?.email ?? null);
+  if ("failure" in form) return form.failure;
+  const { email, code } = form.data;
+
+  const checked = await checkCode(deps, email, code, "signup");
+  if ("failure" in checked) return checked.failure;
+
+  const ownPendingAccount = deps.pending !== null && deps.pending.userId === checked.userId;
+  if (!ownPendingAccount) {
+    const failed = await takeOverForeignCode(deps, email, checked.userId);
+    if (failed) return failed;
+  }
+  return { ok: true, data: { redirectTo: safeNextPath(next), needsPassword: !ownPendingAccount } };
+}
+
+/** Emails a new sign-up code to the cookie's address (or the one typed in). Neutral for any address. */
+export async function resendSignUpCode(deps: Deps, raw: unknown): Promise<ActionResult> {
+  let email: string;
+  if (deps.pending) {
+    email = normaliseEmail(deps.pending.email);
+  } else {
+    const parsed = parse(forgotPasswordSchema, raw);
+    if ("failure" in parsed) return parsed.failure;
+    email = parsed.data.email;
+  }
+
+  const refused = await overLimit(deps.limiter, [
+    emailSendCheck(email),
+    { key: `resend:email:${email}`, limit: RESEND_EMAIL_LIMIT },
+  ]);
+  if (refused) return refused;
+
+  try {
+    await deps.auth.resendSignUpCode({ email });
+  } catch (error) {
+    return emailFlowFailure(error);
+  }
+  return { ok: true, data: undefined };
+}
+
+/**
+ * Forgot password (spec 4.3): emails a recovery code. The reply is the same for every valid
+ * address, known or not. A provider rate limit gets that same neutral reply too (ruling P11):
+ * the minted sessions of 5.1 and 5.3 count as recovery requests at the provider, and our own
+ * cooldown is the countdown the person sees.
+ */
+export async function requestPasswordReset(deps: Deps, raw: unknown): Promise<ActionResult<{ email: string }>> {
+  const parsed = parse(forgotPasswordSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+  const { email } = parsed.data;
+
+  const refused = await overLimit(deps.limiter, [
+    emailSendCheck(email),
+    { key: `reset:email:${email}`, limit: PASSWORD_RESET_EMAIL_LIMIT },
+    ...ipCheck("reset", deps.ip, PASSWORD_RESET_IP_LIMIT),
+  ]);
+  if (refused) return refused;
+
+  try {
+    await deps.auth.sendPasswordResetCode({ email });
+  } catch (error) {
+    if (!(error instanceof AuthProviderError && error.code === "rate_limited")) return providerFailure(error);
+    console.warn("Auth provider refused a recovery email (rate limited); answered neutrally.");
+  }
+  return { ok: true, data: { email } };
+}
+
+/** Checks a recovery code; on success this browser holds a recovery session for setPassword. */
+export async function verifyResetCode(deps: Deps, raw: unknown): Promise<ActionResult> {
+  const form = parseCodeForm(raw, null);
+  if ("failure" in form) return form.failure;
+  const checked = await checkCode(deps, form.data.email, form.data.code, "recovery");
+  if ("failure" in checked) return checked.failure;
+  return { ok: true, data: undefined };
+}
+
+/** True when this password now signs into the account (used only to learn whether a change happened). */
+async function passwordWorks(auth: AuthProvider, email: string, password: string): Promise<boolean> {
+  try {
+    return (await auth.signInWithPassword({ email, password })).ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sets the password from the session a code just opened: after Forgot password (verifyResetCode)
+ * or the forced step after a foreign code (verifySignUpCode with needsPassword). Every other
+ * session of the account is signed out. The provider refuses a change from a password sign-in
+ * session, so this is not a "change password" screen for signed-in people.
+ *
+ * If the provider reports a failure, the new password is tried: when it works, the change
+ * happened and only signing out the other devices failed, which `notice` says honestly.
+ */
+export async function setPassword(
+  deps: Deps,
+  raw: unknown,
+  next: unknown = "/",
+): Promise<ActionResult<{ redirectTo: string; notice?: string }>> {
+  const parsed = parse(newPasswordSchema, raw);
+  if ("failure" in parsed) return parsed.failure;
+  const { password, confirmPassword } = parsed.data;
+  if (password !== confirmPassword) {
+    return { ok: false, fieldErrors: { confirmPassword: MESSAGES.passwordsDiffer } };
+  }
+  const redirectTo = safeNextPath(next);
+
+  try {
+    const user = await deps.auth.getUser();
+    if (!user) return { ok: false, formError: MESSAGES.sessionEnded };
+
+    const refused = await overLimit(deps.limiter, [
+      { key: `password-update:user:${user.id}`, limit: PASSWORD_UPDATE_USER_LIMIT },
+    ]);
+    if (refused) return refused;
+
+    try {
+      await deps.auth.updatePassword(password, { signOutOthers: true });
+    } catch (error) {
+      if (!(error instanceof AuthProviderError) || error.code !== "unavailable") throw error;
+      if (!(await passwordWorks(deps.auth, user.email, password))) throw error;
+      console.warn("Password changed, but signing out the other sessions failed.");
+      return { ok: true, data: { redirectTo, notice: MESSAGES.otherDevicesMaybeSignedIn } };
+    }
+  } catch (error) {
+    return providerFailure(error);
+  }
+  return { ok: true, data: { redirectTo } };
+}
+
+/** The Google user's own name for the repair: Google's, else the address's local part, within the name rules. */
+function googleDisplayName(user: AuthUser): string {
+  const candidates = [user.providerName ?? "", user.email.split("@")[0] ?? ""];
+  for (const candidate of candidates) {
+    const parsed = displayNameSchema.safeParse(Array.from(candidate.trim()).slice(0, 50).join(""));
+    if (parsed.success) return parsed.data;
+  }
+  return "New user";
+}
+
+/**
+ * Runs right after a Google sign-in (spec 4.2, 5.3), with the user that sign-in returned.
+ *
+ * If the account has a pending email sign-up (a stranger's earlier password), the pending
+ * identity is removed, the password is replaced with a random one (which also ends the Google
+ * session), the email cooldown starts, a fresh session is opened here for this same user with
+ * no second Google trip, and the display name and terms become the Google user's own.
+ * Otherwise the terms rule applies: no accepted version is recorded as accepted now (the person
+ * pressed the button under the "By continuing you confirm..." sentence); an out-of-date
+ * version goes to /welcome. A confirmed password account that signs in with Google is left as
+ * it is.
+ *
+ * Any failure signs the person out and returns the Google message.
+ */
+export async function repairGoogleAccount(
+  deps: Deps,
+  user: AuthUser,
+  next: unknown = "/",
+): Promise<ActionResult<{ redirectTo: string }>> {
+  const target = safeNextPath(next);
+  const email = normaliseEmail(user.email);
+  try {
+    const { hadPendingEmailSignup } = await deps.directory.repairAfterGoogle(user.id);
+    if (hadPendingEmailSignup) {
+      await deps.auth.scramblePassword(user.id);
+      await startEmailCooldown(deps.limiter, email);
+      await deps.auth.openSessionWithoutEmail({ email, expectedUserId: user.id });
+      await deps.auth.updateDisplayName(googleDisplayName(user));
+      await deps.auth.acceptTerms({ termsVersion: TERMS_VERSION });
+      return { ok: true, data: { redirectTo: target } };
+    }
+    if (!user.termsVersion) {
+      await deps.auth.acceptTerms({ termsVersion: TERMS_VERSION });
+      return { ok: true, data: { redirectTo: target } };
+    }
+    if (user.termsVersion !== TERMS_VERSION) {
+      return { ok: true, data: { redirectTo: target === "/" ? "/welcome" : `/welcome?next=${encodeURIComponent(target)}` } };
+    }
+    return { ok: true, data: { redirectTo: target } };
+  } catch {
+    // Any failure, database or provider: never leave a half-repaired session behind.
+    console.warn("Completing a Google sign-in failed; signed the person out.");
+    await signOutQuietly(deps.auth);
+    return { ok: false, formError: MESSAGES.googleFailed };
+  }
+}

@@ -50,6 +50,16 @@ const serverEnvSchema = z
     // (Resend's login is literally "resend"). Defaults to SMTP_USER, which suits Gmail.
     SMTP_FROM: z.string().optional(),
 
+    // "fake" swaps outside services for in-memory test doubles. Never allowed on production data.
+    SERVICES_MODE: z.enum(["real", "fake"]).default("real"),
+
+    // The public address of this deployment, used in email links. Empty counts as not set.
+    NEXT_PUBLIC_SITE_URL: z
+      .string()
+      .optional()
+      .transform((value) => (value?.trim() ? value.trim() : undefined))
+      .pipe(z.url().optional()),
+
     // Optional: with no DSN, error reporting is simply off.
     NEXT_PUBLIC_SENTRY_DSN: z
       .string()
@@ -81,6 +91,25 @@ export function parseServerEnv(
 
   const env = result.data;
   const deployment = source.VERCEL_ENV;
+  const productionRefs = options.productionProjectRefs ?? PRODUCTION_PROJECT_REFS;
+  if (env.SERVICES_MODE === "fake") {
+    // Fake mode is for local runs and CI only: never on any Vercel deployment (production,
+    // preview or development), whatever the other settings say.
+    const onVercel = (deployment ?? "").trim() !== "";
+    const onProduction =
+      env.APP_ENV === "production" ||
+      Object.values(projectRefsByVariable(env)).some((ref) => productionRefs.includes(ref));
+    if (onVercel || onProduction) {
+      throw new EnvError(
+        "Refusing to start: SERVICES_MODE=fake is only for local runs and CI, never on a Vercel deployment, on production or with production settings.",
+      );
+    }
+  }
+  // Production must say where it lives: without it, email links, Google sign-in and cookies
+  // would fall back to a Vercel deployment address.
+  if (env.APP_ENV === "production" && !env.NEXT_PUBLIC_SITE_URL) {
+    throw new EnvError("Missing or invalid environment variables: NEXT_PUBLIC_SITE_URL (required when APP_ENV is production)");
+  }
   if (deployment === "preview" && env.APP_ENV === "production") {
     throw new EnvError("Refusing to start: this is a preview deployment but APP_ENV is production.");
   }
@@ -88,7 +117,7 @@ export function parseServerEnv(
     throw new EnvError("Refusing to start: this is a production deployment but APP_ENV is not production.");
   }
 
-  checkProjects(env, options.productionProjectRefs ?? PRODUCTION_PROJECT_REFS);
+  checkProjects(env, productionRefs);
   return env;
 }
 
@@ -124,6 +153,20 @@ function checkProjects(env: ServerEnv, productionRefs: readonly string[]): void 
       `Refusing to start: these settings point at different Supabase projects: ${named.map(([name]) => name).join(", ")}.`,
     );
   }
+}
+
+/**
+ * True when these settings are, or point at, production. Scripts that change data on a
+ * live project (scripts/check-auth-behaviour.ts) refuse to run when this is true.
+ */
+export function settingsPointAtProduction(
+  env: ServerEnv,
+  productionRefs: readonly string[] = PRODUCTION_PROJECT_REFS,
+): boolean {
+  return (
+    env.APP_ENV === "production" ||
+    Object.values(projectRefsByVariable(env)).some((ref) => productionRefs.includes(ref))
+  );
 }
 
 /** Which Supabase project each setting points at. Settings for other vendors are left out. */

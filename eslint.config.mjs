@@ -11,7 +11,8 @@ import nextTs from "eslint-config-next/typescript";
      only by the one folder that owns it. Everything else talks to our own
      interfaces in src/server/ports, wired up in src/server/services.ts.
 
-       @aws-sdk/*, nodemailer   only in src/server/adapters
+       @aws-sdk/*, nodemailer,
+       @supabase/*              only in src/server/adapters
        drizzle-orm, postgres    only in src/server/db
 
   Switching a vendor then means editing one adapter, not hunting through the app.
@@ -26,7 +27,7 @@ const serverImport = {
   message: "Client code must not import server code. Call a server action or API route instead.",
 };
 const storageAndEmailSdks = {
-  group: ["@aws-sdk/*", "nodemailer"],
+  group: ["@aws-sdk/*", "nodemailer", "@supabase/*"],
   message: "Vendor SDK. Use the port in src/server/ports via src/server/services. Only src/server/adapters may import it.",
 };
 const databaseSdks = {
