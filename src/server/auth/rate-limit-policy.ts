@@ -19,6 +19,13 @@ export const PASSWORD_UPDATE_USER_LIMIT: Limit = { limit: 10, windowSeconds: HOU
 export const RESEND_EMAIL_LIMIT: Limit = { limit: 3, windowSeconds: HOUR };
 
 /**
+ * Emailed-code checks (sign-up and reset codes share it): 5 per address per 15 minutes. A resend
+ * does not reset it, so asking for new codes never buys more guesses.
+ */
+export const CODE_ATTEMPTS: Limit = { limit: 5, windowSeconds: FIFTEEN_MINUTES };
+export const CODE_ATTEMPTS_IP: Limit = { limit: 30, windowSeconds: HOUR };
+
+/**
  * At most one email a minute to an address, shared by sign-up, resend and reset (one key for
  * all three, because Supabase's own per-address limit counts every email it sends). Our own
  * refusal depends only on this counter, never on whether an account exists.

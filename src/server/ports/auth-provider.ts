@@ -1,4 +1,15 @@
-export type AuthUser = { id: string; email: string; displayName: string; termsVersion: string | null };
+export type AuthUser = {
+  id: string;
+  email: string;
+  displayName: string;
+  termsVersion: string | null;
+  /**
+   * The name the sign-in provider (Google) supplied, if any, as opposed to the display name the
+   * person typed at sign-up. The Google repair (spec 5.3) uses it to replace a stranger's typed
+   * name. Like displayName it comes from user metadata: unvalidated, never a basis for access.
+   */
+  providerName?: string | null;
+};
 
 export type SignInResult = { ok: true } | { ok: false; reason: "invalid_credentials" | "email_not_confirmed" };
 

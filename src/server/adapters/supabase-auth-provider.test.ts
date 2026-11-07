@@ -545,6 +545,7 @@ describe("getUser", () => {
       email: "ada@example.com",
       displayName: "Ada",
       termsVersion: "2026-11",
+      providerName: null,
     });
     expect(client.auth.getClaims).toHaveBeenCalled();
   });
@@ -556,7 +557,15 @@ describe("getUser", () => {
       email: "ada@example.com",
       displayName: "Ada Lovelace",
       termsVersion: null,
+      providerName: "Ada Lovelace",
     });
+  });
+
+  test("keeps the provider's (Google) name apart from the typed display name", async () => {
+    const { provider } = make(makeClient({ getClaims: claims({ display_name: "Typed", full_name: "Ada Lovelace", name: "Ada" }) }));
+    expect(await provider.getUser()).toMatchObject({ displayName: "Typed", providerName: "Ada Lovelace" });
+    const { provider: short } = make(makeClient({ getClaims: claims({ display_name: "Typed", name: " Ada " }) }));
+    expect(await short.getUser()).toMatchObject({ providerName: "Ada" });
   });
 
   test("ignores metadata values that are not strings", async () => {

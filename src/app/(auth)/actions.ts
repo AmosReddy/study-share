@@ -8,10 +8,10 @@ import {
   CONFIRM_EMAIL_CODE,
   logIn,
   logOut,
-  requestPasswordReset,
+  requestPasswordResetLink,
   resendConfirmation,
   resetPassword,
-  signUp,
+  signUpWithLink,
   startGoogle,
   type ActionResult,
   updateProfile,
@@ -19,7 +19,7 @@ import {
 } from "@/server/auth/use-cases";
 import { getCurrentUser } from "@/server/auth/session";
 import { clientIp } from "@/server/request-ip";
-import { getAuthProvider, getRateLimiter } from "@/server/services";
+import { getAccountDirectory, getAuthProvider, getRateLimiter } from "@/server/services";
 import { getSiteUrl } from "@/server/site-url";
 import type { FormState } from "@/shared/form-state";
 import { safeNextPath } from "@/shared/safe-next-path";
@@ -37,6 +37,9 @@ async function deps(): Promise<Deps> {
     limiter: getRateLimiter(),
     siteUrl: getSiteUrl(),
     ip: clientIp(requestHeaders.get("x-forwarded-for")),
+    directory: getAccountDirectory(),
+    // Task 5 reads the pending sign-up cookie here (readPendingSignup); the link flow below ignores it.
+    pending: null,
   };
 }
 
@@ -61,7 +64,7 @@ export async function signUpAction(_state: FormState, form: FormData): Promise<F
     password: text(form, "password"),
     acceptTerms: values.acceptTerms === "on",
   };
-  const result = await signUp(await deps(), raw, text(form, "next"));
+  const result = await signUpWithLink(await deps(), raw, text(form, "next"));
   if (!result.ok) return failed(result, values);
   return { status: "done", values: { email: values.email.trim() } };
 }
@@ -87,7 +90,7 @@ export async function resendConfirmationAction(_state: FormState, form: FormData
 
 export async function forgotPasswordAction(_state: FormState, form: FormData): Promise<FormState> {
   const values = { email: text(form, "email") };
-  const result = await requestPasswordReset(await deps(), values);
+  const result = await requestPasswordResetLink(await deps(), values);
   if (!result.ok) return failed(result, values);
   return { status: "done", values: { email: values.email.trim() } };
 }

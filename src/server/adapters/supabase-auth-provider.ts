@@ -278,6 +278,8 @@ function toAuthUser(id: string, email: string | undefined, meta: Record<string, 
     email: email ?? "",
     displayName: text(meta.display_name) ?? text(meta.full_name) ?? text(meta.name) ?? "",
     termsVersion: text(meta.terms_version) ?? null,
+    // Google's claims, which Supabase merges into the metadata when the identity signs in or links.
+    providerName: text(meta.full_name) ?? text(meta.name) ?? null,
   };
 }
 

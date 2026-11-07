@@ -62,6 +62,8 @@ export type FakeUser = {
   /** null (or "") when no password was ever set, as for a Google-only account. */
   password: string | null;
   displayName: string;
+  /** The name Google supplied (set by the fake Google sign-in), kept apart from the typed displayName. */
+  providerName?: string;
   termsVersion: string | null;
   confirmed: boolean;
   identities: FakeIdentity[];
@@ -183,6 +185,7 @@ export function findFakeUserByEmail(store: FakeAuthStore, email: string): FakeUs
 const SESSION_COOKIE = "fake-auth-session";
 const MIN_PASSWORD_LENGTH = 8;
 const GOOGLE_EMAIL = "google.user@example.test";
+const GOOGLE_NAME = "Google User";
 
 export function normaliseEmail(email: string) {
   return email.trim().toLowerCase();
@@ -290,6 +293,7 @@ export function createFakeAuthProvider(deps: {
     email: u.email,
     displayName: u.displayName,
     termsVersion: u.termsVersion,
+    providerName: u.providerName ?? null,
   });
 
   return {
@@ -370,7 +374,7 @@ export function createFakeAuthProvider(deps: {
           id: crypto.randomUUID(),
           email: GOOGLE_EMAIL,
           password: null,
-          displayName: "Google User",
+          displayName: GOOGLE_NAME,
           termsVersion: null,
           confirmed: true,
           identities: [],
@@ -378,6 +382,8 @@ export function createFakeAuthProvider(deps: {
         store.users.set(u.id, u);
       }
       if (!u.identities.some((i) => i.provider === "google")) u.identities.push({ provider: "google", verified: true });
+      // As Supabase merges Google's claims (full_name) into the metadata; a typed display name stays.
+      u.providerName = GOOGLE_NAME;
       u.confirmed = true;
       signInAs(u, "oauth");
       return true;
