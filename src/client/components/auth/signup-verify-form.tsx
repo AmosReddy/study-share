@@ -1,14 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { startTransition, useActionState, useEffect, useRef, type FormEvent } from "react";
 import { CODE_LENGTH } from "@/shared/auth-schemas";
-import { IDLE, type FormAction } from "@/shared/form-state";
+import type { FormAction } from "@/shared/form-state";
 import { AuthCard, linkTarget } from "./auth-card";
 import { CodeForm } from "./code-form";
 import { FormMessage } from "./form-message";
 import { SubmitButton } from "./submit-button";
-import { useAuthForm } from "./use-auth-form";
+import { useCodeScreen } from "./use-code-screen";
 
 type SignupVerifyFormProps = {
   /** The address from the pending sign-up cookie, or null (another device or a cleared browser). */
@@ -35,30 +34,8 @@ export function SignupVerifyForm({
   resendAction,
   changeEmailAction,
 }: SignupVerifyFormProps) {
-  const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(verifyAction);
-  const [resendState, resendFormAction, resendPending] = useActionState(resendAction, IDLE);
-
-  // One code check at a time: a double tap must not send the code twice (the second would find
-  // it used). Released when an answer comes back; a success navigates away.
-  const checking = useRef(false);
-  useEffect(() => {
-    checking.current = false;
-  }, [state]);
-  function submitOnce(event: FormEvent<HTMLFormElement>) {
-    if (checking.current) {
-      event.preventDefault();
-      return;
-    }
-    checking.current = true;
-    onSubmit(event);
-  }
-
-  function resend() {
-    const data = new FormData();
-    // Only used without the cookie; with it the server sends to the cookie's address.
-    data.set("email", formRef.current?.querySelector<HTMLInputElement>('input[name="email"]')?.value ?? "");
-    startTransition(() => resendFormAction(data));
-  }
+  const screen = useCodeScreen(verifyAction, resendAction, cooldownSeconds);
+  const { state, resendState } = screen;
 
   const resendMessage =
     resendState.status === "done" ? (
@@ -68,9 +45,6 @@ export function SignupVerifyForm({
     ) : resendState.formError ? (
       <FormMessage tone="error" title={resendState.formError} />
     ) : null;
-
-  const cooldown = resendState.status === "idle" ? cooldownSeconds : (resendState.retryAfterSeconds ?? 0);
-  const fieldErrors = { ...(resendState.fieldErrors ?? {}), ...(state.fieldErrors ?? {}) };
 
   return (
     <AuthCard
@@ -98,17 +72,17 @@ export function SignupVerifyForm({
         email={email}
         defaultEmail={prefillEmail}
         next={next}
-        action={formAction}
-        onSubmit={submitOnce}
-        formRef={formRef}
-        announcerRef={announcerRef}
-        pending={pending}
+        action={screen.formAction}
+        onSubmit={screen.submitOnce}
+        formRef={screen.formRef}
+        announcerRef={screen.announcerRef}
+        pending={screen.pending}
         values={state.values}
-        fieldErrors={fieldErrors}
+        fieldErrors={screen.fieldErrors}
         formError={state.formError}
-        onResend={resend}
-        resendPending={resendPending}
-        cooldownSeconds={cooldown}
+        onResend={screen.resend}
+        resendPending={screen.resendPending}
+        cooldownSeconds={screen.cooldown}
         cooldownKey={resendState}
         resendMessage={resendMessage}
         changeEmail={

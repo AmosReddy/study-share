@@ -2,8 +2,8 @@ import { connection } from "next/server";
 import { resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
 
 /**
- * Test mode only: empties the fake auth store (users, sessions, codes and their expiry, links,
- * Google codes, outbox),
+ * Test mode only: empties the fake auth store (users, sessions, codes and their expiry,
+ * Google codes, outbox, the profile terms records, and the failing sign-out and repair switches),
  * so browser tests that share the one fake Google account can run again on the same
  * server. In any other mode it does not exist.
  */

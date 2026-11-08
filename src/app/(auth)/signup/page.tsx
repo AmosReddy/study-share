@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { AuthCardSkeleton } from "@/client/components/auth/auth-card";
 import { GoogleButton } from "@/client/components/auth/google-button";
+import { GoogleConsent } from "@/client/components/auth/google-consent";
 import { InAppBrowserNotice } from "@/client/components/auth/in-app-browser-notice";
 import { SignupForm } from "@/client/components/auth/signup-form";
 import { getCurrentUser } from "@/server/auth/session";
@@ -25,7 +26,10 @@ async function Signup({ searchParams }: Pick<PageProps<"/signup">, "searchParams
   const alternative = (await inAppBrowser()) ? (
     <InAppBrowserNotice />
   ) : (
-    <GoogleButton action={startGoogleAction} next={next} />
+    <div className="flex flex-col gap-3">
+      <GoogleButton action={startGoogleAction} next={next} />
+      <GoogleConsent />
+    </div>
   );
   // Already signed in: there is nothing to sign up for (spec 6).
   if (await getCurrentUser()) redirect(next);

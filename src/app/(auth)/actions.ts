@@ -8,8 +8,6 @@ import {
   CONFIRM_EMAIL_CODE,
   logIn,
   logOut,
-  requestPasswordReset,
-  setPassword,
   startGoogle,
   updateProfile,
 } from "@/server/auth/use-cases";
@@ -23,7 +21,7 @@ import { failed, text } from "./form-data";
   Thin server actions: read the form, call the use-case, turn its result into what the
   screen shows. Validation, rate limits and neutral replies all live in the use-cases.
   Passwords are never echoed back. The sign-up and code screen actions are in
-  signup-actions.ts.
+  signup-actions.ts, and Forgot password's in reset-actions.ts.
 */
 
 export async function logInAction(_state: FormState, form: FormData): Promise<FormState> {
@@ -35,28 +33,6 @@ export async function logInAction(_state: FormState, form: FormData): Promise<Fo
     }
     return failed(result, values);
   }
-  redirect(result.data.redirectTo);
-}
-
-/*
-  Forgot password and reset: Task 6 replaces these two screens with the code flow. Until then
-  the request already sends a recovery CODE (the link methods are gone) and the reset screen
-  sets a password for whoever holds a code session.
-*/
-
-export async function forgotPasswordAction(_state: FormState, form: FormData): Promise<FormState> {
-  const values = { email: text(form, "email") };
-  const result = await requestPasswordReset(await requestDeps(), values);
-  if (!result.ok) return failed(result, values);
-  return { status: "done", values: { email: values.email.trim() } };
-}
-
-export async function resetPasswordAction(_state: FormState, form: FormData): Promise<FormState> {
-  const result = await setPassword(await requestDeps(), {
-    password: text(form, "password"),
-    confirmPassword: text(form, "confirmPassword"),
-  });
-  if (!result.ok) return failed(result, {});
   redirect(result.data.redirectTo);
 }
 
@@ -74,10 +50,14 @@ export async function startGoogleAction(_state: FormState, form: FormData): Prom
 }
 
 export async function acceptTermsAction(_state: FormState, form: FormData): Promise<FormState> {
+  // The page requires sign-in, but a stale tab can still post here after the session ended.
+  if (!(await getCurrentUser())) redirect("/login?next=%2Fwelcome");
   const values = { acceptTerms: text(form, "acceptTerms") };
   const raw = { acceptTerms: values.acceptTerms === "on", termsVersion: text(form, "termsVersion") };
   const result = await acceptTerms(await requestDeps(), raw, text(form, "next"));
   if (!result.ok) return failed(result, values);
+  // Pages the browser prefetched while the terms were not accepted redirect to /welcome: drop them.
+  revalidatePath("/", "layout");
   redirect(result.data.redirectTo);
 }
 

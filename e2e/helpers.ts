@@ -1,4 +1,5 @@
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { AUTH_MESSAGES } from "../src/shared/auth-messages";
 
 /** Shared by the browser specs; all of it runs against the fake auth provider (SERVICES_MODE=fake). */
 
@@ -94,4 +95,49 @@ export async function signUpAndConfirm(page: Page, { name, email }: { name: stri
 /** The sideways overflow of the whole document, in pixels (0 or less means none). */
 export function sidewaysOverflow(page: Page): Promise<number> {
   return page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+}
+
+/** The one Google account of the fake provider (see fake-auth-provider.ts). */
+export const FAKE_GOOGLE_EMAIL = "google.user@example.test";
+
+/** Fills in and submits the log-in form on the page that is open. */
+export async function logIn(page: Page, email: string, password: string) {
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Log in", exact: true }).click();
+}
+
+/** Logs in on a fresh /login (cookies cleared first) and says whether it reached `/`. */
+export async function passwordWorks(page: Page, email: string, password: string): Promise<boolean> {
+  await page.context().clearCookies();
+  await page.goto("/login");
+  await logIn(page, email, password);
+  const wrong = page.getByText(AUTH_MESSAGES.badLogin);
+  // The signed-in home (whatever the account's name), or the one generic error.
+  await expect(wrong.or(page.getByRole("main").getByRole("button", { name: "Create a group" }))).toBeVisible();
+  return (await wrong.count()) === 0;
+}
+
+/** On /welcome: ticks the one consent box and continues. */
+export async function acceptTermsOnWelcome(page: Page): Promise<void> {
+  await expect(page).toHaveURL(/\/welcome/);
+  await expect(page.getByRole("heading", { level: 1, name: "One last step" })).toBeVisible();
+  await page.getByRole("checkbox", { name: /18 or older/ }).check();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+}
+
+/** Asks Forgot password for a code and waits for the code screen. */
+export async function requestResetCode(page: Page, email: string): Promise<void> {
+  await page.goto("/forgot-password");
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page.getByRole("button", { name: "Send code" }).click();
+  await expect(page).toHaveURL("/reset-password");
+  await expect(page.getByRole("heading", { level: 1, name: "Enter the code" })).toBeVisible();
+}
+
+/** Fills the new-password step (reset step 2, or the forced step after a foreign code) and saves. */
+export async function saveNewPassword(page: Page, password: string): Promise<void> {
+  await page.getByLabel("New password", { exact: true }).fill(password);
+  await page.getByLabel("Confirm new password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Save password" }).click();
 }

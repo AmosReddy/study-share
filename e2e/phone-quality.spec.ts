@@ -43,11 +43,11 @@ test.describe("signed out", () => {
     });
   }
 
-  test("/reset-password without a reset link", async ({ page }) => {
+  test("/reset-password (the code step, with no remembered address)", async ({ page }) => {
     await auditInBothThemes(page, {
       path: "/reset-password",
       url: "/reset-password",
-      landmark: h1("This link has expired"),
+      landmark: h1("Enter the code"),
     });
   });
 });

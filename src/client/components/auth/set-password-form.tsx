@@ -23,8 +23,8 @@ type SetPasswordFormProps = {
 };
 
 /**
- * "Create a password" after a code: the forced step of spec 5.1, and (Task 6) the second step
- * of a password reset. Show/hide on both fields, `new-password` for password managers.
+ * "Create a password" after a code: the forced step of spec 5.1, and the second step of a
+ * password reset (spec 4.3). Show/hide on both fields, `new-password` for password managers.
  */
 export function SetPasswordForm({ action, next, title, description, accountEmail, recovery }: SetPasswordFormProps) {
   const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);

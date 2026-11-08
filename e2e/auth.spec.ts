@@ -3,13 +3,19 @@ import { AUTH_MESSAGES } from "../src/shared/auth-messages";
 import { CODE_LENGTH } from "../src/shared/auth-schemas";
 import { CONTACT_EMAIL } from "../src/shared/legal";
 import {
+  acceptTermsOnWelcome,
   codeBox,
   enterCode,
+  FAKE_GOOGLE_EMAIL,
   forgetEmailCooldown,
   isolateRateLimits,
   lastEmailedCode,
   latestEmail,
+  logIn,
   PASSWORD,
+  passwordWorks,
+  requestResetCode,
+  saveNewPassword,
   sidewaysOverflow,
   signUpAndConfirm,
   submitSignUp,
@@ -18,16 +24,13 @@ import {
 } from "./helpers";
 
 /*
-  Sign-up with an emailed code, log-in and the terms, against the fake auth provider
-  (SERVICES_MODE=fake). Codes are read from the fake outbox (GET /api/test/outbox). Emails
-  carry codes only: there is no link flow any more.
+  Sign-up with an emailed code, Forgot password with an emailed code, log-in and the terms,
+  against the fake auth provider (SERVICES_MODE=fake). Codes are read from the fake outbox
+  (GET /api/test/outbox). Emails carry codes only: there is no link flow any more.
 */
 
 const IN_APP_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36 Instagram 350.0.0.0.0";
-
-/** The one Google account of the fake provider (see fake-auth-provider.ts). */
-const FAKE_GOOGLE_EMAIL = "google.user@example.test";
 
 // Each test gets its own made-up client address, so the per-IP rate limits of one test
 // (or of an earlier run against the same server) never block another.
@@ -64,30 +67,14 @@ async function createConfirmedUser(page: Page, email: string, name = "Asha Rao")
   await page.context().clearCookies();
 }
 
-async function logIn(page: Page, email: string, password: string) {
-  await page.getByLabel("Email", { exact: true }).fill(email);
-  await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Log in", exact: true }).click();
-}
-
-/** Logs in on a fresh /login (cookies cleared first) and says whether it reached `/`. */
-async function passwordWorks(page: Page, email: string, password: string): Promise<boolean> {
-  await page.context().clearCookies();
-  await page.goto("/login");
-  await logIn(page, email, password);
-  const wrong = page.getByText(AUTH_MESSAGES.badLogin);
-  // The signed-in home (whatever the account's name), or the one generic error.
-  await expect(wrong.or(page.getByRole("main").getByRole("button", { name: "Create a group" }))).toBeVisible();
-  return (await wrong.count()) === 0;
-}
-
 /** Fills the create-password step and submits it. */
 async function createPassword(page: Page, password: string) {
   await expect(passwordHeading(page)).toBeVisible();
-  await page.getByLabel("New password", { exact: true }).fill(password);
-  await page.getByLabel("Confirm new password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Save password" }).click();
+  await saveNewPassword(page, password);
 }
+
+/** The part of an address before the @: the name a foreign code gives the account (P13). */
+const localPart = (email: string) => email.split("@")[0];
 
 /** Types a code into the focused code box and submits with Enter, as the phone keyboard's Go does. */
 async function submitCodeWithEnter(page: Page, code: string) {
@@ -232,7 +219,8 @@ test.describe("sign-up with an emailed code", () => {
       await isolateRateLimits(google);
       await google.goto("/signup");
       await google.getByRole("button", { name: "Continue with Google" }).click();
-      await expect(google).toHaveURL(/\/welcome/);
+      // The sentence under the button is the acceptance: a Google sign-up lands home (spec 5.3).
+      await expect(google).toHaveURL("/");
     } finally {
       await google.close();
     }
@@ -267,9 +255,9 @@ test.describe("sign-up with an emailed code", () => {
     expect(await passwordWorks(page, email, "the second password")).toBe(true);
   });
 
-  test("a stranger's later sign-up: the owner's code forces a new password, and the stranger's password is dead", async ({ page, browser, baseURL }) => {
+  test("a stranger's later sign-up: the owner's code forces a new password, then /welcome; the stranger's password and name are gone", async ({ page, browser, baseURL }) => {
     const email = uniqueEmail("stranger");
-    await startSignUp(page, email);
+    await startSignUp(page, email, { name: "Asha Rao" });
 
     // Just after the owner, a stranger signs up the same address with their own password.
     const strangersPassword = "the stranger's password";
@@ -288,7 +276,16 @@ test.describe("sign-up with an emailed code", () => {
     await expect(page).toHaveURL("/signup/password");
     const ownersPassword = "the owner's own password";
     await createPassword(page, ownersPassword);
+
+    // The stranger accepted the terms, not the owner: the owner confirms 18+ and the terms
+    // themselves (P13). The account is named after the address, not what the stranger typed.
+    await expect(page).toHaveURL("/welcome?next=%2F");
+    await expect(page.getByRole("main")).toContainText(localPart(email));
+    await expect(page.getByRole("main")).not.toContainText("Stranger");
+    await acceptTermsOnWelcome(page);
     await expect(page).toHaveURL("/");
+    await expect(accountMenu(page, localPart(email))).toBeVisible();
+    await expect(page.getByRole("banner")).not.toContainText("Stranger");
 
     expect(await passwordWorks(page, email, strangersPassword)).toBe(false);
     expect(await passwordWorks(page, email, ownersPassword)).toBe(true);
@@ -320,8 +317,11 @@ test.describe("sign-up with an emailed code", () => {
     await expect(confirm).toBeFocused();
     await expect(confirm).toHaveAttribute("aria-invalid", "true");
     await createPassword(page, "my new device password");
+    // Without the cookie the code cannot tell the owner from someone else, so the name typed at
+    // sign-up and its terms acceptance are not kept (P13): /welcome, then the address's name.
+    await acceptTermsOnWelcome(page);
     await expect(page).toHaveURL("/");
-    await expect(accountMenu(page, "Asha Rao")).toBeVisible();
+    await expect(accountMenu(page, localPart(email))).toBeVisible();
     expect(await passwordWorks(page, email, "my new device password")).toBe(true);
     // The password typed at sign-up was replaced.
     expect(await passwordWorks(page, email, PASSWORD)).toBe(false);
@@ -479,8 +479,10 @@ test.describe("log-in", () => {
       expect(code).not.toBe(firstCode);
     }).toPass({ timeout: 5000 });
     await enterCode(page, code);
-    // Without the cookie of the browser that signed up, the person sets a password (spec 5.1).
+    // Without the cookie of the browser that signed up, the person sets a password (spec 5.1)
+    // and accepts the terms themselves (P13).
     await createPassword(page, "a fresh password");
+    await acceptTermsOnWelcome(page);
     await expect(page).toHaveURL("/");
   });
 });
@@ -517,9 +519,193 @@ test.describe("a leftover sign-up in this browser and the log-in page's new code
     // B's newest code signs in (with the one-step password of spec 5.1).
     await enterCode(page, await lastEmailedCode(page.request, second));
     await createPassword(page, "b's own new password");
+    await acceptTermsOnWelcome(page);
     await expect(page).toHaveURL("/");
     expect(await passwordWorks(page, second, "b's own new password")).toBe(true);
   });
+});
+
+test.describe("forgot password with an emailed code", () => {
+  const newPasswordHeading = (page: Page) => page.getByRole("heading", { level: 1, name: "Create a new password" });
+
+  /** The code screen's visible text with the address taken out, to compare two addresses' screens. */
+  async function screenText(page: Page, email: string): Promise<string> {
+    // The countdown may have ticked between the two; its digits are not about the address.
+    return (await page.getByRole("main").innerText()).replaceAll(email, "<address>").replace(/\d:\d\d/g, "m:ss");
+  }
+
+  test("a known and an unknown address get the same screen, and only the known one is sent a code", async ({ page }) => {
+    const known = uniqueEmail("forgot-known");
+    await createConfirmedUser(page, known);
+    await forgetEmailCooldown(page.request, known);
+    const unknown = uniqueEmail("forgot-unknown");
+
+    await requestResetCode(page, known);
+    await expect(page.getByRole("main")).toContainText(AUTH_MESSAGES.resetCodeSent);
+    const knownScreen = await screenText(page, known);
+
+    await page.context().clearCookies();
+    await requestResetCode(page, unknown);
+    expect(await screenText(page, unknown)).toBe(knownScreen);
+
+    expect((await latestEmail(page.request, known)).purpose).toBe("recovery");
+    expect(await latestEmail(page.request, unknown)).toEqual({ code: null, purpose: null });
+  });
+
+  test("the code then a new password: signed in here, home says Password updated, the old password is dead and another device is signed out", async ({ page, browser, baseURL }) => {
+    const email = uniqueEmail("reset");
+    await createConfirmedUser(page, email);
+
+    // The same person is also signed in on another device.
+    const other = await browser.newPage({ baseURL });
+    try {
+      await isolateRateLimits(other);
+      await other.goto("/login");
+      await logIn(other, email, PASSWORD);
+      await expect(other).toHaveURL("/");
+      await expect(accountMenu(other, "Asha Rao")).toBeVisible();
+
+      await forgetEmailCooldown(page.request, email);
+      await requestResetCode(page, email);
+      await enterCode(page, await lastEmailedCode(page.request, email, "recovery"));
+      await expect(page).toHaveURL("/reset-password/new");
+      await expect(newPasswordHeading(page)).toBeVisible();
+      // Show/hide on the new password, and password managers file it under this account.
+      const field = page.getByLabel("New password", { exact: true });
+      await expect(field).toHaveAttribute("autocomplete", "new-password");
+      await page.getByRole("button", { name: "Show new password" }).click();
+      await expect(field).toHaveAttribute("type", "text");
+      await saveNewPassword(page, "my brand new password");
+
+      await expect(page).toHaveURL("/?password=updated");
+      await expect(page.getByRole("status").filter({ hasText: AUTH_MESSAGES.passwordUpdated })).toBeVisible();
+      await expect(accountMenu(page, "Asha Rao")).toBeVisible();
+
+      // The other device is signed out.
+      await other.goto("/");
+      await expect(other.getByRole("main").getByRole("link", { name: "Sign up", exact: true })).toBeVisible();
+      await expect(accountMenu(other, "Asha Rao")).toHaveCount(0);
+    } finally {
+      await other.close();
+    }
+
+    expect(await passwordWorks(page, email, PASSWORD)).toBe(false);
+    expect(await passwordWorks(page, email, "my brand new password")).toBe(true);
+  });
+
+  test("a wrong code and an expired code get the one message, and Resend works once the countdown has run", async ({ page }) => {
+    await page.clock.install();
+    const email = uniqueEmail("reset-wrong");
+    await createConfirmedUser(page, email);
+    await forgetEmailCooldown(page.request, email);
+    await requestResetCode(page, email);
+    const code = await lastEmailedCode(page.request, email, "recovery");
+
+    // The code just went out: Resend waits for the countdown.
+    await expect(resendButton(page)).toBeDisabled();
+    await expect(resendButton(page)).toHaveText(/Resend code in \d:\d\d/);
+
+    // A wrong code, sent with the keyboard's Go from the focused box: announced there, focus kept.
+    await submitCodeWithEnter(page, wrongCode(code));
+    await expect(liveError(page, AUTH_MESSAGES.codeInvalid)).toHaveCount(1);
+    await expect(codeBox(page)).toBeFocused();
+    await expect(codeBox(page)).toHaveAccessibleDescription(AUTH_MESSAGES.codeInvalid);
+
+    // The right code once it has expired: the same message.
+    const expire = await page.request.post(`/api/test/expire-codes?email=${encodeURIComponent(email)}`);
+    expect(expire.status()).toBe(204);
+    await enterCode(page, code);
+    await expect(codeBox(page)).toHaveAccessibleDescription(AUTH_MESSAGES.codeInvalid);
+    await expect(page).toHaveURL("/reset-password");
+
+    await forgetEmailCooldown(page.request, email);
+    await page.clock.fastForward("01:05");
+    await expect(resendButton(page)).toBeEnabled();
+    await resendButton(page).click();
+    await expect(page.getByText("If an account exists for that email, we sent a new code.")).toBeVisible();
+    await expect(resendButton(page)).toBeDisabled();
+
+    let fresh = "";
+    await expect(async () => {
+      fresh = await lastEmailedCode(page.request, email, "recovery");
+      expect(fresh).not.toBe(code);
+    }).toPass({ timeout: 5000 });
+    await enterCode(page, fresh);
+    await expect(newPasswordHeading(page)).toBeVisible();
+  });
+
+  test("a reload keeps the address; Change email goes back to Forgot password and forgets it", async ({ page }) => {
+    const email = uniqueEmail("reset-reload");
+    await requestResetCode(page, email);
+    await page.reload();
+    await expect(page.getByRole("main")).toContainText(email);
+    await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Change email" }).click();
+    await expect(page).toHaveURL("/forgot-password");
+    await page.goto("/reset-password");
+    await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
+    await expect(page.getByRole("main")).not.toContainText(email);
+  });
+
+  test("without the remembered address (cookies cleared) the screen asks for it, and the code still works", async ({ page }) => {
+    const email = uniqueEmail("reset-nocookie");
+    await createConfirmedUser(page, email);
+    await forgetEmailCooldown(page.request, email);
+    await requestResetCode(page, email);
+    const code = await lastEmailedCode(page.request, email, "recovery");
+    await page.context().clearCookies();
+    await page.reload();
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    await enterCode(page, spaced(code, " "));
+    await expect(newPasswordHeading(page)).toBeVisible();
+  });
+
+  test("the new-password step needs the session a code opens", async ({ page }) => {
+    await page.goto("/reset-password/new");
+    await expect(page).toHaveURL("/reset-password");
+  });
+
+  test("the screens are phone-sized: big numeric code box, 44px controls, 16px inputs, no sideways scroll, and no mention of a link", async ({ page }) => {
+    await page.goto("/forgot-password");
+    expect(await sidewaysOverflow(page)).toBeLessThanOrEqual(0);
+    await expect(page.getByRole("main")).not.toContainText(/\blinks?\b/i);
+    const sendCode = page.getByRole("button", { name: "Send code" });
+    expect((await sendCode.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    const font = await page.getByLabel("Email", { exact: true }).evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    expect(font).toBeGreaterThanOrEqual(16);
+
+    await requestResetCode(page, uniqueEmail("reset-phone"));
+    await expect(page.getByRole("main")).not.toContainText(/\blinks?\b/i);
+    const box = codeBox(page);
+    await expect(box).toHaveAttribute("autocomplete", "one-time-code");
+    await expect(box).toHaveAttribute("inputmode", "numeric");
+    await expect(box).toBeFocused();
+    for (const control of [verifyButton(page), resendButton(page), page.getByRole("button", { name: "Change email" })]) {
+      expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
+    expect(await sidewaysOverflow(page)).toBeLessThanOrEqual(0);
+    const verify = await verifyButton(page).boundingBox();
+    expect((verify?.y ?? 0) + (verify?.height ?? 0)).toBeLessThanOrEqual((page.viewportSize()?.height ?? 0) * 0.6);
+  });
+});
+
+test.describe("the Google sentence", () => {
+  for (const path of ["/signup", "/login"]) {
+    test(`${path}: sits under the Google button, says the spec's words, links the Terms and Privacy Notice, and fits a phone`, async ({ page }) => {
+      await page.goto(path);
+      const google = page.getByRole("button", { name: "Continue with Google" });
+      const sentence = page.locator("p").filter({ hasText: /^By continuing/ });
+      await expect(sentence).toHaveText(AUTH_MESSAGES.googleConsent);
+      const googleBox = await google.boundingBox();
+      const sentenceBox = await sentence.boundingBox();
+      expect(sentenceBox?.y ?? 0).toBeGreaterThan((googleBox?.y ?? 0) + (googleBox?.height ?? 0) - 1);
+      await expect(sentence.getByRole("link", { name: "Terms", exact: true })).toHaveAttribute("href", "/terms");
+      await expect(sentence.getByRole("link", { name: "Privacy Notice", exact: true })).toHaveAttribute("href", "/privacy");
+      expect(await sidewaysOverflow(page)).toBeLessThanOrEqual(0);
+      expect(sentenceBox?.width ?? 0).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0);
+    });
+  }
 });
 
 // The Google sign-in flow itself is in google.spec.ts, which runs alone (see playwright.config.ts).
@@ -577,6 +763,10 @@ test.describe("fields", () => {
     await expectEmailField();
 
     await page.goto("/forgot-password");
+    await expectEmailField();
+
+    // The reset code screen with no remembered address asks for it.
+    await page.goto("/reset-password");
     await expectEmailField();
   });
 

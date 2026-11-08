@@ -2,7 +2,7 @@ import { connection, type NextRequest } from "next/server";
 import { forgetEmailSendCooldown } from "@/server/services";
 
 /**
- * Test mode only: clears the one-email-a-minute cooldown of `?email=`, so a browser test can
+ * Test mode only: clears the one-email-a-minute (and minted-recovery) cooldown of `?email=`, so a browser test can
  * send a second email to an address straight away. In any other mode it does not exist.
  */
 export async function POST(request: NextRequest) {
