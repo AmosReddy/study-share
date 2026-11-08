@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Request } from "@playwright/test";
+import { expect, test, type Browser, type Page, type Request } from "@playwright/test";
 import { AUTH_MESSAGES } from "../src/shared/auth-messages";
 import { CODE_LENGTH } from "../src/shared/auth-schemas";
 import { CONTACT_EMAIL } from "../src/shared/legal";
@@ -664,6 +664,68 @@ test.describe("forgot password with an emailed code", () => {
   test("the new-password step needs the session a code opens", async ({ page }) => {
     await page.goto("/reset-password/new");
     await expect(page).toHaveURL("/reset-password");
+  });
+
+  test("signed in with the password, the new-password step says to use Forgot password, with a link, and claims nothing", async ({ page }) => {
+    const email = uniqueEmail("reset-password-session");
+    await createConfirmedUser(page, email);
+    await page.goto("/login");
+    await logIn(page, email, PASSWORD);
+    await expect(page).toHaveURL("/");
+    await page.goto("/reset-password/new");
+    // Even the current password typed as the "new" one is not reported as a change.
+    await saveNewPassword(page, PASSWORD);
+    const message = page.getByRole("alert").filter({ hasText: AUTH_MESSAGES.useForgotPassword });
+    await expect(message).toBeVisible();
+    await expect(page.getByText(AUTH_MESSAGES.otherDevicesMaybeSignedIn)).toHaveCount(0);
+    await message.getByRole("link").click();
+    await expect(page).toHaveURL("/forgot-password");
+  });
+
+  /** A stranger signs up the address in another browser; the account is pending with their password. */
+  async function strangerSignsUp(browser: Browser, baseURL: string | undefined, email: string, password: string) {
+    const stranger = await browser.newPage({ baseURL });
+    try {
+      await isolateRateLimits(stranger);
+      await startSignUp(stranger, email, { name: "Stranger", password });
+    } finally {
+      await stranger.close();
+    }
+  }
+
+  test("a stranger's pending sign-up: Forgot password takes the account over, and leaving at step 2 leaves the stranger's password dead", async ({ page, browser, baseURL }) => {
+    const email = uniqueEmail("reset-stranger");
+    const strangersPassword = "the stranger's password";
+    await strangerSignsUp(browser, baseURL, email, strangersPassword);
+
+    await forgetEmailCooldown(page.request, email);
+    await requestResetCode(page, email);
+    await enterCode(page, await lastEmailedCode(page.request, email, "recovery"));
+    await expect(newPasswordHeading(page)).toBeVisible();
+    // The person leaves here without choosing a password.
+    expect(await passwordWorks(page, email, strangersPassword)).toBe(false);
+  });
+
+  test("a stranger's pending sign-up: finishing Forgot password goes through /welcome with the address's name", async ({ page, browser, baseURL }) => {
+    const email = uniqueEmail("reset-stranger-finish");
+    const strangersPassword = "the stranger's password";
+    await strangerSignsUp(browser, baseURL, email, strangersPassword);
+
+    await forgetEmailCooldown(page.request, email);
+    await requestResetCode(page, email);
+    await enterCode(page, await lastEmailedCode(page.request, email, "recovery"));
+    await expect(newPasswordHeading(page)).toBeVisible();
+    await saveNewPassword(page, "the owner's new password");
+
+    // The stranger accepted the terms, not the owner, and their name is gone.
+    await expect(page).toHaveURL(/\/welcome/);
+    await expect(page.getByRole("main")).toContainText(localPart(email));
+    await expect(page.getByRole("main")).not.toContainText("Stranger");
+    await acceptTermsOnWelcome(page);
+    await expect(page).toHaveURL("/?password=updated");
+    await expect(accountMenu(page, localPart(email))).toBeVisible();
+    expect(await passwordWorks(page, email, strangersPassword)).toBe(false);
+    expect(await passwordWorks(page, email, "the owner's new password")).toBe(true);
   });
 
   test("the screens are phone-sized: big numeric code box, 44px controls, 16px inputs, no sideways scroll, and no mention of a link", async ({ page }) => {

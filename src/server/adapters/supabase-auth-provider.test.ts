@@ -334,11 +334,11 @@ describe("updatePassword", () => {
     expect(client.auth.signOut).not.toHaveBeenCalled();
   });
 
-  test("current_password_required (a password sign-in session) is unavailable, with no vendor text", async () => {
+  test("current_password_required (a password sign-in session) is reauth_required, with no vendor text", async () => {
     const refused = new AuthApiError("Current password required when setting new password.", 400, "current_password_required");
     const { provider, client } = make(makeClient({ updateUser: fails(refused) }));
     const error = (await caught(provider.updatePassword(PASSWORD, { signOutOthers: true }))) as AuthProviderError;
-    expect(error.code).toBe("unavailable");
+    expect(error.code).toBe("reauth_required");
     expect(error.message).not.toMatch(/current password/i);
     expect(client.auth.signOut).not.toHaveBeenCalled();
   });
@@ -447,6 +447,34 @@ describe("openSessionWithoutEmail", () => {
       expect(text).not.toContain(TOKEN);
       expect(text).not.toContain("ada@example.com");
     }
+  });
+});
+
+describe("resetUserMetadata", () => {
+  test("overwrites the name and empties the terms through the admin client, not the person's session", async () => {
+    const { provider, admin, client } = make();
+    await expect(provider.resetUserMetadata(USER_ID, { displayName: "ada" })).resolves.toBeUndefined();
+    expect(admin.auth.admin.updateUserById).toHaveBeenCalledWith(USER_ID, {
+      user_metadata: { display_name: "ada", terms_version: null, terms_accepted_at: null, age_confirmed_at: null },
+    });
+    expect(client.auth.updateUser).not.toHaveBeenCalled();
+  });
+
+  test("a failure is an AuthProviderError with no vendor text, id or name", async () => {
+    const { provider } = make(makeClient(), makeAdmin(fails(new AuthApiError("User not found for 6aa5 ada", 404, "user_not_found"))));
+    const error = (await caught(provider.resetUserMetadata(USER_ID, { displayName: "ada" }))) as AuthProviderError;
+    expect(error).toBeInstanceOf(AuthProviderError);
+    expect(error.code).toBe("unavailable");
+    expect(error.message).not.toMatch(/ada|6aa5|not found/i);
+  });
+
+  test("without the service role key it is unavailable", async () => {
+    const provider = createSupabaseAuthProvider({
+      url: "https://example.supabase.co",
+      anonKey: "anon",
+      cookies: { getAll: () => [], setAll: () => {} },
+    }, makeClient());
+    await expect(provider.resetUserMetadata(USER_ID, { displayName: "ada" })).rejects.toMatchObject({ code: "unavailable" });
   });
 });
 

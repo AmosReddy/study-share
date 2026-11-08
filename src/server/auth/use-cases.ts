@@ -487,12 +487,21 @@ async function checkCode(
   email: string,
   code: string,
   kind: CodeKind,
+  beforeVerify?: () => Promise<void>,
 ): Promise<{ userId: string } | { failure: Failure }> {
   const refused = await overLimit(deps.limiter, [
     { key: `code:email:${email}`, limit: CODE_ATTEMPTS, message: MESSAGES.tooManyCodes },
     ...ipCheck("code", deps.ip, CODE_ATTEMPTS_IP),
   ]);
   if (refused) return { failure: refused };
+
+  if (beforeVerify) {
+    try {
+      await beforeVerify();
+    } catch {
+      return { failure: { ok: false, formError: MESSAGES.codeCheckUnavailable } };
+    }
+  }
 
   try {
     const result = await deps.auth.verifyCode({ email, code, kind });
@@ -546,7 +555,10 @@ async function takeOverForeignCode(deps: Deps, email: string, userId: string): P
   // While the code session still works (the scramble ends it): the name and the terms
   // acceptance came from whoever signed up, so they are replaced (P13). A failure here never
   // stops the scramble below; the writes are tried again from the fresh session.
-  const detailsReplaced = await replaceOtherSignUpsDetails(deps, email, userId);
+  // If those fail, the admin client writes the same details with no session (fix round 1),
+  // so even the sign-out paths below leave nothing of the other sign-up's behind.
+  const detailsReplaced =
+    (await replaceOtherSignUpsDetails(deps, email, userId)) || (await replaceDetailsAsAdmin(deps, email, userId));
 
   if (!(await scrambleWithRetry(deps.auth, userId))) {
     // The sign-up-code session verifyCode just opened is still alive (nothing scrambled), and a
@@ -579,6 +591,22 @@ async function takeOverForeignCode(deps: Deps, email: string, userId: string): P
     return { ok: false, formError: MESSAGES.confirmedSetPassword };
   }
   return null;
+}
+
+/**
+ * The admin fallback for replaceOtherSignUpsDetails: the same name and cleared terms (metadata
+ * through the provider's admin power, and the profile row), with no session. True when both
+ * writes succeeded; any failure is one fixed warning.
+ */
+async function replaceDetailsAsAdmin(deps: Deps, email: string, userId: string): Promise<boolean> {
+  try {
+    await deps.auth.resetUserMetadata(userId, { displayName: nameFromEmail(email) });
+    await fromProfiles(deps.profiles.clearTermsAcceptance(userId));
+    return true;
+  } catch {
+    console.warn("Could not replace the other sign-up's name and terms with the admin client either.");
+    return false;
+  }
 }
 
 /** A display name from an address: its local part, within the name rules, else "New user". */
@@ -718,12 +746,43 @@ export async function requestPasswordReset(deps: Deps, raw: unknown): Promise<Ac
   return { ok: true, data: { email } };
 }
 
-/** Checks a recovery code; on success this browser holds a recovery session for setPassword. */
+/**
+ * Whether the address carries someone else's unconfirmed email sign-up: a pending account, or a
+ * Google account that still has an unverified email identity (a repair that failed before its
+ * scramble). Read only. Must be read BEFORE a recovery code is checked: redeeming it confirms the
+ * address and verifies the identity, after which neither can be seen.
+ */
+async function carriesPendingSignUp(deps: Deps, email: string): Promise<boolean> {
+  const state = await fromDirectory(deps.directory.describeEmail(email));
+  if (state.kind === "pending") return true;
+  if (state.kind === "confirmed" && state.providers.includes("google")) {
+    return fromDirectory(deps.directory.hasPendingEmailIdentity(state.userId));
+  }
+  return false;
+}
+
+/**
+ * Checks a recovery code; on success this browser holds a recovery session for setPassword.
+ *
+ * A recovery code confirms an unconfirmed account, so on an address that carried a pending sign-up
+ * (a stranger's password, name and terms) the account is taken over exactly as a foreign sign-up
+ * code is (fix round 1): name and terms replaced, password scrambled, a fresh session opened for
+ * the user the code proved. The reply is the same as for any other account, and a wrong code gets
+ * the one message whatever the address; the state is read only after the attempt is counted.
+ */
 export async function verifyResetCode(deps: Deps, raw: unknown): Promise<ActionResult> {
   const form = parseCodeForm(raw, null);
   if ("failure" in form) return form.failure;
-  const checked = await checkCode(deps, form.data.email, form.data.code, "recovery");
+  const { email, code } = form.data;
+  let pendingSignUp = false;
+  const checked = await checkCode(deps, email, code, "recovery", async () => {
+    pendingSignUp = await carriesPendingSignUp(deps, email);
+  });
   if ("failure" in checked) return checked.failure;
+  if (pendingSignUp) {
+    const failed = await takeOverForeignCode(deps, email, checked.userId);
+    if (failed) return failed;
+  }
   return { ok: true, data: undefined };
 }
 
@@ -770,6 +829,10 @@ export async function setPassword(
     try {
       await deps.auth.updatePassword(password, { signOutOthers: true });
     } catch (error) {
+      // Opened with the password, not a code: nothing changed, and Forgot password is the way.
+      if (error instanceof AuthProviderError && error.code === "reauth_required") {
+        return { ok: false, formError: MESSAGES.useForgotPassword };
+      }
       if (!(error instanceof AuthProviderError) || error.code !== "unavailable") throw error;
       if (!(await passwordWorks(deps.auth, user.email, password))) throw error;
       console.warn("Password changed, but signing out the other sessions failed.");

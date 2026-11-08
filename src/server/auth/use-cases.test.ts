@@ -1463,11 +1463,11 @@ describe("verifyResetCode and setPassword", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("from a password sign-in session the provider refuses; the password is unchanged and no success is claimed", async () => {
+  it("from a password sign-in session the provider refuses; it says to use Forgot password, the password is unchanged and no success is claimed", async () => {
     const ctx = await knownAccount();
     await ctx.auth.signInWithPassword({ email: "me@example.invalid", password: PW });
     const result = await setPassword(ctx.deps, { password: PW2, confirmPassword: PW2 });
-    expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.generic });
+    expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.useForgotPassword });
     await ctx.auth.signOut();
     expect(await ctx.auth.signInWithPassword({ email: "me@example.invalid", password: PW })).toEqual({ ok: true });
   });
@@ -1820,25 +1820,29 @@ describe("a code that confirms someone else's sign-up: name and terms (P13)", ()
     expect((await ctx.auth.getUser())?.displayName).toBe(expected);
   });
 
-  it("a failed write before the scramble never keeps the stranger's password: it scrambles, then writes from the fresh session", async () => {
-    const { owner, email } = await strangerAfterOwner();
+  it("a failed session write never keeps the stranger's password or details: the admin client replaces them, and it scrambles", async () => {
+    const { owner, email, strangerId } = await strangerAfterOwner();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const rename = vi.spyOn(owner.auth, "updateDisplayName").mockRejectedValueOnce(new AuthProviderError("unavailable", "vendor"));
+    vi.spyOn(owner.auth, "updateDisplayName").mockRejectedValue(new AuthProviderError("unavailable", "vendor"));
+    const admin = vi.spyOn(owner.auth, "resetUserMetadata");
+    const clearProfile = vi.spyOn(owner.profiles, "clearTermsAcceptance");
     const scramble = vi.spyOn(owner.auth, "scramblePassword");
     const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
     expect(result).toEqual({ ok: true, data: { redirectTo: "/", needsPassword: true } });
     expect(scramble).toHaveBeenCalledTimes(1);
-    expect(rename).toHaveBeenCalledTimes(2);
+    expect(admin).toHaveBeenCalledWith(strangerId, { displayName: "asha.rao" });
+    expect(clearProfile).toHaveBeenCalledWith(strangerId);
     expect(await owner.auth.getUser()).toMatchObject({ displayName: "asha.rao", termsVersion: null });
     expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
     expect(JSON.stringify(warn.mock.calls)).not.toMatch(/example\.invalid|vendor/);
     warn.mockRestore();
   });
 
-  it("if the writes fail again from the fresh session, it signs out with the password still random and points to Forgot password", async () => {
+  it("if the session writes and the admin writes all fail, it signs out with the password still random and points to Forgot password", async () => {
     const { owner, email } = await strangerAfterOwner();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(owner.auth, "clearTermsAcceptance").mockRejectedValue(new AuthProviderError("unavailable", "vendor"));
+    vi.spyOn(owner.auth, "resetUserMetadata").mockRejectedValue(new AuthProviderError("unavailable", "vendor"));
     const scramble = vi.spyOn(owner.auth, "scramblePassword");
     const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
     expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.confirmedSetPassword });
@@ -1975,5 +1979,215 @@ describe("completeGoogleSignIn (the /auth/callback use-case)", () => {
     expect(await completeGoogleSignIn(ctx.deps, code, "/")).toEqual({ ok: false, formError: AUTH_MESSAGES.googleFailed });
     expect(await ctx.auth.getUser()).toBeNull();
     warn.mockRestore();
+  });
+});
+
+/* ------------------------------------------------------------------------------------------
+   Task 6 fix round 1: Forgot password on a pending sign-up (Critical 1), the password sign-in
+   session on the new-password step (Important 2), the admin fallback for P13 (Important 3).
+------------------------------------------------------------------------------------------ */
+
+describe("verifyResetCode on an account with a pending email sign-up (fix round 1, Critical 1)", () => {
+  /** A stranger's pending sign-up for the owner's address; the owner (another browser) uses Forgot password. */
+  async function strangerPending(email = "victim.one@example.invalid") {
+    const store = createFakeAuthStore();
+    const stranger = setup({ ip: "10.9.9.9" }, store);
+    const { pendingUserId } = await signUpInBrowser(stranger, email, STRANGER_PW, "Stranger Name");
+    store.profileTerms.set(pendingUserId, { termsVersion: TERMS_VERSION, termsAcceptedAt: new Date(0), ageConfirmedAt: new Date(0) });
+    const owner = setup({}, store);
+    expect(await requestPasswordReset(owner.deps, { email })).toEqual({ ok: true, data: { email } });
+    return { store, stranger, owner, strangerId: pendingUserId, email };
+  }
+
+  it("takes the account over as a foreign code does: name and terms replaced, password scrambled, session reopened for the verified user", async () => {
+    const { store, owner, strangerId, email } = await strangerPending();
+    const order: string[] = [];
+    trace(order, owner.directory, "describeEmail");
+    trace(order, owner.auth, "verifyCode");
+    trace(order, owner.auth, "updateDisplayName");
+    trace(order, owner.auth, "scramblePassword");
+    const open = trace(order, owner.auth, "openSessionWithoutEmail");
+
+    const result = await verifyResetCode(owner.deps, { email, code: codeFor(owner.auth, email) });
+    // The same reply as for any account: the screens cannot tell a pending account apart.
+    expect(result).toEqual({ ok: true, data: undefined });
+    // Read before verifying (verifying confirms the account), then the takeover.
+    expect(order).toEqual(["describeEmail", "verifyCode", "updateDisplayName", "scramblePassword", "openSessionWithoutEmail"]);
+    expect(open).toHaveBeenCalledWith({ email, expectedUserId: strangerId });
+
+    expect(await owner.auth.getUser()).toMatchObject({ id: strangerId, displayName: "victim.one", termsVersion: null });
+    expect(store.profileTerms.get(strangerId)).toEqual({ termsVersion: null, termsAcceptedAt: null, ageConfirmedAt: null });
+    expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
+  });
+
+  it("if the person leaves at step 2, the stranger's password is still dead; if they finish, only theirs works", async () => {
+    const { owner, email } = await strangerPending();
+    expect((await verifyResetCode(owner.deps, { email, code: codeFor(owner.auth, email) })).ok).toBe(true);
+    expect((await setPassword(owner.deps, { password: PW2, confirmPassword: PW2 })).ok).toBe(true);
+    await owner.auth.signOut();
+    expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
+    expect(await owner.auth.signInWithPassword({ email, password: PW2 })).toEqual({ ok: true });
+  });
+
+  it("a wrong code on a pending account changes nothing and gets the same one message", async () => {
+    const { owner, email } = await strangerPending();
+    const scramble = vi.spyOn(owner.auth, "scramblePassword");
+    const rename = vi.spyOn(owner.auth, "updateDisplayName");
+    const result = await verifyResetCode(owner.deps, { email, code: wrongCode(codeFor(owner.auth, email)) });
+    expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.codeInvalid });
+    expect(scramble).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+    // Still the stranger's pending sign-up, untouched.
+    expect(await owner.directory.describeEmail(email)).toMatchObject({ kind: "pending" });
+  });
+
+  it("a confirmed account is unaffected: no scramble, no rename, the terms kept", async () => {
+    const ctx = setup();
+    await confirmedAccount(ctx, "me@example.invalid", PW, "Asha Rao");
+    ctx.advance(15 * 60);
+    const scramble = vi.spyOn(ctx.auth, "scramblePassword");
+    const rename = vi.spyOn(ctx.auth, "updateDisplayName");
+    const hasPending = vi.spyOn(ctx.directory, "hasPendingEmailIdentity");
+    expect((await requestPasswordReset(ctx.deps, { email: "me@example.invalid" })).ok).toBe(true);
+    expect(await verifyResetCode(ctx.deps, { email: "me@example.invalid", code: codeFor(ctx.auth, "me@example.invalid") })).toEqual({
+      ok: true,
+      data: undefined,
+    });
+    expect(scramble).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+    // Only an account with a Google identity is asked about a pending email identity.
+    expect(hasPending).not.toHaveBeenCalled();
+    expect(await ctx.auth.getUser()).toMatchObject({ displayName: "Asha Rao", termsVersion: TERMS_VERSION });
+  });
+
+  it("a Google account that still carries a stranger's pending email identity is taken over too", async () => {
+    const store = createFakeAuthStore();
+    const stranger = setup({ ip: "10.9.9.9" }, store);
+    await signUpInBrowser(stranger, GOOGLE_EMAIL, STRANGER_PW, "Stranger Name");
+    // The owner signs in with Google, but the repair never ran (it failed before the scramble).
+    const g = setup({}, store);
+    const { url } = await g.auth.startGoogleSignIn({ redirectTo: `${SITE}/auth/callback` });
+    await g.auth.completeOAuth(new URL(url, SITE).searchParams.get("code")!);
+    const googleUser = (await g.auth.getUser())!;
+    expect(await g.directory.hasPendingEmailIdentity(googleUser.id)).toBe(true);
+    await g.auth.signOut();
+
+    g.advance(PAST_COOLDOWN);
+    expect((await requestPasswordReset(g.deps, { email: GOOGLE_EMAIL })).ok).toBe(true);
+    const scramble = vi.spyOn(g.auth, "scramblePassword");
+    const open = vi.spyOn(g.auth, "openSessionWithoutEmail");
+    expect(await verifyResetCode(g.deps, { email: GOOGLE_EMAIL, code: codeFor(g.auth, GOOGLE_EMAIL) })).toEqual({ ok: true, data: undefined });
+    expect(scramble).toHaveBeenCalledWith(googleUser.id);
+    expect(open).toHaveBeenCalledWith({ email: GOOGLE_EMAIL, expectedUserId: googleUser.id });
+    expect(await g.auth.getUser()).toMatchObject({ id: googleUser.id, displayName: "google.user", termsVersion: null });
+    expect(await stranger.auth.signInWithPassword({ email: GOOGLE_EMAIL, password: STRANGER_PW })).toEqual({
+      ok: false,
+      reason: "invalid_credentials",
+    });
+  });
+
+  it("a Google account without a pending identity just gets its recovery session (adding a password)", async () => {
+    const ctx = setup();
+    const { url } = await ctx.auth.startGoogleSignIn({ redirectTo: `${SITE}/auth/callback` });
+    await ctx.auth.completeOAuth(new URL(url, SITE).searchParams.get("code")!);
+    await repairGoogleAccount(ctx.deps, (await ctx.auth.getUser())!);
+    await ctx.auth.signOut();
+    const scramble = vi.spyOn(ctx.auth, "scramblePassword");
+    expect((await requestPasswordReset(ctx.deps, { email: GOOGLE_EMAIL })).ok).toBe(true);
+    expect((await verifyResetCode(ctx.deps, { email: GOOGLE_EMAIL, code: codeFor(ctx.auth, GOOGLE_EMAIL) })).ok).toBe(true);
+    expect(scramble).not.toHaveBeenCalled();
+    expect(await ctx.auth.getUser()).toMatchObject({ displayName: "Google User", termsVersion: TERMS_VERSION });
+  });
+
+  it("an unknown address and a pending one give the same wrong-code reply", async () => {
+    const { owner, email } = await strangerPending();
+    const pending = await verifyResetCode(owner.deps, { email, code: wrongCode(codeFor(owner.auth, email)) });
+    const unknown = await verifyResetCode(owner.deps, { email: "nobody@example.invalid", code: "123456" });
+    expect(pending).toEqual(unknown);
+  });
+
+  it("an account directory outage is the could-not-check message, before the code is used", async () => {
+    const { owner, email } = await strangerPending();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(owner.directory, "describeEmail").mockRejectedValue(new Error(`db down for ${email}`));
+    const verify = vi.spyOn(owner.auth, "verifyCode");
+    expect(await verifyResetCode(owner.deps, { email, code: codeFor(owner.auth, email) })).toEqual({
+      ok: false,
+      formError: AUTH_MESSAGES.codeCheckUnavailable,
+    });
+    expect(verify).not.toHaveBeenCalled();
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/example\.invalid|db down/);
+    warn.mockRestore();
+  });
+});
+
+describe("setPassword from a password sign-in session (fix round 1, Important 2)", () => {
+  it("says to use Forgot password and never claims a change, even when the 'new' password is the current one", async () => {
+    const ctx = setup();
+    await confirmedAccount(ctx, "me@example.invalid", PW);
+    await ctx.auth.signInWithPassword({ email: "me@example.invalid", password: PW });
+    const probe = vi.spyOn(ctx.auth, "signInWithPassword");
+    const result = await setPassword(ctx.deps, { password: PW, confirmPassword: PW });
+    expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.useForgotPassword });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("keeps the wording for owner review", () => {
+    expect(AUTH_MESSAGES.useForgotPassword).toBe("To change your password, use Forgot password.");
+  });
+});
+
+describe("P13 admin fallback (fix round 1, Important 3)", () => {
+  async function strangerAfterOwner(email = "asha.rao@example.invalid") {
+    const store = createFakeAuthStore();
+    const owner = setup({}, store);
+    const stranger = setup({ ip: "10.9.9.9" }, store);
+    await signUpInBrowser(owner, email, PW, "Asha Rao");
+    const { pendingUserId } = await signUpInBrowser(stranger, email, STRANGER_PW, "Stranger Name");
+    return { store, owner, strangerId: pendingUserId, email };
+  }
+
+  it("when the scramble fails and the session writes failed, the admin client still replaces the name and terms before the sign-out", async () => {
+    const { store, owner, strangerId, email } = await strangerAfterOwner();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(owner.auth, "updateDisplayName").mockRejectedValue(new AuthProviderError("unavailable"));
+    vi.spyOn(owner.auth, "scramblePassword").mockRejectedValue(new AuthProviderError("unavailable"));
+    const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.confirmedSetPassword });
+    expect(store.users.get(strangerId)).toMatchObject({ displayName: "asha.rao", termsVersion: null });
+    expect(store.profileTerms.get(strangerId)?.termsVersion).toBeNull();
+    warn.mockRestore();
+  });
+
+  it("when the fresh session cannot be opened and the session writes failed, the admin client still replaces them", async () => {
+    const { store, owner, strangerId, email } = await strangerAfterOwner();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(owner.auth, "clearTermsAcceptance").mockRejectedValue(new AuthProviderError("unavailable"));
+    vi.spyOn(owner.auth, "openSessionWithoutEmail").mockRejectedValue(new AuthProviderError("unavailable"));
+    const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.confirmedSetPassword });
+    expect(store.users.get(strangerId)).toMatchObject({ displayName: "asha.rao", termsVersion: null });
+    warn.mockRestore();
+  });
+
+  it("a failed profile clear in the admin fallback counts as a failure: signed out, the password still scrambled", async () => {
+    const { owner, email } = await strangerAfterOwner();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(owner.auth, "updateDisplayName").mockRejectedValue(new AuthProviderError("unavailable"));
+    vi.spyOn(owner.profiles, "clearTermsAcceptance").mockRejectedValue(new Error("db failed"));
+    const scramble = vi.spyOn(owner.auth, "scramblePassword");
+    const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.confirmedSetPassword });
+    expect(scramble).toHaveBeenCalledTimes(1);
+    expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/example\.invalid|db failed/);
+    warn.mockRestore();
+  });
+
+  it("the admin fallback is not used when the session writes succeed", async () => {
+    const { owner, email } = await strangerAfterOwner();
+    const admin = vi.spyOn(owner.auth, "resetUserMetadata");
+    expect((await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/")).ok).toBe(true);
+    expect(admin).not.toHaveBeenCalled();
   });
 });

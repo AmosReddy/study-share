@@ -52,7 +52,7 @@ export function SetPasswordForm({ action, next, title, description, accountEmail
         <input type="email" name="username" autoComplete="username" value={accountEmail} readOnly hidden />
         {state.formError ? (
           <FormMessage tone="error" title={state.formError}>
-            {state.formError === AUTH_MESSAGES.sessionEnded ? (
+            {state.formError === AUTH_MESSAGES.sessionEnded || state.formError === AUTH_MESSAGES.useForgotPassword ? (
               <Link href={recovery.href} className={linkTarget}>
                 {recovery.label}
               </Link>

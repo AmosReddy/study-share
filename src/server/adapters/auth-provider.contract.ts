@@ -234,15 +234,23 @@ function runCodeContract(make: () => ContractContext) {
 
     // Probe (l): GoTrue answers 400 current_password_required to a password change from a
     // password sign-in session, and nothing changes. Password changes happen after a code.
-    test("a password sign-in session cannot change the password: refused as unavailable, nothing changes", async () => {
+    test("a password sign-in session cannot change the password: refused as reauth_required, nothing changes", async () => {
       const ctx = await confirmed();
       const there = ctx.otherDevice();
       await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD });
       await there.signInWithPassword({ email: EMAIL, password: PASSWORD });
-      await expect(ctx.provider.updatePassword("a brand new password")).rejects.toMatchObject({ code: "unavailable" });
+      await expect(ctx.provider.updatePassword("a brand new password")).rejects.toMatchObject({ code: "reauth_required" });
       expect((await ctx.provider.getUser())?.id).toBe(ctx.userId);
       expect((await there.getUser())?.id).toBe(ctx.userId);
       expect(await ctx.otherDevice().signInWithPassword({ email: EMAIL, password: PASSWORD })).toEqual({ ok: true });
+    });
+
+    test("resetUserMetadata sets the name and clears the terms by user id, with no session", async () => {
+      const ctx = await confirmed();
+      await ctx.provider.signOut();
+      await ctx.provider.resetUserMetadata(ctx.userId, { displayName: "ada" });
+      await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD });
+      expect(await ctx.provider.getUser()).toMatchObject({ id: ctx.userId, displayName: "ada", termsVersion: null });
     });
 
     test("updatePassword with signOutOthers keeps this session and ends the one on another device", async () => {

@@ -32,7 +32,7 @@ import { authCookieOptions, siteUsesHttps } from "./supabase-auth-cookies";
     rejects the user's other sessions' tokens even without signOut(others), and outstanding
     codes stop working;
   - updateUser({ password }) from a password sign-in session answers 400
-    current_password_required and changes nothing (mapped to unavailable);
+    current_password_required and changes nothing (mapped to reauth_required);
   - a second signUp, resend or resetPasswordForEmail to one address 3 s after the first
     answers 429 over_email_send_rate_limit (mapped to rate_limited).
   - (probes p, q) after a scramble, admin generateLink({ type: "recovery" }) returns the code
@@ -243,6 +243,17 @@ export function createSupabaseAuthProvider(
       await updateMetadata({ terms_version: null, terms_accepted_at: null, age_confirmed_at: null });
     },
 
+    async resetUserMetadata(userId, { displayName }) {
+      const adminApi = getAdmin().auth.admin;
+      // user_metadata is merged, so the terms keys are set to null rather than left out.
+      const { error } = await call(() =>
+        adminApi.updateUserById(userId, {
+          user_metadata: { display_name: displayName, terms_version: null, terms_accepted_at: null, age_confirmed_at: null },
+        }),
+      );
+      if (error) throw toProviderError(error);
+    },
+
     async updateDisplayName(name) {
       await updateMetadata({ display_name: name });
     },
@@ -297,6 +308,9 @@ function toProviderError(error: unknown): AuthProviderError {
   if (isAuthError(error)) {
     if (isRateLimited(error)) {
       return new AuthProviderError("rate_limited", "Too many attempts. Try again later.");
+    }
+    if (error.code === "current_password_required") {
+      return new AuthProviderError("reauth_required", "The password can only be changed after a code.");
     }
     if (isAuthWeakPasswordError(error) || error.code === "weak_password" || error.code === "same_password") {
       return new AuthProviderError("weak_password", "The password does not meet the requirements.");

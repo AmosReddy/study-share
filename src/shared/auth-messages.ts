@@ -42,6 +42,8 @@ export const AUTH_MESSAGES = {
 
   /** Spec 3 and 4.3: Forgot password's one reply, the same for every address. */
   resetCodeSent: "If an account exists for that email, we sent a code.",
+  /** The new-password step reached from a password sign-in session: only a code session may change it. */
+  useForgotPassword: "To change your password, use Forgot password.",
   /** Spec 4.3: shown on the home page after a password reset. */
   passwordUpdated: "Password updated",
   /** Spec 3: shown under both buttons on /signup and /login; pressing Google records the acceptance. */

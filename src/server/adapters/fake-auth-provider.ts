@@ -378,7 +378,7 @@ export function createFakeAuthProvider(deps: {
       if (newPassword.length < MIN_PASSWORD_LENGTH) throw new AuthProviderError("weak_password");
       // Probe (l): GoTrue answers 400 current_password_required from a password sign-in session.
       if (store.sessions.get(here)?.via === "password") {
-        throw new AuthProviderError("unavailable", "The password could not be changed from this session.");
+        throw new AuthProviderError("reauth_required", "The password could not be changed from this session.");
       }
       u.password = newPassword;
       // Probes (l2), (m): the user's other sessions end and outstanding codes stop working,
@@ -424,6 +424,13 @@ export function createFakeAuthProvider(deps: {
 
     async clearTermsAcceptance() {
       requireUser().termsVersion = null;
+    },
+
+    async resetUserMetadata(userId, { displayName }) {
+      const u = store.users.get(userId);
+      if (!u) throw new AuthProviderError("unavailable", "The account could not be updated.");
+      u.displayName = displayName;
+      u.termsVersion = null;
     },
 
     async updateDisplayName(name) {

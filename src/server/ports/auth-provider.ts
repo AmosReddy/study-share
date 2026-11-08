@@ -24,7 +24,11 @@ export type CodeKind = "signup" | "recovery";
 export type VerifyCodeResult = { ok: true; userId: string } | { ok: false; reason: "invalid_or_expired" };
 
 export class AuthProviderError extends Error {
-  code: "rate_limited" | "weak_password" | "unavailable";
+  /**
+   * `reauth_required`: the provider refuses a password change from this session because it was
+   * opened with the password (it wants the current one). Only a code session may change it.
+   */
+  code: "rate_limited" | "weak_password" | "unavailable" | "reauth_required";
 
   constructor(code: AuthProviderError["code"], message?: string) {
     super(message ?? code);
@@ -82,7 +86,7 @@ export interface AuthProvider {
    * Sets the signed-in user's password. Observed (probes l, l2, m):
    * - it works only from a CODE session (verifyCode or openSessionWithoutEmail); from a password
    *   sign-in session the provider refuses (current_password_required), which is thrown as
-   *   AuthProviderError("unavailable"), and nothing changes;
+   *   AuthProviderError("reauth_required"), and nothing changes;
    * - on success this session stays; for every OTHER session of the user the auth server
    *   rejects its tokens (refresh refused, the access token refused at the server; the access
    *   JWT itself stays valid until it expires), even without `signOutOthers`; outstanding
@@ -131,6 +135,13 @@ export interface AuthProvider {
    * stranger's sign-up that a code then confirmed for the real owner (spec 5.1, ruling P13).
    */
   clearTermsAcceptance(): Promise<void>;
+  /**
+   * Server side, with the provider's admin power and no session: sets the user's display name and
+   * empties their recorded terms acceptance, as clearTermsAcceptance plus updateDisplayName would
+   * for that user. The fallback when the session-based writes of a foreign-code takeover fail
+   * (ruling P13): it can be retried apart from the scramble. Errors name no id or value.
+   */
+  resetUserMetadata(userId: string, i: { displayName: string }): Promise<void>;
   updateDisplayName(name: string): Promise<void>;
   signOut(): Promise<void>;
 }
