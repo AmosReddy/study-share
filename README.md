@@ -32,7 +32,7 @@ Accounts need setup outside the code (Supabase Auth settings, Gmail for email, G
 |---|---|
 | `APP_ENV` | `dev` for local runs and Preview deployments, `production` for Production only. The app refuses to start when this does not match the Supabase project the other settings point at. |
 | `SERVICES_MODE` | `real` (the default) uses the outside services. `fake` swaps sign-in, email and rate limits for in-memory test doubles. For local runs and automated tests only: the app refuses it on any Vercel deployment, on production and with production settings. |
-| `NEXT_PUBLIC_SITE_URL` | The public address of the site, used in email links, Google sign-in and cookies. **Required when `APP_ENV=production`.** Elsewhere leave it empty, and the app uses the Vercel address or `http://localhost:3000`. **Never set an `https` `NEXT_PUBLIC_SITE_URL` for a local `http` run**: the sign-in cookies are then marked secure, the browser drops them over `http`, and you are sent back to the login page in a loop. |
+| `NEXT_PUBLIC_SITE_URL` | The public address of the site, used in Google sign-in and cookies. **Required when `APP_ENV=production`.** Elsewhere leave it empty, and the app uses the Vercel address or `http://localhost:3000`. **Never set an `https` `NEXT_PUBLIC_SITE_URL` for a local `http` run**: the sign-in cookies are then marked secure, the browser drops them over `http`, and you are sent back to the login page in a loop. |
 | `SMTP_FROM` | The address email is sent from. Leave empty to use `SMTP_USER` (right for Gmail). Needed for services whose login is not an address. |
 
 ## Scripts
