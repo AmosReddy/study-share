@@ -107,7 +107,7 @@ export function createSupabaseAuthProvider(
     }
   }
 
-  async function updateMetadata(data: Record<string, string>) {
+  async function updateMetadata(data: Record<string, string | null>) {
     const { error } = await call(() => auth.updateUser({ data }));
     if (error) throw toProviderError(error);
     // getUser reads the signed token, which still holds the old metadata until it is reissued.
@@ -235,6 +235,12 @@ export function createSupabaseAuthProvider(
     async acceptTerms({ termsVersion }) {
       const now = new Date().toISOString();
       await updateMetadata({ terms_version: termsVersion, terms_accepted_at: now, age_confirmed_at: now });
+    },
+
+    async clearTermsAcceptance() {
+      // Null values (not removed keys): updateUser merges metadata, so a missing key would keep
+      // the old value. getUser reads a non-string terms_version as no acceptance.
+      await updateMetadata({ terms_version: null, terms_accepted_at: null, age_confirmed_at: null });
     },
 
     async updateDisplayName(name) {

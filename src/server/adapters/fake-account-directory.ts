@@ -30,6 +30,12 @@ export function createFakeAccountDirectory(store: FakeAuthStore = getFakeAuthSto
     },
 
     async hasPendingEmailIdentity(userId) {
+      if (store.failNextRepair) {
+        // Test switch (POST /api/test/fail-next-repair): this check is the first step of every
+        // Google repair, so failing it once makes the next Google sign-in's repair fail.
+        store.failNextRepair = false;
+        throw new Error("Account directory unavailable (test mode).");
+      }
       const u = store.users.get(userId);
       if (!u || !u.identities.some((i) => i.provider === "google")) return false;
       return u.identities.some((i) => i.provider === "email" && !i.verified);

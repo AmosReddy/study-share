@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeAccountDirectory } from "@/server/adapters/fake-account-directory";
 import { createFakeAuthProvider, createFakeAuthStore, expireAllCodes, type FakeAuthStore } from "@/server/adapters/fake-auth-provider";
 import { createMemoryRateLimiter } from "@/server/adapters/memory-rate-limiter";
+import { createFakeProfileStore } from "@/server/adapters/fake-profile-store";
 import { AuthProviderError } from "@/server/ports/auth-provider";
 import type { RateLimiter } from "@/server/ports/rate-limiter";
 import { AUTH_MESSAGES } from "@/shared/auth-messages";
 import { TERMS_VERSION } from "@/shared/legal";
 import {
   acceptTerms,
+  completeGoogleSignIn,
+  GOOGLE_NOT_FINISHED,
   logIn,
   logOut,
   repairGoogleAccount,
@@ -45,9 +48,10 @@ function setup(overrides: Partial<Deps> = {}, store: FakeAuthStore = createFakeA
   let now = 1_000_000;
   const limiter = createMemoryRateLimiter(() => now);
   const directory = createFakeAccountDirectory(store);
-  const deps: Deps = { auth, limiter, siteUrl: SITE, ip: "10.0.0.1", directory, pending: null, ...overrides };
+  const profiles = createFakeProfileStore(store);
+  const deps: Deps = { auth, limiter, siteUrl: SITE, ip: "10.0.0.1", directory, profiles, pending: null, ...overrides };
   const advance = (seconds: number) => void (now += seconds * 1000);
-  return { auth, deps, advance, store, directory };
+  return { auth, deps, advance, store, directory, profiles };
 }
 
 /** A limiter answer that allows: for stub limiters that only record hits. */
@@ -1673,5 +1677,303 @@ describe("secondsUntilEmailAllowed (the code screen's starting countdown)", () =
     const down = async () => Promise.reject(new Error("down"));
     const failing: RateLimiter = { hit: down, peek: down };
     expect(await secondsUntilEmailAllowed(failing, "a@x.com")).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------
+   Task 6: the profile row's terms record (P12), the foreign-code name and terms (P13), the
+   Google callback, and the wording the forgot-password and Google screens show.
+------------------------------------------------------------------------------------------ */
+
+describe("AUTH_MESSAGES: the Task 6 wording", () => {
+  it("keeps the spec's exact sentences for Forgot password, its success and Google", () => {
+    expect(AUTH_MESSAGES.resetCodeSent).toBe("If an account exists for that email, we sent a code.");
+    expect(AUTH_MESSAGES.passwordUpdated).toBe("Password updated");
+    expect(AUTH_MESSAGES.googleConsent).toBe(
+      "By continuing you confirm you are 18 or older and accept the Terms and Privacy Notice",
+    );
+  });
+});
+
+describe("acceptTerms records the acceptance on the profile row (P12)", () => {
+  async function signedIn() {
+    const ctx = setup();
+    await registerConfirmed(ctx.auth, "me@x.com", "my password");
+    await ctx.auth.signInWithPassword({ email: "me@x.com", password: "my password" });
+    const user = (await ctx.auth.getUser())!;
+    return { ...ctx, user };
+  }
+
+  it("records TERMS_VERSION for this user on the profile, before the metadata", async () => {
+    const { auth, deps, profiles, store, user } = await signedIn();
+    const order: string[] = [];
+    const record = trace(order, profiles, "recordTermsAcceptance");
+    trace(order, auth, "acceptTerms");
+    expect((await acceptTerms(deps, { acceptTerms: true, termsVersion: TERMS_VERSION }, "/")).ok).toBe(true);
+    expect(record).toHaveBeenCalledWith(user.id, TERMS_VERSION);
+    expect(order).toEqual(["recordTermsAcceptance", "acceptTerms"]);
+    expect(store.profileTerms.get(user.id)?.termsVersion).toBe(TERMS_VERSION);
+  });
+
+  it("a failed profile write is a plain error and leaves the terms unaccepted, so the person can try again", async () => {
+    const { auth, deps, profiles } = await signedIn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(profiles, "recordTermsAcceptance").mockRejectedValue(new Error("db down for me@x.com"));
+    const accept = vi.spyOn(auth, "acceptTerms");
+    expect(await acceptTerms(deps, { acceptTerms: true, termsVersion: TERMS_VERSION }, "/")).toEqual({
+      ok: false,
+      formError: AUTH_MESSAGES.generic,
+    });
+    expect(accept).not.toHaveBeenCalled();
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/x\.com|db down/);
+    warn.mockRestore();
+  });
+
+  it("without a session it records nothing and says the session ended", async () => {
+    const ctx = setup();
+    const record = vi.spyOn(ctx.profiles, "recordTermsAcceptance");
+    expect(await acceptTerms(ctx.deps, { acceptTerms: true, termsVersion: TERMS_VERSION }, "/")).toEqual({
+      ok: false,
+      formError: AUTH_MESSAGES.sessionEnded,
+    });
+    expect(record).not.toHaveBeenCalled();
+  });
+});
+
+describe("a code that confirms someone else's sign-up: name and terms (P13)", () => {
+  /** The owner signs up first; a stranger (typing their own name) signs the same address up just after. */
+  async function strangerAfterOwner(email = "asha.rao@example.invalid") {
+    const store = createFakeAuthStore();
+    const owner = setup({}, store);
+    const stranger = setup({ ip: "10.9.9.9" }, store);
+    await signUpInBrowser(owner, email, PW, "Asha Rao");
+    const { pendingUserId } = await signUpInBrowser(stranger, email, STRANGER_PW, "Stranger Name");
+    return { store, owner, stranger, strangerId: pendingUserId, email };
+  }
+
+  it("clears the terms and names the account after the address, while the code session lives, before the scramble", async () => {
+    const { store, owner, strangerId, email } = await strangerAfterOwner();
+    // The stranger's sign-up recorded their acceptance on the profile row.
+    store.profileTerms.set(strangerId, { termsVersion: TERMS_VERSION, termsAcceptedAt: new Date(0), ageConfirmedAt: new Date(0) });
+    const order: string[] = [];
+    trace(order, owner.auth, "verifyCode");
+    const rename = trace(order, owner.auth, "updateDisplayName");
+    trace(order, owner.auth, "clearTermsAcceptance");
+    const clearProfile = trace(order, owner.profiles, "clearTermsAcceptance");
+    trace(order, owner.auth, "scramblePassword");
+    trace(order, owner.auth, "openSessionWithoutEmail");
+
+    const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect(result).toEqual({ ok: true, data: { redirectTo: "/", needsPassword: true } });
+    expect(order).toEqual([
+      "verifyCode",
+      "updateDisplayName",
+      "clearTermsAcceptance",
+      "clearTermsAcceptance",
+      "scramblePassword",
+      "openSessionWithoutEmail",
+    ]);
+    expect(rename).toHaveBeenCalledWith("asha.rao");
+    expect(clearProfile).toHaveBeenCalledWith(strangerId);
+
+    const user = (await owner.auth.getUser())!;
+    expect(user.displayName).toBe("asha.rao");
+    expect(user.displayName).not.toContain("Stranger");
+    // The terms gate now sends the person to /welcome to accept the terms themselves.
+    expect(user.termsVersion).toBeNull();
+    expect(store.profileTerms.get(strangerId)).toEqual({ termsVersion: null, termsAcceptedAt: null, ageConfirmedAt: null });
+    expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
+  });
+
+  it("does the same without a cookie (another device)", async () => {
+    const ctx = setup();
+    await signUpInBrowser(ctx, "someone@example.invalid", PW, "Typed Name");
+    ctx.deps.pending = null;
+    const result = await verifySignUpCode(ctx.deps, { email: "someone@example.invalid", code: codeFor(ctx.auth, "someone@example.invalid") }, "/");
+    expect(result).toMatchObject({ ok: true, data: { needsPassword: true } });
+    expect(await ctx.auth.getUser()).toMatchObject({ displayName: "someone", termsVersion: null });
+  });
+
+  it("leaves the name and terms alone for the browser's own sign-up", async () => {
+    const ctx = setup();
+    await signUpInBrowser(ctx, "mine@example.invalid", PW, "Asha Rao");
+    const rename = vi.spyOn(ctx.auth, "updateDisplayName");
+    const clear = vi.spyOn(ctx.auth, "clearTermsAcceptance");
+    const clearProfile = vi.spyOn(ctx.profiles, "clearTermsAcceptance");
+    const result = await verifySignUpCode(ctx.deps, { email: "mine@example.invalid", code: codeFor(ctx.auth, "mine@example.invalid") }, "/");
+    expect(result).toMatchObject({ ok: true, data: { needsPassword: false } });
+    expect(rename).not.toHaveBeenCalled();
+    expect(clear).not.toHaveBeenCalled();
+    expect(clearProfile).not.toHaveBeenCalled();
+    expect(await ctx.auth.getUser()).toMatchObject({ displayName: "Asha Rao", termsVersion: TERMS_VERSION });
+  });
+
+  it.each([
+    ["a long local part is cut to 50 characters", `${"x".repeat(80)}@example.invalid`, "x".repeat(50)],
+    ["a plus address keeps its whole local part (addresses in other scripts are refused at sign-up)", "ab+study@example.invalid", "ab+study"],
+    ["a one-character local part falls back to New user", "a@example.invalid", "New user"],
+  ])("the name from the address: %s", async (_label, email, expected) => {
+    const ctx = setup();
+    await signUpInBrowser(ctx, email, PW, "Typed Name");
+    ctx.deps.pending = null;
+    await verifySignUpCode(ctx.deps, { email, code: codeFor(ctx.auth, email) }, "/");
+    expect((await ctx.auth.getUser())?.displayName).toBe(expected);
+  });
+
+  it("a failed write before the scramble never keeps the stranger's password: it scrambles, then writes from the fresh session", async () => {
+    const { owner, email } = await strangerAfterOwner();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rename = vi.spyOn(owner.auth, "updateDisplayName").mockRejectedValueOnce(new AuthProviderError("unavailable", "vendor"));
+    const scramble = vi.spyOn(owner.auth, "scramblePassword");
+    const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect(result).toEqual({ ok: true, data: { redirectTo: "/", needsPassword: true } });
+    expect(scramble).toHaveBeenCalledTimes(1);
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(await owner.auth.getUser()).toMatchObject({ displayName: "asha.rao", termsVersion: null });
+    expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/example\.invalid|vendor/);
+    warn.mockRestore();
+  });
+
+  it("if the writes fail again from the fresh session, it signs out with the password still random and points to Forgot password", async () => {
+    const { owner, email } = await strangerAfterOwner();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(owner.auth, "clearTermsAcceptance").mockRejectedValue(new AuthProviderError("unavailable", "vendor"));
+    const scramble = vi.spyOn(owner.auth, "scramblePassword");
+    const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.confirmedSetPassword });
+    expect(scramble).toHaveBeenCalledTimes(1);
+    expect(await owner.auth.getUser()).toBeNull();
+    expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/example\.invalid|vendor/);
+    warn.mockRestore();
+  });
+
+  it("a failed profile write (database) is handled the same way as a failed metadata write", async () => {
+    const { owner, email } = await strangerAfterOwner();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(owner.profiles, "clearTermsAcceptance").mockRejectedValueOnce(new Error(`db failed for ${email}`));
+    const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect(result).toMatchObject({ ok: true, data: { needsPassword: true } });
+    expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/example\.invalid|db failed/);
+    warn.mockRestore();
+  });
+
+  it("then /welcome's acceptance records the person's own acceptance on the profile", async () => {
+    const { store, owner, strangerId, email } = await strangerAfterOwner();
+    await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect((await setPassword(owner.deps, { password: PW2, confirmPassword: PW2 })).ok).toBe(true);
+    expect((await acceptTerms(owner.deps, { acceptTerms: true, termsVersion: TERMS_VERSION }, "/")).ok).toBe(true);
+    expect(store.profileTerms.get(strangerId)?.termsVersion).toBe(TERMS_VERSION);
+    expect((await owner.auth.getUser())?.termsVersion).toBe(TERMS_VERSION);
+  });
+});
+
+describe("repairGoogleAccount records the Google user's acceptance on the profile row (P12)", () => {
+  async function googleSignIn(auth: Ctx["auth"]) {
+    const { url } = await auth.startGoogleSignIn({ redirectTo: `${SITE}/auth/callback` });
+    expect(await auth.completeOAuth(new URL(url, SITE).searchParams.get("code")!)).toBe(true);
+    return (await auth.getUser())!;
+  }
+
+  it("after removing a stranger's pending sign-up, the profile row holds the Google user's acceptance, not the stranger's", async () => {
+    const store = createFakeAuthStore();
+    const stranger = setup({ ip: "10.9.9.9" }, store);
+    const { pendingUserId } = await signUpInBrowser(stranger, GOOGLE_EMAIL, STRANGER_PW, "Stranger Name");
+    store.profileTerms.set(pendingUserId, { termsVersion: "1999-01-01", termsAcceptedAt: new Date(0), ageConfirmedAt: new Date(0) });
+    const g = setup({}, store);
+    const user = await googleSignIn(g.auth);
+    const record = vi.spyOn(g.profiles, "recordTermsAcceptance");
+    expect(await repairGoogleAccount(g.deps, user)).toEqual({ ok: true, data: { redirectTo: "/" } });
+    expect(record).toHaveBeenCalledWith(user.id, TERMS_VERSION);
+    const row = store.profileTerms.get(user.id)!;
+    expect(row.termsVersion).toBe(TERMS_VERSION);
+    expect(row.termsAcceptedAt!.getTime()).toBeGreaterThan(0);
+  });
+
+  it("a new Google user's automatic acceptance is recorded on the profile too", async () => {
+    const ctx = setup();
+    const user = await googleSignIn(ctx.auth);
+    expect((await repairGoogleAccount(ctx.deps, user)).ok).toBe(true);
+    expect(ctx.store.profileTerms.get(user.id)?.termsVersion).toBe(TERMS_VERSION);
+  });
+
+  it("a user with the current version is not recorded again", async () => {
+    const ctx = setup();
+    const first = await googleSignIn(ctx.auth);
+    await repairGoogleAccount(ctx.deps, first);
+    const again = await googleSignIn(ctx.auth);
+    const record = vi.spyOn(ctx.profiles, "recordTermsAcceptance");
+    expect(await repairGoogleAccount(ctx.deps, again)).toEqual({ ok: true, data: { redirectTo: "/" } });
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("a failed profile write signs out with the Google message and leaves the terms unaccepted for the next try", async () => {
+    const ctx = setup();
+    const user = await googleSignIn(ctx.auth);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(ctx.profiles, "recordTermsAcceptance").mockRejectedValue(new Error("db failed"));
+    expect(await repairGoogleAccount(ctx.deps, user)).toEqual({ ok: false, formError: AUTH_MESSAGES.googleFailed });
+    expect(await ctx.auth.getUser()).toBeNull();
+    expect(usersFor(ctx.store, GOOGLE_EMAIL)[0].termsVersion).toBeNull();
+    warn.mockRestore();
+  });
+});
+
+describe("completeGoogleSignIn (the /auth/callback use-case)", () => {
+  async function googleCode(auth: Ctx["auth"], next = "/") {
+    const { url } = await auth.startGoogleSignIn({ redirectTo: `${SITE}/auth/callback?next=${encodeURIComponent(next)}` });
+    return new URL(url, SITE).searchParams.get("code")!;
+  }
+
+  it("finishes the sign-in, runs the repair and terms rule, and goes to a safe next", async () => {
+    const ctx = setup();
+    const code = await googleCode(ctx.auth);
+    expect(await completeGoogleSignIn(ctx.deps, code, "/groups/7")).toEqual({ ok: true, data: { redirectTo: "/groups/7" } });
+    expect((await ctx.auth.getUser())?.termsVersion).toBe(TERMS_VERSION);
+    expect(await completeGoogleSignIn(ctx.deps, await googleCode(ctx.auth), "//evil.com")).toEqual({ ok: true, data: { redirectTo: "/" } });
+  });
+
+  it("an empty, unknown or reused code is the did-not-finish result, with nothing signed in", async () => {
+    const ctx = setup();
+    const code = await googleCode(ctx.auth);
+    expect(await completeGoogleSignIn(ctx.deps, "", "/")).toEqual({ ok: false, formError: GOOGLE_NOT_FINISHED });
+    expect(await completeGoogleSignIn(ctx.deps, "unknown", "/")).toEqual({ ok: false, formError: GOOGLE_NOT_FINISHED });
+    expect((await completeGoogleSignIn(ctx.deps, code, "/")).ok).toBe(true);
+    await ctx.auth.signOut();
+    expect(await completeGoogleSignIn(ctx.deps, code, "/")).toEqual({ ok: false, formError: GOOGLE_NOT_FINISHED });
+    expect(await ctx.auth.getUser()).toBeNull();
+  });
+
+  it("a provider failure while finishing is the did-not-finish result with one fixed warning", async () => {
+    const ctx = setup();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(ctx.auth, "completeOAuth").mockRejectedValue(new AuthProviderError("unavailable", "vendor text"));
+    expect(await completeGoogleSignIn(ctx.deps, "x", "/")).toEqual({ ok: false, formError: GOOGLE_NOT_FINISHED });
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/vendor/);
+    warn.mockRestore();
+  });
+
+  it("signed in but the user cannot be read: never skips the repair, signs out with the Google message", async () => {
+    const ctx = setup();
+    const code = await googleCode(ctx.auth);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(ctx.auth, "getUser").mockResolvedValueOnce(null);
+    const repair = vi.spyOn(ctx.directory, "hasPendingEmailIdentity");
+    expect(await completeGoogleSignIn(ctx.deps, code, "/")).toEqual({ ok: false, formError: AUTH_MESSAGES.googleFailed });
+    expect(repair).not.toHaveBeenCalled();
+    expect(await ctx.auth.getUser()).toBeNull();
+    warn.mockRestore();
+  });
+
+  it("a failed repair signs out with the Google message", async () => {
+    const ctx = setup();
+    const code = await googleCode(ctx.auth);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    ctx.store.failNextRepair = true;
+    expect(await completeGoogleSignIn(ctx.deps, code, "/")).toEqual({ ok: false, formError: AUTH_MESSAGES.googleFailed });
+    expect(await ctx.auth.getUser()).toBeNull();
+    warn.mockRestore();
   });
 });

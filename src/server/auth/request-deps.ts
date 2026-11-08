@@ -1,7 +1,7 @@
 import "server-only";
 import { headers } from "next/headers";
 import { clientIp } from "@/server/request-ip";
-import { getAccountDirectory, getAuthProvider, getRateLimiter } from "@/server/services";
+import { getAccountDirectory, getAuthProvider, getProfileStore, getRateLimiter } from "@/server/services";
 import { getSiteUrl } from "@/server/site-url";
 import type { PendingSignup } from "./pending-signup-cookie";
 import type { Deps } from "./use-cases";
@@ -19,6 +19,7 @@ export async function requestDeps(pending: PendingSignup | null = null): Promise
     siteUrl: getSiteUrl(),
     ip: clientIp(requestHeaders.get("x-forwarded-for")),
     directory: getAccountDirectory(),
+    profiles: getProfileStore(),
     pending,
   };
 }

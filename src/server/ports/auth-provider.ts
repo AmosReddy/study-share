@@ -125,6 +125,12 @@ export interface AuthProvider {
    */
   openSessionWithoutEmail(i: { email: string; expectedUserId: string }): Promise<{ userId: string }>;
   acceptTerms(i: { termsVersion: string }): Promise<void>;
+  /**
+   * Empties the signed-in user's recorded terms acceptance (version and times), so the terms
+   * gate sends them to /welcome. For an account whose acceptance was made by someone else: a
+   * stranger's sign-up that a code then confirmed for the real owner (spec 5.1, ruling P13).
+   */
+  clearTermsAcceptance(): Promise<void>;
   updateDisplayName(name: string): Promise<void>;
   signOut(): Promise<void>;
 }

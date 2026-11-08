@@ -19,14 +19,37 @@ const { getDb, createAccountDirectory } = vi.hoisted(() => ({
   getDb: vi.fn(() => ({ execute: vi.fn() })),
   createAccountDirectory: vi.fn(() => ({ sql: true })),
 }));
+const { createProfileStore } = vi.hoisted(() => ({ createProfileStore: vi.fn(() => ({ sqlProfiles: true })) }));
 
 vi.mock("next/headers", () => ({ cookies }));
 vi.mock("@/server/env", () => ({ getServerEnv }));
 vi.mock("@/server/db/client", () => ({ getDb }));
 vi.mock("@/server/db/account-directory", () => ({ createAccountDirectory }));
+vi.mock("@/server/db/profile-store", () => ({ createProfileStore }));
 
 import { getFakeAuthStore, resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
-import { getAccountDirectory, getAuthProvider } from "./services";
+import { getAccountDirectory, getAuthProvider, getProfileStore } from "./services";
+
+describe("getProfileStore", () => {
+  beforeEach(() => {
+    getDb.mockClear();
+    createProfileStore.mockClear();
+  });
+
+  it("in fake mode is the fake store over the shared fake auth store, and never opens the database", async () => {
+    getServerEnv.mockReturnValueOnce({ SERVICES_MODE: "fake" } as never);
+    resetFakeAuthStore();
+    expect(await getProfileStore().recordTermsAcceptance("nobody", "v1")).toBe(false);
+    expect(getDb).not.toHaveBeenCalled();
+    expect(createProfileStore).not.toHaveBeenCalled();
+  });
+
+  it("otherwise (every real deployment) is the SQL store", () => {
+    getServerEnv.mockReturnValueOnce({ SERVICES_MODE: "real" } as never);
+    expect(getProfileStore()).toEqual({ sqlProfiles: true });
+    expect(createProfileStore).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("getAccountDirectory", () => {
   beforeEach(() => {

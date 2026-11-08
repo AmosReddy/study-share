@@ -39,4 +39,11 @@ export const AUTH_MESSAGES = {
   /** The password changed but the explicit sign-out of other devices failed (spec 5.4). */
   otherDevicesMaybeSignedIn:
     "Your password was changed, but we could not confirm that your other devices were signed out. They may stay signed in for up to an hour.",
+
+  /** Spec 3 and 4.3: Forgot password's one reply, the same for every address. */
+  resetCodeSent: "If an account exists for that email, we sent a code.",
+  /** Spec 4.3: shown on the home page after a password reset. */
+  passwordUpdated: "Password updated",
+  /** Spec 3: shown under both buttons on /signup and /login; pressing Google records the acceptance. */
+  googleConsent: "By continuing you confirm you are 18 or older and accept the Terms and Privacy Notice",
 } as const;

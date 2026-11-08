@@ -83,7 +83,17 @@ export type FakeAuthStore = {
   outbox: FakeOutbox;
   /** Test mode only: the next signOut throws once, so browser tests can see a failed log-out. */
   failNextSignOut: boolean;
+  /**
+   * Test mode only: the next Google repair check (the fake directory's hasPendingEmailIdentity)
+   * throws once, so browser tests can see a failed Google repair. POST /api/test/reset clears it.
+   */
+  failNextRepair: boolean;
+  /** The terms fields of each user's profile row, as the fake ProfileStore records them. */
+  profileTerms: Map<string, FakeProfileTerms>;
 };
+
+/** The terms fields of a profile row (public.profiles), for the fake ProfileStore. */
+export type FakeProfileTerms = { termsVersion: string | null; termsAcceptedAt: Date | null; ageConfirmedAt: Date | null };
 
 export type FakeCookies = {
   get(name: string): string | undefined;
@@ -101,6 +111,8 @@ export function createFakeAuthStore(): FakeAuthStore {
     oauthCodes: new Set(),
     outbox: new FakeOutbox(),
     failNextSignOut: false,
+    failNextRepair: false,
+    profileTerms: new Map(),
   };
 }
 
@@ -131,6 +143,8 @@ export function resetFakeAuthStore(): void {
   store.oauthCodes.clear();
   store.outbox.entries.length = 0;
   store.failNextSignOut = false;
+  store.failNextRepair = false;
+  store.profileTerms.clear();
 }
 
 /** Ends every session of a user, or every session but `keep`. */
@@ -158,6 +172,8 @@ export function expireAllCodes(store: FakeAuthStore = getFakeAuthStore(), email?
 /** Removes a user with everything that points at it (sessions, codes). */
 export function deleteFakeUser(store: FakeAuthStore, userId: string): void {
   store.users.delete(userId);
+  // Like the profile row, which the user's deletion cascades to.
+  store.profileTerms.delete(userId);
   endSessions(store, userId);
   dropOutstandingCodes(store, userId);
 }
@@ -404,6 +420,10 @@ export function createFakeAuthProvider(deps: {
 
     async acceptTerms({ termsVersion }) {
       requireUser().termsVersion = termsVersion;
+    },
+
+    async clearTermsAcceptance() {
+      requireUser().termsVersion = null;
     },
 
     async updateDisplayName(name) {

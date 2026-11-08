@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { AccountDirectory, EmailAccountState } from "@/server/ports/account-directory";
 import { AuthProviderError, type AuthProvider, type AuthUser, type CodeKind } from "@/server/ports/auth-provider";
+import type { ProfileStore } from "@/server/ports/profile-store";
 import type { RateLimiter } from "@/server/ports/rate-limiter";
 import { AUTH_MESSAGES } from "@/shared/auth-messages";
 import {
@@ -47,6 +48,8 @@ export type Deps = {
   ip: string;
   /** Who has an account; removes unconfirmed sign-ups. */
   directory: AccountDirectory;
+  /** The app's profile rows: the terms acceptance the profile trigger only fills once. */
+  profiles: ProfileStore;
   /**
    * The pending sign-up this browser created, read by the caller from the signed cookie
    * (readPendingSignup), or null. Trusted only to tell this browser's own pending account from
@@ -232,12 +235,37 @@ export async function acceptTerms(deps: Deps, raw: unknown, next: unknown): Prom
   if (parsed.data.termsVersion !== TERMS_VERSION) return { ok: false, formError: MESSAGES.termsChanged };
 
   try {
+    const user = await deps.auth.getUser();
+    if (!user) return { ok: false, formError: MESSAGES.sessionEnded };
+    // The profile row first: if the metadata write then fails, the terms gate still shows this
+    // page and a second try records both. The other order could leave the profile without it.
+    await recordProfileTerms(deps.profiles, user.id);
     await deps.auth.acceptTerms({ termsVersion: TERMS_VERSION });
   } catch (error) {
     return providerFailure(error);
   }
   return { ok: true, data: { redirectTo: safeNextPath(next) } };
 }
+
+/**
+ * Runs a ProfileStore write. Its failures are database errors, so they become one fixed warning
+ * and AuthProviderError("unavailable") (the plain "something went wrong", no SQL or id logged).
+ * A missing profile row is not a reason to refuse the person: it is logged and passed over.
+ */
+async function fromProfiles(call: Promise<boolean>): Promise<void> {
+  let updated: boolean;
+  try {
+    updated = await call;
+  } catch {
+    console.warn("Profile store unavailable.");
+    throw new AuthProviderError("unavailable");
+  }
+  if (!updated) console.warn("No profile row to record the terms on.");
+}
+
+/** Records on the profile row that this user accepted the current terms now (P12). */
+const recordProfileTerms = (profiles: ProfileStore, userId: string) =>
+  fromProfiles(profiles.recordTermsAcceptance(userId, TERMS_VERSION));
 
 export async function updateProfile(deps: Deps, raw: unknown): Promise<ActionResult> {
   const parsed = parse(profileSchema, raw);
@@ -515,6 +543,11 @@ async function scrambleWithRetry(auth: AuthProvider, userId: string): Promise<bo
  * Returns a failure, after signing the person out, when any step fails.
  */
 async function takeOverForeignCode(deps: Deps, email: string, userId: string): Promise<Failure | null> {
+  // While the code session still works (the scramble ends it): the name and the terms
+  // acceptance came from whoever signed up, so they are replaced (P13). A failure here never
+  // stops the scramble below; the writes are tried again from the fresh session.
+  const detailsReplaced = await replaceOtherSignUpsDetails(deps, email, userId);
+
   if (!(await scrambleWithRetry(deps.auth, userId))) {
     // The sign-up-code session verifyCode just opened is still alive (nothing scrambled), and a
     // password change works from a code session (probes l2, o): replace the password that way,
@@ -538,7 +571,43 @@ async function takeOverForeignCode(deps: Deps, email: string, userId: string): P
     await signOutQuietly(deps.auth);
     return { ok: false, formError: MESSAGES.confirmedSetPassword };
   }
+  // The person must not go on under the other sign-up's name and terms: without them replaced,
+  // the terms gate would never ask this person to accept. The password is already random.
+  if (!detailsReplaced && !(await replaceOtherSignUpsDetails(deps, email, userId))) {
+    console.warn("Could not replace the other sign-up's name and terms; signed the person out.");
+    await signOutQuietly(deps.auth);
+    return { ok: false, formError: MESSAGES.confirmedSetPassword };
+  }
   return null;
+}
+
+/** A display name from an address: its local part, within the name rules, else "New user". */
+function nameFromEmail(email: string): string {
+  return validName(email.split("@")[0] ?? "") ?? "New user";
+}
+
+/** `candidate` trimmed and cut to 50 characters (code points) if it then passes the name rules, else null. */
+function validName(candidate: string): string | null {
+  const parsed = displayNameSchema.safeParse(Array.from(candidate.trim()).slice(0, 50).join(""));
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * For an account a foreign code confirmed (P13): the name becomes the address's local part and
+ * the terms acceptance is cleared (metadata and profile row), so nothing the other sign-up typed
+ * or accepted survives and the terms gate sends the person to /welcome. Needs a live session of
+ * that user. True when all three writes succeeded; any failure is one fixed warning.
+ */
+async function replaceOtherSignUpsDetails(deps: Deps, email: string, userId: string): Promise<boolean> {
+  try {
+    await deps.auth.updateDisplayName(nameFromEmail(email));
+    await deps.auth.clearTermsAcceptance();
+    await fromProfiles(deps.profiles.clearTermsAcceptance(userId));
+    return true;
+  } catch {
+    console.warn("Could not replace the other sign-up's name and terms.");
+    return false;
+  }
 }
 
 /**
@@ -714,12 +783,7 @@ export async function setPassword(
 
 /** The Google user's own name for the repair: Google's, else the address's local part, within the name rules. */
 function googleDisplayName(user: AuthUser): string {
-  const candidates = [user.providerName ?? "", user.email.split("@")[0] ?? ""];
-  for (const candidate of candidates) {
-    const parsed = displayNameSchema.safeParse(Array.from(candidate.trim()).slice(0, 50).join(""));
-    if (parsed.success) return parsed.data;
-  }
-  return "New user";
+  return validName(user.providerName ?? "") ?? nameFromEmail(user.email);
 }
 
 /**
@@ -753,6 +817,8 @@ export async function repairGoogleAccount(
     if (await deps.directory.hasPendingEmailIdentity(user.id)) {
       // While the Google session still works: the name and terms become the Google user's own.
       await deps.auth.updateDisplayName(googleDisplayName(user));
+      // The profile row keeps the stranger's acceptance otherwise: the trigger fills it once.
+      await recordProfileTerms(deps.profiles, user.id);
       await deps.auth.acceptTerms({ termsVersion: TERMS_VERSION });
       // Kills the stranger's password and every session, the Google one included.
       if (!(await scrambleWithRetry(deps.auth, user.id))) throw new Error("scramble failed");
@@ -764,6 +830,9 @@ export async function repairGoogleAccount(
       return { ok: true, data: { redirectTo: target } };
     }
     if (!user.termsVersion) {
+      // Profile first: if the metadata write fails, the next sign-in still finds no version and
+      // records both.
+      await recordProfileTerms(deps.profiles, user.id);
       await deps.auth.acceptTerms({ termsVersion: TERMS_VERSION });
       return { ok: true, data: { redirectTo: target } };
     }
@@ -777,4 +846,41 @@ export async function repairGoogleAccount(
     await signOutQuietly(deps.auth);
     return { ok: false, formError: MESSAGES.googleFailed };
   }
+}
+
+/** Set as `formError` when Google sent no usable code (or finishing it failed): nothing was signed in. */
+export const GOOGLE_NOT_FINISHED = "google_not_finished";
+
+/**
+ * Where Google sign-in returns (/auth/callback): finishes the sign-in with Google's one-time
+ * `code`, then runs repairGoogleAccount (the pre-registration repair and the terms rule) for the
+ * user that sign-in opened. Never skips the repair: a session whose user cannot be read is
+ * signed out with the Google message, like any failed repair. A missing, unknown or used code
+ * (or a provider failure while finishing) is GOOGLE_NOT_FINISHED, with nothing signed in.
+ */
+export async function completeGoogleSignIn(
+  deps: Deps,
+  code: string,
+  next: unknown,
+): Promise<ActionResult<{ redirectTo: string }>> {
+  let signedIn = false;
+  try {
+    signedIn = code !== "" && (await deps.auth.completeOAuth(code));
+  } catch {
+    console.warn("Finishing a Google sign-in failed at the auth provider.");
+  }
+  if (!signedIn) return { ok: false, formError: GOOGLE_NOT_FINISHED };
+
+  let user: AuthUser | null = null;
+  try {
+    user = await deps.auth.getUser();
+  } catch {
+    // Handled below like a missing user.
+  }
+  if (!user) {
+    console.warn("Reading the user after a Google sign-in failed; signed the person out.");
+    await signOutQuietly(deps.auth);
+    return { ok: false, formError: MESSAGES.googleFailed };
+  }
+  return repairGoogleAccount(deps, user, next);
 }

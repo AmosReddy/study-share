@@ -2,19 +2,22 @@ import "server-only";
 import { cookies } from "next/headers";
 import { createFakeAccountDirectory } from "@/server/adapters/fake-account-directory";
 import { createFakeAuthProvider, getFakeAuthStore } from "@/server/adapters/fake-auth-provider";
+import { createFakeProfileStore } from "@/server/adapters/fake-profile-store";
 import { createMemoryRateLimiter, type MemoryRateLimiter } from "@/server/adapters/memory-rate-limiter";
-import { emailSendKey } from "@/server/auth/rate-limit-policy";
+import { emailSendKey, recoveryMintedKey } from "@/server/auth/rate-limit-policy";
 import { createSmtpEmailSenderFromConfig } from "@/server/adapters/smtp-email-sender";
 import { createS3FileStorage } from "@/server/adapters/s3-file-storage";
 import { createSupabaseAuthProvider } from "@/server/adapters/supabase-auth-provider";
 import { createAccountDirectory } from "@/server/db/account-directory";
 import { getDb } from "@/server/db/client";
 import { createPostgresRateLimiter } from "@/server/db/postgres-rate-limiter";
+import { createProfileStore } from "@/server/db/profile-store";
 import { getServerEnv } from "@/server/env";
 import type { AccountDirectory } from "@/server/ports/account-directory";
 import type { AuthProvider } from "@/server/ports/auth-provider";
 import type { EmailSender } from "@/server/ports/email-sender";
 import type { FileStorage } from "@/server/ports/file-storage";
+import type { ProfileStore } from "@/server/ports/profile-store";
 import type { RateLimiter } from "@/server/ports/rate-limiter";
 
 /**
@@ -103,6 +106,7 @@ export async function getAuthProvider(): Promise<AuthProvider> {
 const MEMORY_LIMITER_KEY = "__studyShareMemoryRateLimiter";
 let postgresLimiter: RateLimiter | undefined;
 let accountDirectory: AccountDirectory | undefined;
+let profileStore: ProfileStore | undefined;
 
 /** Test mode's one limiter. On globalThis, like the fake auth store, because Next.js can bundle
  * server actions and route handlers separately and each would get its own copy. */
@@ -128,10 +132,24 @@ export function getAccountDirectory(): AccountDirectory {
 }
 
 /**
- * Test mode only: clears one address's one-email-a-minute cooldown, so a browser test can send
- * a second email to the same address without waiting a minute. Does nothing in any other mode.
+ * The app's profile rows (terms acceptance): SQL on public.profiles over the database
+ * connection. In SERVICES_MODE=fake it is the fake store over the fake auth store; the app
+ * refuses fake mode on every real deployment (see env.ts), so a deployment always gets SQL.
+ */
+export function getProfileStore(): ProfileStore {
+  if (getServerEnv().SERVICES_MODE === "fake") return createFakeProfileStore(getFakeAuthStore());
+  profileStore ??= createProfileStore(getDb());
+  return profileStore;
+}
+
+/**
+ * Test mode only: clears one address's one-email-a-minute cooldown (and the minted-recovery
+ * cooldown that a foreign code or a Google repair starts), so a browser test can send a second
+ * email to the same address without waiting a minute. Does nothing in any other mode.
  */
 export function forgetEmailSendCooldown(email: string): void {
   if (getServerEnv().SERVICES_MODE !== "fake") return;
-  memoryLimiter().forget(emailSendKey(email.trim().toLowerCase()));
+  const address = email.trim().toLowerCase();
+  memoryLimiter().forget(emailSendKey(address));
+  memoryLimiter().forget(recoveryMintedKey(address));
 }

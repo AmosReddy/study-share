@@ -475,6 +475,13 @@ function runSharedContract(make: () => ContractContext) {
       expect((await provider.getUser())?.termsVersion).toBe("2027-01");
     });
 
+    test("clearTermsAcceptance empties the terms version, so the terms must be accepted again", async () => {
+      const { provider } = await confirmed();
+      await provider.signInWithPassword({ email: "ada@example.com", password: PASSWORD });
+      await provider.clearTermsAcceptance();
+      expect((await provider.getUser())?.termsVersion).toBeNull();
+    });
+
     test("updateDisplayName changes the name", async () => {
       const { provider } = await confirmed();
       await provider.signInWithPassword({ email: "ada@example.com", password: PASSWORD });

@@ -280,6 +280,16 @@ describe("fake account directory: hasPendingEmailIdentity (read only)", () => {
   test("an unknown user gives false", async () => {
     expect(await createFakeAccountDirectory(createFakeAuthStore()).hasPendingEmailIdentity("no-such-user")).toBe(false);
   });
+
+  test("the failNextRepair test switch makes exactly the next check throw, and is then off", async () => {
+    const store = createFakeAuthStore();
+    const userId = seed(store, { email: "f@example.invalid", confirmed: true, identities: [{ provider: "google", verified: true }] });
+    const directory = createFakeAccountDirectory(store);
+    store.failNextRepair = true;
+    await expect(directory.hasPendingEmailIdentity(userId)).rejects.toThrow();
+    expect(store.failNextRepair).toBe(false);
+    expect(await directory.hasPendingEmailIdentity(userId)).toBe(false);
+  });
 });
 
 describe("fake account directory over the shared store", () => {

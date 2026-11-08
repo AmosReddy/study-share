@@ -89,6 +89,7 @@ const throwingCalls: [string, keyof SupabaseAuthClient["auth"], (p: AuthProvider
   ["updatePassword", "updateUser", (p) => p.updatePassword(PASSWORD)],
   ["acceptTerms", "updateUser", (p) => p.acceptTerms({ termsVersion: "2026-11" })],
   ["updateDisplayName", "updateUser", (p) => p.updateDisplayName("Ada")],
+  ["clearTermsAcceptance", "updateUser", (p) => p.clearTermsAcceptance()],
   ["resendSignUpCode", "resend", (p) => p.resendSignUpCode({ email: "ada@example.com" })],
   ["sendPasswordResetCode", "resetPasswordForEmail", (p) => p.sendPasswordResetCode({ email: "ada@example.com" })],
   ["updatePassword (signOutOthers)", "signOut", (p) => p.updatePassword(PASSWORD, { signOutOthers: true })],
@@ -608,6 +609,15 @@ describe("other operations", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test("clearTermsAcceptance empties terms_version, terms_accepted_at and age_confirmed_at in user metadata", async () => {
+    const { provider, client } = make();
+    await provider.clearTermsAcceptance();
+    expect(client.auth.updateUser).toHaveBeenCalledWith({
+      data: { terms_version: null, terms_accepted_at: null, age_confirmed_at: null },
+    });
+    expect(client.auth.refreshSession).toHaveBeenCalledTimes(1);
   });
 
   test("metadata changes refresh the session, so getUser (which reads the token) sees them", async () => {
