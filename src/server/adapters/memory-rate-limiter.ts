@@ -26,6 +26,14 @@ export function createMemoryRateLimiter(now: () => number = Date.now): MemoryRat
       return { allowed: true, retryAfterSeconds: 0 };
     },
 
+    async peek({ key, limit, windowSeconds }) {
+      const t = now();
+      const windowMs = windowSeconds * 1000;
+      const w = windows.get(key);
+      if (!w || t - w.startedAt >= windowMs || w.count < limit) return { allowed: true, retryAfterSeconds: 0 };
+      return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((w.startedAt + windowMs - t) / 1000)) };
+    },
+
     forget(key) {
       windows.delete(key);
     },

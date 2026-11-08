@@ -34,3 +34,14 @@ export const EMAIL_SEND_COOLDOWN: Limit = { limit: 1, windowSeconds: 60 };
 
 /** The cooldown's key. `email` must already be normalised (trimmed, lowercase). */
 export const emailSendKey = (email: string) => `email-send:${email}`;
+
+/**
+ * One minute after the server mints a recovery session for an address (openSessionWithoutEmail),
+ * the provider refuses a recovery email to it (ruling P11). Hit ONLY at mint time and read with
+ * `peek` by every email-sending use-case, so its window always starts at the mint itself (a hit
+ * inside the email-send window would not restart that window).
+ */
+export const RECOVERY_MINTED_COOLDOWN: Limit = { limit: 1, windowSeconds: 60 };
+
+/** The minted-recovery key. `email` must already be normalised (trimmed, lowercase). */
+export const recoveryMintedKey = (email: string) => `recovery-minted:${email}`;

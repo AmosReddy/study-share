@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { AccountDirectory, EmailAccountState } from "@/server/ports/account-directory";
 import { AuthProviderError, type AuthProvider, type AuthUser, type CodeKind } from "@/server/ports/auth-provider";
@@ -19,6 +20,8 @@ import {
   CODE_ATTEMPTS_IP,
   EMAIL_SEND_COOLDOWN,
   emailSendKey,
+  RECOVERY_MINTED_COOLDOWN,
+  recoveryMintedKey,
   LOGIN_EMAIL_LIMIT,
   LOGIN_IP_LIMIT,
   PASSWORD_RESET_EMAIL_LIMIT,
@@ -133,14 +136,14 @@ function emailFlowFailure(error: unknown): Failure {
 /** How long one limiter hit may take before it counts as a store failure (fail open). */
 const LIMITER_TIMEOUT_MS = 2000;
 
-/** The hit, or a rejection once LIMITER_TIMEOUT_MS has passed. The timer never outlives the hit. */
-async function hitWithTimeout(limiter: RateLimiter, input: Parameters<RateLimiter["hit"]>[0]) {
+/** The hit (or peek), or a rejection once LIMITER_TIMEOUT_MS has passed. The timer never outlives the call. */
+async function hitWithTimeout(limiter: RateLimiter, input: Parameters<RateLimiter["hit"]>[0], op: "hit" | "peek" = "hit") {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error("Rate limit store timed out")), LIMITER_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([limiter.hit(input), timeout]);
+    return await Promise.race([op === "peek" ? limiter.peek(input) : limiter.hit(input), timeout]);
   } finally {
     clearTimeout(timer);
   }
@@ -389,22 +392,44 @@ async function signOutQuietly(auth: AuthProvider): Promise<void> {
   }
 }
 
+const mintedInput = (email: string) => ({
+  key: recoveryMintedKey(email),
+  limit: RECOVERY_MINTED_COOLDOWN.limit,
+  windowSeconds: RECOVERY_MINTED_COOLDOWN.windowSeconds,
+});
+
 /**
- * Starts the shared one-email-a-minute cooldown for an address, without sending anything. Used
- * whenever openSessionWithoutEmail runs (or is about to): the provider records that as a
- * recovery request and would answer a recovery email within about a minute with a rate limit,
- * so the app's own countdown must be the one the person sees (ruling P11). Fails open.
+ * Starts the minted-recovery cooldown for an address. Called just before every
+ * openSessionWithoutEmail (also when that then fails): the provider records the minted session
+ * as a recovery request and would answer a recovery email within about a minute with a rate
+ * limit, so the app's own countdown must be the one the person sees (ruling P11). Only this
+ * function hits the key, so its window starts at the mint, even while an email-send window that
+ * started earlier (at sign-up) is still open. Fails open.
  */
-async function startEmailCooldown(limiter: RateLimiter, email: string): Promise<void> {
+async function startMintedCooldown(limiter: RateLimiter, email: string): Promise<void> {
   try {
-    await hitWithTimeout(limiter, {
-      key: emailSendKey(email),
-      limit: EMAIL_SEND_COOLDOWN.limit,
-      windowSeconds: EMAIL_SEND_COOLDOWN.windowSeconds,
-    });
+    await hitWithTimeout(limiter, mintedInput(email));
   } catch {
     console.warn("Rate limit store unavailable; the email cooldown was not started.");
   }
+}
+
+/**
+ * The cooldown result (the same one the email-send cooldown gives, with its countdown) while a
+ * minted recovery session for this address is less than a minute old, else null. Read with
+ * peek, so checking never opens a window. Runs before the other limits, so a refused request
+ * uses up nothing. Fails open with the usual single warning.
+ */
+async function mintedCooldownRefusal(limiter: RateLimiter, email: string): Promise<Failure | null> {
+  try {
+    const answer = await hitWithTimeout(limiter, mintedInput(email), "peek");
+    if (!answer.allowed) {
+      return { ok: false, formError: MESSAGES.justSent, retryAfterSeconds: Math.max(1, answer.retryAfterSeconds) };
+    }
+  } catch {
+    console.warn("Rate limit store unavailable; allowing the request.");
+  }
+  return null;
 }
 
 /** "Google-only": a Google identity and no email identity. Not from hasPassword (see the port doc). */
@@ -465,8 +490,10 @@ export async function signUp(
   if ("failure" in parsed) return parsed.failure;
   const { email } = parsed.data;
 
-  // The cooldown and limits come before the lookup, so the "already registered" answer is
+  // The cooldowns and limits come before the lookup, so the "already registered" answer is
   // protected by them too (spec 5).
+  const minted = await mintedCooldownRefusal(deps.limiter, email);
+  if (minted) return minted;
   const refused = await overLimit(deps.limiter, [
     emailSendCheck(email),
     { key: `signup:email:${email}`, limit: SIGN_UP_EMAIL_LIMIT },
@@ -547,6 +574,32 @@ async function checkCode(
 const SCRAMBLE_ATTEMPTS = 2;
 
 /**
+ * Logged when a stranger's password may still work: after a code from another sign-up, neither
+ * the admin scramble nor a password change from the code session could replace it. Fixed text
+ * (no address, id or password) that operations can alert on.
+ */
+export const PASSWORD_NOT_REPLACED_WARNING =
+  "SECURITY: after a code from another sign-up the password could not be replaced; the account may still accept the other sign-up's password.";
+
+/** A password nobody knows, as scramblePassword makes: 32 random bytes plus a suffix that meets any password policy. */
+function randomPassword(): string {
+  return `${randomBytes(32).toString("base64url")}!aA1`;
+}
+
+/** Tries the scramble SCRAMBLE_ATTEMPTS times. Any error counts as "not scrambled". */
+async function scrambleWithRetry(auth: AuthProvider, userId: string): Promise<boolean> {
+  for (let attempt = 0; attempt < SCRAMBLE_ATTEMPTS; attempt++) {
+    try {
+      await auth.scramblePassword(userId);
+      return true;
+    } catch {
+      // Tried again, then the caller decides.
+    }
+  }
+  return false;
+}
+
+/**
  * A code confirmed an account this browser did not create, or there is no cookie (spec 5.1,
  * ruling P9). Order: replace the password with a random one (the auth server then rejects every
  * session of the account, including the one the code just made, so a stranger's password and
@@ -555,23 +608,22 @@ const SCRAMBLE_ATTEMPTS = 2;
  * Returns a failure, after signing the person out, when any step fails.
  */
 async function takeOverForeignCode(deps: Deps, email: string, userId: string): Promise<Failure | null> {
-  let scrambled = false;
-  for (let attempt = 0; attempt < SCRAMBLE_ATTEMPTS && !scrambled; attempt++) {
+  if (!(await scrambleWithRetry(deps.auth, userId))) {
+    // The sign-up-code session verifyCode just opened is still alive (nothing scrambled), and a
+    // password change works from a code session (probes l2, o): replace the password that way,
+    // through a different API path from the admin call that failed. The value is never kept.
     try {
-      await deps.auth.scramblePassword(userId);
-      scrambled = true;
+      await deps.auth.updatePassword(randomPassword());
+      console.warn("Replaced the password from the code session after the scramble failed; signed the person out.");
     } catch {
-      // Any error counts as "not scrambled": tried again, then the person is signed out.
+      console.warn(PASSWORD_NOT_REPLACED_WARNING);
     }
-  }
-  if (!scrambled) {
-    console.warn("Could not replace the password after a code from another sign-up; signed the person out.");
     await signOutQuietly(deps.auth);
     return { ok: false, formError: MESSAGES.confirmedSetPassword };
   }
 
   // Started before the attempt: even a failed one may have recorded a recovery request.
-  await startEmailCooldown(deps.limiter, email);
+  await startMintedCooldown(deps.limiter, email);
   try {
     await deps.auth.openSessionWithoutEmail({ email, expectedUserId: userId });
   } catch {
@@ -622,6 +674,8 @@ export async function resendSignUpCode(deps: Deps, raw: unknown): Promise<Action
     email = parsed.data.email;
   }
 
+  const minted = await mintedCooldownRefusal(deps.limiter, email);
+  if (minted) return minted;
   const refused = await overLimit(deps.limiter, [
     emailSendCheck(email),
     { key: `resend:email:${email}`, limit: RESEND_EMAIL_LIMIT },
@@ -647,6 +701,8 @@ export async function requestPasswordReset(deps: Deps, raw: unknown): Promise<Ac
   if ("failure" in parsed) return parsed.failure;
   const { email } = parsed.data;
 
+  const minted = await mintedCooldownRefusal(deps.limiter, email);
+  if (minted) return minted;
   const refused = await overLimit(deps.limiter, [
     emailSendCheck(email),
     { key: `reset:email:${email}`, limit: PASSWORD_RESET_EMAIL_LIMIT },
@@ -739,10 +795,13 @@ function googleDisplayName(user: AuthUser): string {
 /**
  * Runs right after a Google sign-in (spec 4.2, 5.3), with the user that sign-in returned.
  *
- * If the account has a pending email sign-up (a stranger's earlier password), the pending
- * identity is removed, the password is replaced with a random one (which also ends the Google
- * session), the email cooldown starts, a fresh session is opened here for this same user with
- * no second Google trip, and the display name and terms become the Google user's own.
+ * If the account has a pending email sign-up (a stranger's earlier password), in this order: the
+ * display name and terms become the Google user's own (while the Google session works), the
+ * password is replaced with a random one (tried twice; it also ends the Google session), the
+ * pending identity is removed, the minted-recovery cooldown starts, and a fresh session is
+ * opened here for this same user with no second Google trip. Detection is read only and the
+ * removal follows the scramble, so a repair that fails before then is repeated at the next
+ * sign-in; one that fails after it has already removed everything of the stranger's.
  * Otherwise the terms rule applies: no accepted version is recorded as accepted now (the person
  * pressed the button under the "By continuing you confirm..." sentence); an out-of-date
  * version goes to /welcome. A confirmed password account that signs in with Google is left as
@@ -758,13 +817,20 @@ export async function repairGoogleAccount(
   const target = safeNextPath(next);
   const email = normaliseEmail(user.email);
   try {
-    const { hadPendingEmailSignup } = await deps.directory.repairAfterGoogle(user.id);
-    if (hadPendingEmailSignup) {
-      await deps.auth.scramblePassword(user.id);
-      await startEmailCooldown(deps.limiter, email);
-      await deps.auth.openSessionWithoutEmail({ email, expectedUserId: user.id });
+    // Read only: the pending identity is removed only once the stranger's name, terms and
+    // password are gone, so if any of those steps fails the next Google sign-in finds it again
+    // and repeats them.
+    if (await deps.directory.hasPendingEmailIdentity(user.id)) {
+      // While the Google session still works: the name and terms become the Google user's own.
       await deps.auth.updateDisplayName(googleDisplayName(user));
       await deps.auth.acceptTerms({ termsVersion: TERMS_VERSION });
+      // Kills the stranger's password and every session, the Google one included.
+      if (!(await scrambleWithRetry(deps.auth, user.id))) throw new Error("scramble failed");
+      // Before the minted session: redeeming a recovery code confirms the address, which marks
+      // the email identity verified, and a verified identity is no longer removed.
+      await deps.directory.repairAfterGoogle(user.id);
+      await startMintedCooldown(deps.limiter, email);
+      await deps.auth.openSessionWithoutEmail({ email, expectedUserId: user.id });
       return { ok: true, data: { redirectTo: target } };
     }
     if (!user.termsVersion) {

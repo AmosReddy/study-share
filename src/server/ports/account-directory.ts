@@ -34,6 +34,13 @@ export interface AccountDirectory {
    */
   removePendingSignup(email: string): Promise<boolean>;
   /**
+   * Read only: whether the user has what repairAfterGoogle would remove, i.e. an unverified email
+   * identity AND a Google identity (the same condition, nothing deleted). The Google repair checks
+   * this first and removes the identity LAST, so a repair that fails half-way is found again at
+   * the next Google sign-in.
+   */
+  hasPendingEmailIdentity(userId: string): Promise<boolean>;
+  /**
    * Call ONLY right after a Google sign-in for that user. Removes the user's unverified email
    * identity (a stranger's earlier password sign-up) and reports whether there was one. It does
    * nothing for a user without a Google identity, and never touches a verified email identity or

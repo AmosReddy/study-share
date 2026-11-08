@@ -29,6 +29,12 @@ export function createFakeAccountDirectory(store: FakeAuthStore = getFakeAuthSto
       return true;
     },
 
+    async hasPendingEmailIdentity(userId) {
+      const u = store.users.get(userId);
+      if (!u || !u.identities.some((i) => i.provider === "google")) return false;
+      return u.identities.some((i) => i.provider === "email" && !i.verified);
+    },
+
     async repairAfterGoogle(userId) {
       const u = store.users.get(userId);
       if (!u || !u.identities.some((i) => i.provider === "google")) return { hadPendingEmailSignup: false };

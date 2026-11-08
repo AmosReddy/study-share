@@ -23,6 +23,7 @@ import {
   updateProfile,
   verifyResetCode,
   verifySignUpCode,
+  PASSWORD_NOT_REPLACED_WARNING,
   type Deps,
 } from "./use-cases";
 
@@ -51,6 +52,9 @@ function setup(overrides: Partial<Deps> = {}, store: FakeAuthStore = createFakeA
   const advance = (seconds: number) => void (now += seconds * 1000);
   return { auth, deps, advance, store, directory };
 }
+
+/** A limiter answer that allows: for stub limiters that only record hits. */
+const allowPeek = async () => ({ allowed: true, retryAfterSeconds: 0 });
 
 /** Just past the shared one-email-a-minute cooldown. */
 const PAST_COOLDOWN = 61;
@@ -164,7 +168,7 @@ describe("signUpWithLink (deprecated link flow, Task 5 deletes it)", () => {
 
   it("uses namespaced keys", async () => {
     const hit = vi.fn<RateLimiter["hit"]>(async () => ({ allowed: true, retryAfterSeconds: 0 }));
-    const { deps } = setup({ limiter: { hit } });
+    const { deps } = setup({ limiter: { hit, peek: allowPeek } });
     await signUpWithLink(deps, validSignUp("k@x.com"), "/");
     expect(hit.mock.calls.map((c) => c[0].key)).toEqual([
       "email-send:k@x.com",
@@ -544,7 +548,7 @@ describe("updateProfile", () => {
 });
 
 describe("a rate limit store that never answers", () => {
-  const hanging: RateLimiter = { hit: () => new Promise(() => {}) };
+  const hanging: RateLimiter = { hit: () => new Promise(() => {}), peek: () => new Promise(() => {}) };
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -582,6 +586,7 @@ describe("a rate limit store that never answers", () => {
     const real = createMemoryRateLimiter(() => 0);
     const slow: RateLimiter = {
       hit: (i) => new Promise((resolve) => setTimeout(() => resolve(real.hit(i)), 1500)),
+      peek: (i) => new Promise((resolve) => setTimeout(() => resolve(real.peek(i)), 1500)),
     };
     const { deps } = setup({ limiter: slow });
     const first = signUpWithLink(deps, validSignUp("a@x.com"), "/");
@@ -596,6 +601,9 @@ describe("a rate limit store that never answers", () => {
 
 describe("a rate limit store that fails", () => {
   const failing: RateLimiter = {
+    peek: async () => {
+      throw new Error("connection to postgres://user:pw@db failed for signup:email:a@x.com from 10.0.0.1");
+    },
     hit: async () => {
       throw new Error("connection to postgres://user:pw@db failed for signup:email:a@x.com from 10.0.0.1");
     },
@@ -701,7 +709,7 @@ describe("a provider rate limit is reported honestly, the same for known and unk
 describe("the client address", () => {
   const keysFor = async (ip: string, run: (deps: Deps) => Promise<unknown>) => {
     const hit = vi.fn<RateLimiter["hit"]>(async () => ({ allowed: true, retryAfterSeconds: 0 }));
-    const { deps } = setup({ limiter: { hit }, ip });
+    const { deps } = setup({ limiter: { hit, peek: allowPeek }, ip });
     await run(deps);
     return hit.mock.calls.map((c) => c[0].key);
   };
@@ -966,7 +974,7 @@ describe("signUp (codes)", () => {
 
   it("two sign-ups at the same moment leave exactly one pending account, and only its owner's result names it", async () => {
     const store = createFakeAuthStore();
-    const allowAll: RateLimiter = { hit: async () => ({ allowed: true, retryAfterSeconds: 0 }) };
+    const allowAll: RateLimiter = { hit: allowPeek, peek: allowPeek };
     const a = setup({ limiter: allowAll, ip: "10.0.0.1" }, store);
     const b = setup({ limiter: allowAll, ip: "10.0.0.2" }, store);
     const results = await Promise.all([
@@ -1014,7 +1022,7 @@ describe("signUp (codes)", () => {
 
   it("uses the same namespaced limit keys as before", async () => {
     const hit = vi.fn<RateLimiter["hit"]>(async () => ({ allowed: true, retryAfterSeconds: 0 }));
-    const { deps } = setup({ limiter: { hit } });
+    const { deps } = setup({ limiter: { hit, peek: allowPeek } });
     await signUp(deps, signUpInput("k@example.invalid"), "/");
     expect(hit.mock.calls.map((c) => c[0].key)).toEqual(["email-send:k@example.invalid", "signup:email:k@example.invalid", "signup:ip:10.0.0.1"]);
   });
@@ -1216,19 +1224,79 @@ describe("verifySignUpCode", () => {
       warn.mockRestore();
     });
 
-    it("if the scramble fails it tries once more, then signs the person out and points to Forgot password", async () => {
+    it("if the scramble fails twice, it replaces the password from the code session, then signs out and points to Forgot password", async () => {
       const ctx = setup();
       await signUpInBrowser(ctx, "me@example.invalid");
       ctx.deps.pending = null;
       const scramble = vi.spyOn(ctx.auth, "scramblePassword").mockRejectedValue(new AuthProviderError("unavailable"));
+      const update = vi.spyOn(ctx.auth, "updatePassword");
       const open = vi.spyOn(ctx.auth, "openSessionWithoutEmail");
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const result = await verifySignUpCode(ctx.deps, { email: "me@example.invalid", code: codeFor(ctx.auth, "me@example.invalid") }, "/");
       expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.confirmedSetPassword });
       expect(scramble).toHaveBeenCalledTimes(2);
+      expect(update).toHaveBeenCalledTimes(1);
+      const random = update.mock.calls[0][0];
+      expect(random.length).toBeGreaterThanOrEqual(43);
+      expect(random).not.toBe(PW);
       expect(open).not.toHaveBeenCalled();
       expect(await ctx.auth.getUser()).toBeNull();
+      // The password the creator typed (a stranger's, in the attack) no longer works.
+      expect(await ctx.auth.signInWithPassword({ email: "me@example.invalid", password: PW })).toEqual({
+        ok: false,
+        reason: "invalid_credentials",
+      });
+      expect(warn.mock.calls.map((c) => c[0])).not.toContain(PASSWORD_NOT_REPLACED_WARNING);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(random);
       warn.mockRestore();
+    });
+
+    it("if both ways of replacing the password fail, it signs out and logs the distinct warning line", async () => {
+      const ctx = setup();
+      await signUpInBrowser(ctx, "me@example.invalid");
+      ctx.deps.pending = null;
+      vi.spyOn(ctx.auth, "scramblePassword").mockRejectedValue(new AuthProviderError("unavailable", "vendor"));
+      vi.spyOn(ctx.auth, "updatePassword").mockRejectedValue(new AuthProviderError("unavailable", "vendor"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const result = await verifySignUpCode(ctx.deps, { email: "me@example.invalid", code: codeFor(ctx.auth, "me@example.invalid") }, "/");
+      expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.confirmedSetPassword });
+      expect(await ctx.auth.getUser()).toBeNull();
+      expect(warn.mock.calls.map((c) => c[0])).toContain(PASSWORD_NOT_REPLACED_WARNING);
+      expect(PASSWORD_NOT_REPLACED_WARNING).toMatch(/^SECURITY:/);
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/example\.invalid|vendor/);
+      warn.mockRestore();
+    });
+
+    it("the cooldown also covers sign-up on one device and the code on another within the minute (no clock jump)", async () => {
+      const store = createFakeAuthStore();
+      const first = setup({}, store);
+      // The second device shares the server's limiter but has its own cookies and no pending cookie.
+      const secondAuth = browser(store);
+      const secondDeps: Deps = { ...first.deps, auth: secondAuth, pending: null };
+      await signUpInBrowser(first, "me@example.invalid");
+      first.advance(30);
+      const code = codeFor(first.auth, "me@example.invalid");
+      expect((await verifySignUpCode(secondDeps, { email: "me@example.invalid", code }, "/")).ok).toBe(true);
+
+      const reset = vi.spyOn(secondAuth, "sendPasswordResetCode");
+      const resend = vi.spyOn(secondAuth, "resendSignUpCode");
+      const create = vi.spyOn(secondAuth, "signUpWithPassword");
+      const cooldown = { ok: false, formError: COOLDOWN_MESSAGE, retryAfterSeconds: 60 };
+      expect(await requestPasswordReset(secondDeps, { email: "me@example.invalid" })).toEqual(cooldown);
+      expect(await resendSignUpCode(secondDeps, { email: "me@example.invalid" })).toEqual(cooldown);
+      expect(await signUp(secondDeps, signUpInput("me@example.invalid"), "/")).toEqual(cooldown);
+      // Past the sign-up's own one-minute window, but still within a minute of the minted session.
+      first.advance(31);
+      expect(await requestPasswordReset(secondDeps, { email: "me@example.invalid" })).toEqual({ ...cooldown, retryAfterSeconds: 29 });
+      expect(reset).not.toHaveBeenCalled();
+      expect(resend).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      first.advance(29);
+      expect(await requestPasswordReset(secondDeps, { email: "me@example.invalid" })).toEqual({
+        ok: true,
+        data: { email: "me@example.invalid" },
+      });
+      expect(reset).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1256,7 +1324,7 @@ describe("verifySignUpCode", () => {
 
   it("counts per address and per IP with namespaced keys", async () => {
     const hit = vi.fn<RateLimiter["hit"]>(async () => ({ allowed: true, retryAfterSeconds: 0 }));
-    const { deps } = setup({ limiter: { hit } });
+    const { deps } = setup({ limiter: { hit, peek: allowPeek } });
     await verifySignUpCode(deps, { email: "k@example.invalid", code: "123456" }, "/");
     expect(hit.mock.calls.map((c) => [c[0].key, c[0].limit, c[0].windowSeconds])).toEqual([
       ["code:email:k@example.invalid", 5, 900],
@@ -1265,7 +1333,8 @@ describe("verifySignUpCode", () => {
   });
 
   it("a failing limiter fails open with the one fixed warning", async () => {
-    const failing: RateLimiter = { hit: async () => Promise.reject(new Error("db down for code:email:me@example.invalid")) };
+    const down = async () => Promise.reject(new Error("db down for code:email:me@example.invalid"));
+    const failing: RateLimiter = { hit: down, peek: down };
     const ctx = setup();
     await signUpInBrowser(ctx, "me@example.invalid");
     ctx.deps.limiter = failing;
@@ -1511,13 +1580,25 @@ describe("repairGoogleAccount (spec 5.3)", () => {
   it("removes a stranger's pending sign-up, kills its password, restores the session and takes the Google user's name and terms", async () => {
     const { stranger, g, user } = await strangerThenGoogle();
     const order: string[] = [];
-    trace(order, g.directory, "repairAfterGoogle");
+    trace(order, g.directory, "hasPendingEmailIdentity");
+    trace(order, g.auth, "updateDisplayName");
+    trace(order, g.auth, "acceptTerms");
     trace(order, g.auth, "scramblePassword");
+    trace(order, g.directory, "repairAfterGoogle");
     const open = trace(order, g.auth, "openSessionWithoutEmail");
 
     const result = await repairGoogleAccount(g.deps, user, "/groups/7");
     expect(result).toEqual({ ok: true, data: { redirectTo: "/groups/7" } });
-    expect(order).toEqual(["repairAfterGoogle", "scramblePassword", "openSessionWithoutEmail"]);
+    // Detect without deleting; name and terms while the Google session lives; remove the
+    // identity only after the scramble, and before the minted session confirms (verifies) it.
+    expect(order).toEqual([
+      "hasPendingEmailIdentity",
+      "updateDisplayName",
+      "acceptTerms",
+      "scramblePassword",
+      "repairAfterGoogle",
+      "openSessionWithoutEmail",
+    ]);
     expect(open).toHaveBeenCalledWith({ email: GOOGLE_EMAIL, expectedUserId: user.id });
 
     expect(await stranger.auth.signInWithPassword({ email: GOOGLE_EMAIL, password: STRANGER_PW })).toEqual({
@@ -1571,12 +1652,12 @@ describe("repairGoogleAccount (spec 5.3)", () => {
     expect(await ctx.auth.signInWithPassword({ email: GOOGLE_EMAIL, password: PW })).toEqual({ ok: true });
   });
 
-  it.each(["repairAfterGoogle", "scramblePassword", "openSessionWithoutEmail", "updateDisplayName", "acceptTerms"] as const)(
+  it.each(["hasPendingEmailIdentity", "repairAfterGoogle", "scramblePassword", "openSessionWithoutEmail", "updateDisplayName", "acceptTerms"] as const)(
     "a failure in %s signs the person out with the Google message",
     async (step) => {
       const { g, user } = await strangerThenGoogle();
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      if (step === "repairAfterGoogle") {
+      if (step === "repairAfterGoogle" || step === "hasPendingEmailIdentity") {
         // A database error is a plain Error, not an AuthProviderError: it must be handled too.
         vi.spyOn(g.directory, step).mockRejectedValue(new Error(`db failed for ${GOOGLE_EMAIL}`));
       } else {
@@ -1589,6 +1670,41 @@ describe("repairGoogleAccount (spec 5.3)", () => {
       warn.mockRestore();
     },
   );
+
+  it("is retryable: after a failed scramble the signal stays, and the next Google sign-in still scrambles", async () => {
+    const { store, stranger, g, user } = await strangerThenGoogle();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const scramble = vi.spyOn(g.auth, "scramblePassword").mockRejectedValue(new AuthProviderError("unavailable"));
+    expect(await repairGoogleAccount(g.deps, user)).toEqual({ ok: false, formError: AUTH_MESSAGES.googleFailed });
+    expect(scramble).toHaveBeenCalledTimes(2);
+    expect(await g.auth.getUser()).toBeNull();
+    expect(await g.directory.hasPendingEmailIdentity(user.id)).toBe(true);
+
+    // The person tries again: a new Google sign-in, and this time the scramble works.
+    scramble.mockRestore();
+    const again = await googleSignIn(g.auth);
+    const retryScramble = vi.spyOn(g.auth, "scramblePassword");
+    expect(await repairGoogleAccount(g.deps, again)).toEqual({ ok: true, data: { redirectTo: "/" } });
+    expect(retryScramble).toHaveBeenCalledWith(user.id);
+    expect(await stranger.auth.signInWithPassword({ email: GOOGLE_EMAIL, password: STRANGER_PW })).toEqual({
+      ok: false,
+      reason: "invalid_credentials",
+    });
+    expect(await g.directory.hasPendingEmailIdentity(user.id)).toBe(false);
+    expect(usersFor(store, GOOGLE_EMAIL)[0].displayName).toBe("Google User");
+    warn.mockRestore();
+  });
+
+  it("a scramble that fails once is tried again within the same repair", async () => {
+    const { stranger, g, user } = await strangerThenGoogle();
+    const scramble = vi.spyOn(g.auth, "scramblePassword").mockRejectedValueOnce(new AuthProviderError("unavailable"));
+    expect(await repairGoogleAccount(g.deps, user)).toEqual({ ok: true, data: { redirectTo: "/" } });
+    expect(scramble).toHaveBeenCalledTimes(2);
+    expect(await stranger.auth.signInWithPassword({ email: GOOGLE_EMAIL, password: STRANGER_PW })).toEqual({
+      ok: false,
+      reason: "invalid_credentials",
+    });
+  });
 
   it("a failure to record terms for a new Google user also signs out with the Google message", async () => {
     const ctx = setup();

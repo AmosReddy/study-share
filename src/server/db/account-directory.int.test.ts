@@ -277,6 +277,47 @@ describe.skipIf(!url)("account directory", () => {
     });
   });
 
+  describe("hasPendingEmailIdentity (read only)", () => {
+    const cases: [string, Identity[], boolean][] = [
+      ["an unverified email identity and a Google identity", [{ provider: "email", verified: false }, { provider: "google", verified: true }], true],
+      ["an email identity with no email_verified field and a Google identity", [{ provider: "email", verified: null }, { provider: "google", verified: true }], true],
+      ["no email identity", [{ provider: "google", verified: true }], false],
+      ["no Google identity", [{ provider: "email", verified: false }], false],
+      ["a verified email identity", [{ provider: "email", verified: true }, { provider: "google", verified: true }], false],
+    ];
+
+    test.each(cases)("%s: answered without changing anything", (_label, identities, expected) =>
+      rolledBack(async (tx) => {
+        const userId = await createUser(tx, { email: newAddress(), confirmed: true, identities });
+        const before = await identityProviders(tx, userId);
+        const directory = createAccountDirectory(tx);
+        expect(await directory.hasPendingEmailIdentity(userId)).toBe(expected);
+        expect(await directory.hasPendingEmailIdentity(userId)).toBe(expected);
+        expect(await identityProviders(tx, userId)).toEqual(before);
+      }));
+
+    test("agrees with what repairAfterGoogle then removes", () =>
+      rolledBack(async (tx) => {
+        const userId = await createUser(tx, {
+          email: newAddress(),
+          confirmed: true,
+          identities: [
+            { provider: "email", verified: false },
+            { provider: "google", verified: true },
+          ],
+        });
+        const directory = createAccountDirectory(tx);
+        expect(await directory.hasPendingEmailIdentity(userId)).toBe(true);
+        expect(await directory.repairAfterGoogle(userId)).toEqual({ hadPendingEmailSignup: true });
+        expect(await directory.hasPendingEmailIdentity(userId)).toBe(false);
+      }));
+
+    test("an unknown user gives false", () =>
+      rolledBack(async (tx) => {
+        expect(await createAccountDirectory(tx).hasPendingEmailIdentity(randomUUID())).toBe(false);
+      }));
+  });
+
   describe("repairAfterGoogle", () => {
     test("removes an unverified email identity and reports it", () =>
       rolledBack(async (tx) => {

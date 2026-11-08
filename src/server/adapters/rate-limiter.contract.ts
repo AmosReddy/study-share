@@ -49,6 +49,31 @@ export function runRateLimiterContract(make: (now: () => number) => RateLimiter)
       expect((await limiter.hit({ key: "b", limit: 1, windowSeconds: 60 })).allowed).toBe(true);
     });
 
+    test("peek on a key with no window allows, and opens no window", async () => {
+      const { limiter } = setup();
+      const i = { key: "p", limit: 1, windowSeconds: 60 };
+      expect(await limiter.peek(i)).toEqual({ allowed: true, retryAfterSeconds: 0 });
+      expect(await limiter.peek(i)).toEqual({ allowed: true, retryAfterSeconds: 0 });
+      // Had peek counted or opened a window, this first hit would be refused.
+      expect((await limiter.hit(i)).allowed).toBe(true);
+    });
+
+    test("peek answers what hit would, without counting", async () => {
+      const { limiter, advanceSeconds } = setup();
+      const i = { key: "p", limit: 2, windowSeconds: 60 };
+      await limiter.hit(i);
+      expect((await limiter.peek(i)).allowed).toBe(true);
+      expect((await limiter.peek(i)).allowed).toBe(true);
+      await limiter.hit(i);
+      advanceSeconds(20);
+      const refused = await limiter.peek(i);
+      expect(refused.allowed).toBe(false);
+      expect(refused.retryAfterSeconds).toBeGreaterThan(30);
+      expect(refused.retryAfterSeconds).toBeLessThanOrEqual(40);
+      advanceSeconds(40);
+      expect(await limiter.peek(i)).toEqual({ allowed: true, retryAfterSeconds: 0 });
+    });
+
     test("allows hits again once the window has passed", async () => {
       const { limiter, advanceSeconds } = setup();
       const i = { key: "k", limit: 2, windowSeconds: 60 };

@@ -259,6 +259,29 @@ describe("fake account directory: repairAfterGoogle", () => {
   });
 });
 
+describe("fake account directory: hasPendingEmailIdentity (read only)", () => {
+  const cases: [string, Identity[], boolean][] = [
+    ["an unverified email identity and a Google identity", [{ provider: "email", verified: false }, { provider: "google", verified: true }], true],
+    ["no email identity", [{ provider: "google", verified: true }], false],
+    ["no Google identity", [{ provider: "email", verified: false }], false],
+    ["a verified email identity", [{ provider: "email", verified: true }, { provider: "google", verified: true }], false],
+  ];
+
+  test.each(cases)("%s: answered without changing anything", async (_label, identities, expected) => {
+    const store = createFakeAuthStore();
+    const userId = seed(store, { email: "h@example.invalid", confirmed: true, identities });
+    const before = providersOf(store, userId);
+    const directory = createFakeAccountDirectory(store);
+    expect(await directory.hasPendingEmailIdentity(userId)).toBe(expected);
+    expect(await directory.hasPendingEmailIdentity(userId)).toBe(expected);
+    expect(providersOf(store, userId)).toEqual(before);
+  });
+
+  test("an unknown user gives false", async () => {
+    expect(await createFakeAccountDirectory(createFakeAuthStore()).hasPendingEmailIdentity("no-such-user")).toBe(false);
+  });
+});
+
 describe("fake account directory over the shared store", () => {
   test("defaults to the globalThis store the fake provider uses", async () => {
     expect(createFakeAccountDirectory()).toBeTruthy();

@@ -66,6 +66,19 @@ export function createAccountDirectory(db: Executor): AccountDirectory {
       return rows.length > 0;
     },
 
+    async hasPendingEmailIdentity(userId) {
+      // The same condition as the delete in repairAfterGoogle, read only.
+      const rows = await db.execute<{ pending: boolean }>(sql`
+        select exists (
+          select 1 from auth.identities
+          where user_id = ${userId}
+            and provider = 'email'
+            and exists (select 1 from auth.identities g where g.user_id = ${userId} and g.provider = 'google')
+            and coalesce(identity_data->>'email_verified', 'false') <> 'true'
+        ) as pending`);
+      return rows[0]?.pending === true;
+    },
+
     async repairAfterGoogle(userId) {
       // Only an unverified email identity (email_verified false or missing), and only for a user
       // who has a Google identity, so a misuse cannot strip a password user's identity. A verified

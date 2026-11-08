@@ -240,7 +240,12 @@ describe.skipIf(!url)("accounts database", () => {
       const prefix = `test-${randomUUID()}:`;
       usedPrefixes.push(prefix);
       const inner = createPostgresRateLimiter(limiterDb, now);
-      return { prefix, hit: (i: { key: string; limit: number; windowSeconds: number }) => inner.hit({ ...i, key: prefix + i.key }) };
+      type HitInput = { key: string; limit: number; windowSeconds: number };
+      return {
+        prefix,
+        hit: (i: HitInput) => inner.hit({ ...i, key: prefix + i.key }),
+        peek: (i: HitInput) => inner.peek({ ...i, key: prefix + i.key }),
+      };
     }
 
     runRateLimiterContract((now) => make(now));
