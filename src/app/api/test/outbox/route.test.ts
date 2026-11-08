@@ -39,21 +39,12 @@ describe("GET /api/test/outbox", () => {
     }
   });
 
-  test("returns { url: null, code: null } when nothing was sent to the address", async () => {
+  test("returns { code: null, purpose: null } when nothing was sent to the address", async () => {
     vi.stubEnv("SERVICES_MODE", "fake");
     const response = await get("nobody@example.com");
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ url: null, code: null });
-  });
-
-  test("returns { url } when the newest email is a (deprecated) link", async () => {
-    vi.stubEnv("SERVICES_MODE", "fake");
-    const provider = createFakeAuthProvider({ store: getFakeAuthStore(), cookies: jar() });
-    await provider.signUpWithPassword({ ...signUp, email: "ada@example.com", redirectTo: "http://localhost:3000/" });
-    const body = await (await get("ADA@example.com")).json();
-    expect(Object.keys(body)).toEqual(["url"]);
-    expect(body.url).toMatch(/^\/auth\/confirm\?/);
+    expect(await response.json()).toEqual({ code: null, purpose: null });
   });
 
   test("returns { code, purpose } when the newest email is a code", async () => {

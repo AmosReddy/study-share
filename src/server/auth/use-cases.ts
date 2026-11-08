@@ -191,33 +191,6 @@ function providerFailure(error: unknown): Failure {
 
 const confirmRedirect = (deps: Deps, next: unknown) => deps.siteUrl + safeNextPath(next);
 
-/** @deprecated The link flow (the email carries a link). Task 5 deletes it; use signUp. */
-export async function signUpWithLink(deps: Deps, raw: unknown, next: unknown): Promise<ActionResult<{ status: "check_email" }>> {
-  const parsed = parse(signUpSchema, raw);
-  if ("failure" in parsed) return parsed.failure;
-  const { email, password, displayName } = parsed.data;
-
-  const refused = await overLimit(deps.limiter, [
-    emailSendCheck(email),
-    { key: `signup:email:${email}`, limit: SIGN_UP_EMAIL_LIMIT },
-    ...ipCheck("signup", deps.ip, SIGN_UP_IP_LIMIT),
-  ]);
-  if (refused) return refused;
-
-  try {
-    await deps.auth.signUpWithPassword({
-      email,
-      password,
-      displayName,
-      termsVersion: TERMS_VERSION,
-      redirectTo: confirmRedirect(deps, next),
-    });
-  } catch (error) {
-    return emailFlowFailure(error);
-  }
-  return { ok: true, data: { status: "check_email" } };
-}
-
 export async function logIn(deps: Deps, raw: unknown, next: unknown): Promise<ActionResult<{ redirectTo: string }>> {
   const parsed = parse(loginSchema, raw);
   if ("failure" in parsed) return parsed.failure;
@@ -241,72 +214,6 @@ export async function logIn(deps: Deps, raw: unknown, next: unknown): Promise<Ac
     return providerFailure(error);
   }
   return { ok: true, data: { redirectTo: safeNextPath(next) } };
-}
-
-/** @deprecated The link flow. Task 5 deletes it; use resendSignUpCode. */
-export async function resendConfirmation(deps: Deps, raw: unknown, next: unknown): Promise<ActionResult> {
-  const parsed = parse(forgotPasswordSchema, raw);
-  if ("failure" in parsed) return parsed.failure;
-  const { email } = parsed.data;
-
-  const refused = await overLimit(deps.limiter, [
-    emailSendCheck(email),
-    { key: `resend:email:${email}`, limit: RESEND_EMAIL_LIMIT },
-  ]);
-  if (refused) return refused;
-
-  try {
-    await deps.auth.resendConfirmation({ email, redirectTo: confirmRedirect(deps, next) });
-  } catch (error) {
-    return emailFlowFailure(error);
-  }
-  return { ok: true, data: undefined };
-}
-
-/** @deprecated The link flow (the email carries a link). Task 5 deletes it; use requestPasswordReset. */
-export async function requestPasswordResetLink(deps: Deps, raw: unknown): Promise<ActionResult<{ status: "check_email" }>> {
-  const parsed = parse(forgotPasswordSchema, raw);
-  if ("failure" in parsed) return parsed.failure;
-  const { email } = parsed.data;
-
-  const refused = await overLimit(deps.limiter, [
-    emailSendCheck(email),
-    { key: `reset:email:${email}`, limit: PASSWORD_RESET_EMAIL_LIMIT },
-    ...ipCheck("reset", deps.ip, PASSWORD_RESET_IP_LIMIT),
-  ]);
-  if (refused) return refused;
-
-  try {
-    await deps.auth.sendPasswordReset({ email, redirectTo: `${deps.siteUrl}/reset-password` });
-  } catch (error) {
-    return emailFlowFailure(error);
-  }
-  return { ok: true, data: { status: "check_email" } };
-}
-
-/** @deprecated Sets a new password for the person the reset LINK just signed in. Task 5 deletes it; use setPassword. */
-export async function resetPassword(deps: Deps, raw: unknown): Promise<ActionResult> {
-  const parsed = parse(newPasswordSchema, raw);
-  if ("failure" in parsed) return parsed.failure;
-  const { password, confirmPassword } = parsed.data;
-  if (password !== confirmPassword) {
-    return { ok: false, fieldErrors: { confirmPassword: MESSAGES.passwordsDiffer } };
-  }
-
-  try {
-    const user = await deps.auth.getUser();
-    if (!user) return { ok: false, formError: MESSAGES.signInAgain };
-
-    const refused = await overLimit(deps.limiter, [
-      { key: `password-update:user:${user.id}`, limit: PASSWORD_UPDATE_USER_LIMIT },
-    ]);
-    if (refused) return refused;
-
-    await deps.auth.updatePassword(password);
-  } catch (error) {
-    return providerFailure(error);
-  }
-  return { ok: true, data: undefined };
 }
 
 export async function startGoogle(deps: Deps, next: unknown): Promise<ActionResult<{ url: string }>> {
@@ -661,6 +568,29 @@ export async function verifySignUpCode(
     if (failed) return failed;
   }
   return { ok: true, data: { redirectTo: safeNextPath(next), needsPassword: !ownPendingAccount } };
+}
+
+/**
+ * Seconds until an email to this address may be sent again (the shared one-email-a-minute
+ * cooldown, or the minted-recovery cooldown), or 0. Read only (peek): it counts nothing and
+ * opens no window, so the code screen can start its countdown where the server will. The answer
+ * depends only on the counters, never on whether the address has an account. Fails open (0).
+ */
+export async function secondsUntilEmailAllowed(limiter: RateLimiter, rawEmail: string): Promise<number> {
+  const email = normaliseEmail(rawEmail);
+  let seconds = 0;
+  for (const input of [
+    { key: emailSendKey(email), limit: EMAIL_SEND_COOLDOWN.limit, windowSeconds: EMAIL_SEND_COOLDOWN.windowSeconds },
+    mintedInput(email),
+  ]) {
+    try {
+      const answer = await hitWithTimeout(limiter, input, "peek");
+      if (!answer.allowed) seconds = Math.max(seconds, Math.max(1, answer.retryAfterSeconds));
+    } catch {
+      // Fails open: the countdown starts at 0 and the server still decides on the next send.
+    }
+  }
+  return seconds;
 }
 
 /** Emails a new sign-up code to the cookie's address (or the one typed in). Neutral for any address. */

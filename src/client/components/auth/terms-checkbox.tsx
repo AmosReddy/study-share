@@ -10,7 +10,7 @@ export function TermsCheckbox({ defaultChecked, error }: { defaultChecked?: bool
       error={error}
       label={
         <>
-          I&apos;m 18 or older and I accept the{" "}
+          I am 18 or older and accept the{" "}
           <Link href="/terms" target="_blank" className="font-medium underline underline-offset-4">
             Terms
           </Link>{" "}

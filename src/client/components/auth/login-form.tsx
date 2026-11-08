@@ -20,7 +20,7 @@ type LoginFormProps = {
   forgotHref: string;
   /** The Google button, or the in-app browser notice in its place. */
   alternative: ReactNode;
-  /** A message above the form, for example about an expired link. */
+  /** A message above the form, for example after a failed Google sign-in. */
   notice?: ReactNode;
 };
 
@@ -51,11 +51,11 @@ export function LoginForm({ action, resendAction, next, signupHref, forgotHref, 
 
       {state.needsConfirmation ? (
         <div className="mb-6 flex flex-col gap-3">
-          <FormMessage tone="info" title="Confirm your email to log in">
-            We sent a link to <span className="font-medium break-all">{values.email}</span> when you signed up. Open
-            it, or ask for a new one.
+          <FormMessage tone="info" title="Your email is not confirmed yet">
+            We&apos;ll email a new code to <span className="font-medium break-all">{values.email}</span>. Enter it on
+            the next screen to finish signing up.
           </FormMessage>
-          <ResendForm action={resendAction} next={next} email={values.email} buttonLabel="Resend confirmation email" />
+          <ResendForm action={resendAction} next={next} email={values.email} buttonLabel="Send a new code" />
         </div>
       ) : null}
 

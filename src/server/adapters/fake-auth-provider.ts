@@ -5,7 +5,7 @@ import { AuthProviderError, type AuthProvider, type AuthUser, type CodeKind, typ
   Test-mode sign-in. No vendor library and no network. Passwords are kept as
   plain text in memory because this fake only runs in test mode; they are never
   logged or put in an error. Emails are "sent" to an in-memory outbox so tests
-  can read the codes (and, for the deprecated link flow, follow the links).
+  can read the codes.
 
   It mirrors the GoTrue behaviours the use-cases rely on (checked live, Task 1):
   a repeat sign-up of an unconfirmed address keeps the FIRST password and the same
@@ -15,11 +15,9 @@ import { AuthProviderError, type AuthProvider, type AuthUser, type CodeKind, typ
   sessions but not this one.
 */
 
-/** @deprecated A link email (the link flow). Task 5 deletes it. */
-export type FakeLinkEntry = { to: string; kind: "confirm" | "reset"; url: string };
 /** A code email, as the real templates send: the code only. */
 export type FakeCodeEntry = { to: string; kind: "code"; purpose: CodeKind; code: string };
-export type FakeOutboxEntry = FakeLinkEntry | FakeCodeEntry;
+export type FakeOutboxEntry = FakeCodeEntry;
 
 export class FakeOutbox {
   readonly entries: FakeOutboxEntry[] = [];
@@ -28,29 +26,18 @@ export class FakeOutbox {
     this.entries.push(entry);
   }
 
-  /** The newest email of any kind to an address. */
+  /** The newest email to an address. */
   latestFor(email: string): FakeOutboxEntry | undefined {
-    return this.newest(email, () => true);
-  }
-
-  /** The newest code email to an address. */
-  lastCodeFor(email: string): FakeCodeEntry | undefined {
-    return this.newest(email, (e): e is FakeCodeEntry => e.kind === "code");
-  }
-
-  /** @deprecated The newest LINK email to an address (code emails are skipped). Task 5 deletes it. */
-  lastFor(email: string): FakeLinkEntry | undefined {
-    return this.newest(email, (e): e is FakeLinkEntry => e.kind !== "code");
-  }
-
-  private newest<T extends FakeOutboxEntry>(email: string, match: (e: FakeOutboxEntry) => e is T): T | undefined;
-  private newest(email: string, match: (e: FakeOutboxEntry) => boolean): FakeOutboxEntry | undefined;
-  private newest(email: string, match: (e: FakeOutboxEntry) => boolean): FakeOutboxEntry | undefined {
     const to = normaliseEmail(email);
     for (let i = this.entries.length - 1; i >= 0; i--) {
-      if (this.entries[i].to === to && match(this.entries[i])) return this.entries[i];
+      if (this.entries[i].to === to) return this.entries[i];
     }
     return undefined;
+  }
+
+  /** The newest code email to an address (every email is a code email now). */
+  lastCodeFor(email: string): FakeCodeEntry | undefined {
+    return this.latestFor(email);
   }
 }
 
@@ -91,8 +78,6 @@ export type FakeAuthStore = {
   lastEmailAt: Map<string, number>;
   /** The one live code per user and kind, keyed `${userId}:${kind}`. A newer code replaces it. */
   codes: Map<string, FakeCode>;
-  /** @deprecated Single-use link tokens (the link flow). Task 5 deletes them. */
-  tokens: Map<string, { userId: string; type: "email" | "recovery" }>;
   /** Single-use codes handed out by startGoogleSignIn. */
   oauthCodes: Set<string>;
   outbox: FakeOutbox;
@@ -113,7 +98,6 @@ export function createFakeAuthStore(): FakeAuthStore {
     enforceEmailInterval: false,
     lastEmailAt: new Map(),
     codes: new Map(),
-    tokens: new Map(),
     oauthCodes: new Set(),
     outbox: new FakeOutbox(),
     failNextSignOut: false,
@@ -144,7 +128,6 @@ export function resetFakeAuthStore(): void {
   store.enforceEmailInterval = false;
   store.lastEmailAt.clear();
   store.codes.clear();
-  store.tokens.clear();
   store.oauthCodes.clear();
   store.outbox.entries.length = 0;
   store.failNextSignOut = false;
@@ -155,21 +138,24 @@ function endSessions(store: FakeAuthStore, userId: string, keep?: string): void 
   for (const [sid, s] of store.sessions) if (s.userId === userId && sid !== keep) store.sessions.delete(sid);
 }
 
-/** Drops a user's outstanding codes and link tokens (GoTrue does on any password change, probe m). */
+/** Drops a user's outstanding codes (GoTrue does on any password change, probe m). */
 function dropOutstandingCodes(store: FakeAuthStore, userId: string): void {
   for (const [key, code] of store.codes) if (code.userId === userId) store.codes.delete(key);
-  for (const [token, t] of store.tokens) if (t.userId === userId) store.tokens.delete(token);
 }
 
 /**
- * Test mode only: every code issued so far stops working, as if their ten minutes had passed.
- * Codes sent afterwards work. Browser tests call it through POST /api/test/expire-codes.
+ * Test mode only: every code issued so far stops working, as if their ten minutes had passed;
+ * with `email`, only that address's codes (so browser tests running side by side do not expire
+ * each other's codes). Codes sent afterwards work. Browser tests call it through
+ * POST /api/test/expire-codes.
  */
-export function expireAllCodes(store: FakeAuthStore = getFakeAuthStore()): void {
-  for (const code of store.codes.values()) code.expired = true;
+export function expireAllCodes(store: FakeAuthStore = getFakeAuthStore(), email?: string): void {
+  const only = email === undefined ? undefined : findFakeUserByEmail(store, email)?.id;
+  if (email !== undefined && only === undefined) return;
+  for (const code of store.codes.values()) if (only === undefined || code.userId === only) code.expired = true;
 }
 
-/** Removes a user with everything that points at it (sessions, codes, link tokens). */
+/** Removes a user with everything that points at it (sessions, codes). */
 export function deleteFakeUser(store: FakeAuthStore, userId: string): void {
   store.users.delete(userId);
   endSessions(store, userId);
@@ -269,25 +255,6 @@ export function createFakeAuthProvider(deps: {
     store.outbox.add({ to: user.email, kind: "code", purpose: kind, code });
   }
 
-  /** @deprecated Link flow. */
-  function issueToken(user: FakeUser, type: "email" | "recovery", redirectTo: string) {
-    beforeEmail(user, type === "email" ? "signup" : "recovery");
-    const token = crypto.randomUUID();
-    store.tokens.set(token, { userId: user.id, type });
-    const query = new URLSearchParams({ token_hash: token, type, redirect_to: redirectTo });
-    store.outbox.add({
-      to: user.email,
-      kind: type === "email" ? "confirm" : "reset",
-      url: `/auth/confirm?${query.toString()}`,
-    });
-  }
-
-  /** The sign-up email: a code, or (deprecated, when redirectTo is given) a link. */
-  function sendSignUpEmail(user: FakeUser, redirectTo: string | undefined) {
-    if (redirectTo) issueToken(user, "email", redirectTo);
-    else issueCode(user, "signup");
-  }
-
   const toAuthUser = (u: FakeUser): AuthUser => ({
     id: u.id,
     email: u.email,
@@ -304,7 +271,7 @@ export function createFakeAuthProvider(deps: {
       return u ? toAuthUser(u) : null;
     },
 
-    async signUpWithPassword({ email, password, displayName, termsVersion, redirectTo }) {
+    async signUpWithPassword({ email, password, displayName, termsVersion }) {
       if (password.length < MIN_PASSWORD_LENGTH) throw new AuthProviderError("weak_password");
       const existing = findByEmail(email);
       if (existing) {
@@ -312,7 +279,7 @@ export function createFakeAuthProvider(deps: {
         // Unconfirmed: the same user, and a new email that supersedes the earlier code.
         // Confirmed: nothing is sent and the id is a stand-in, as Supabase obfuscates it.
         if (existing.confirmed) return { userId: crypto.randomUUID() };
-        sendSignUpEmail(existing, redirectTo);
+        issueCode(existing, "signup");
         return { userId: existing.id };
       }
       const user: FakeUser = {
@@ -325,7 +292,7 @@ export function createFakeAuthProvider(deps: {
         identities: [{ provider: "email", verified: false }],
       };
       store.users.set(user.id, user);
-      sendSignUpEmail(user, redirectTo);
+      issueCode(user, "signup");
       return { userId: user.id };
     },
 
@@ -451,30 +418,6 @@ export function createFakeAuthProvider(deps: {
       const sid = cookies.get(SESSION_COOKIE);
       if (sid) store.sessions.delete(sid);
       cookies.delete(SESSION_COOKIE);
-    },
-
-    /** @deprecated Link flow; Task 5 removes it. */
-    async resendConfirmation({ email, redirectTo }) {
-      const u = findByEmail(email);
-      if (u && !u.confirmed) issueToken(u, "email", redirectTo);
-    },
-
-    /** @deprecated Link flow; Task 5 removes it. */
-    async confirmEmailToken({ tokenHash, type }) {
-      const pending = store.tokens.get(tokenHash);
-      if (!pending || pending.type !== type) return false;
-      store.tokens.delete(tokenHash);
-      const u = store.users.get(pending.userId);
-      if (!u) return false;
-      confirm(u);
-      signInAs(u, "code");
-      return true;
-    },
-
-    /** @deprecated Link flow; Task 5 removes it. */
-    async sendPasswordReset({ email, redirectTo }) {
-      const u = findByEmail(email);
-      if (u) issueToken(u, "recovery", redirectTo);
     },
   };
 }

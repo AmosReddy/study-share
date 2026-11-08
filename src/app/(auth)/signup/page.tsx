@@ -1,11 +1,14 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { AuthCardSkeleton } from "@/client/components/auth/auth-card";
 import { GoogleButton } from "@/client/components/auth/google-button";
 import { InAppBrowserNotice } from "@/client/components/auth/in-app-browser-notice";
 import { SignupForm } from "@/client/components/auth/signup-form";
-import { signUpAction, startGoogleAction } from "../actions";
+import { getCurrentUser } from "@/server/auth/session";
+import { startGoogleAction } from "../actions";
 import { inAppBrowser, nextFrom, withNext } from "../page-params";
+import { signUpAction } from "../signup-actions";
 
 export const metadata: Metadata = { title: "Create your account | study-share" };
 
@@ -24,8 +27,16 @@ async function Signup({ searchParams }: Pick<PageProps<"/signup">, "searchParams
   ) : (
     <GoogleButton action={startGoogleAction} next={next} />
   );
+  // Already signed in: there is nothing to sign up for (spec 6).
+  if (await getCurrentUser()) redirect(next);
 
   return (
-    <SignupForm action={signUpAction} next={next} loginHref={withNext("/login", next)} alternative={alternative} />
+    <SignupForm
+      action={signUpAction}
+      next={next}
+      loginHref={withNext("/login", next)}
+      forgotHref="/forgot-password"
+      alternative={alternative}
+    />
   );
 }

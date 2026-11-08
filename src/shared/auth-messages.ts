@@ -16,8 +16,6 @@ export const AUTH_MESSAGES = {
   weakPassword: "Choose a stronger password with at least 8 characters.",
   passwordsDiffer: "The two passwords do not match.",
   termsChanged: "The terms have changed since you opened this page. Please reload and review them.",
-  /** @deprecated The link flow's reset page. Task 5 removes it with the link use-cases. */
-  signInAgain: "Your session has ended. Please use the link in your email again.",
 
   /** Spec 3 and 4.1: sign-up says clearly that an address is taken (the owner's choice). */
   emailTaken: "This email already has an account. Log in or reset your password.",

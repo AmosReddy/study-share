@@ -54,17 +54,12 @@ export interface AuthProvider {
    * AuthProviderError("rate_limited") instead of emailing a new code. Callers must handle
    * rate_limited, and the sign-up use-case's own one-email-a-minute cooldown must decide first,
    * so the provider's 429 (which only a pending address gets) is never what the person sees.
-   *
-   * `redirectTo` is deprecated (the link flow, removed in Task 5): when it is given, the
-   * confirmation email is the old link email instead of a code.
    */
   signUpWithPassword(i: {
     email: string;
     password: string;
     displayName: string;
     termsVersion: string;
-    /** @deprecated Link flow only. Task 5 removes it. */
-    redirectTo?: string;
   }): Promise<{ userId: string }>;
   /**
    * Emails a new sign-up code to a pending account; the earlier code stops working. Neutral for
@@ -85,7 +80,7 @@ export interface AuthProvider {
   completeOAuth(code: string): Promise<boolean>;
   /**
    * Sets the signed-in user's password. Observed (probes l, l2, m):
-   * - it works only from a CODE session (verifyCode, or the deprecated link); from a password
+   * - it works only from a CODE session (verifyCode or openSessionWithoutEmail); from a password
    *   sign-in session the provider refuses (current_password_required), which is thrown as
    *   AuthProviderError("unavailable"), and nothing changes;
    * - on success this session stays; for every OTHER session of the user the auth server
@@ -132,11 +127,4 @@ export interface AuthProvider {
   acceptTerms(i: { termsVersion: string }): Promise<void>;
   updateDisplayName(name: string): Promise<void>;
   signOut(): Promise<void>;
-
-  /** @deprecated Link flow. Task 5 removes it; use resendSignUpCode. Neutral. */
-  resendConfirmation(i: { email: string; redirectTo: string }): Promise<void>;
-  /** @deprecated Link flow. Task 5 removes it; use verifyCode. */
-  confirmEmailToken(i: { tokenHash: string; type: "email" | "recovery" }): Promise<boolean>;
-  /** @deprecated Link flow. Task 5 removes it; use sendPasswordResetCode. Neutral. */
-  sendPasswordReset(i: { email: string; redirectTo: string }): Promise<void>;
 }

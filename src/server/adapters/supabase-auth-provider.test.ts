@@ -79,16 +79,13 @@ const signUpInput = {
   password: PASSWORD,
   displayName: "Ada",
   termsVersion: "2026-11",
-  redirectTo: REDIRECT,
 };
 
 /** Every call that talks to Supabase and has no "expected failure" result of its own. */
 const throwingCalls: [string, keyof SupabaseAuthClient["auth"], (p: AuthProvider) => Promise<unknown>][] = [
   ["signUpWithPassword", "signUp", (p) => p.signUpWithPassword(signUpInput)],
-  ["resendConfirmation", "resend", (p) => p.resendConfirmation({ email: "ada@example.com", redirectTo: REDIRECT })],
   ["signInWithPassword", "signInWithPassword", (p) => p.signInWithPassword({ email: "ada@example.com", password: PASSWORD })],
   ["startGoogleSignIn", "signInWithOAuth", (p) => p.startGoogleSignIn({ redirectTo: REDIRECT })],
-  ["sendPasswordReset", "resetPasswordForEmail", (p) => p.sendPasswordReset({ email: "ada@example.com", redirectTo: REDIRECT })],
   ["updatePassword", "updateUser", (p) => p.updatePassword(PASSWORD)],
   ["acceptTerms", "updateUser", (p) => p.acceptTerms({ termsVersion: "2026-11" })],
   ["updateDisplayName", "updateUser", (p) => p.updateDisplayName("Ada")],
@@ -200,7 +197,7 @@ describe("errors map to AuthProviderError", () => {
       messages.push(error.message, String(error.stack));
     }
     const { provider } = make(makeClient({ verifyOtp: fails(leaky), exchangeCodeForSession: fails(leaky) }));
-    await provider.confirmEmailToken({ tokenHash: TOKEN, type: "email" }).catch((e: Error) => messages.push(e.message));
+    await provider.verifyCode({ email: "ada@example.com", code: "123456", kind: "signup" }).catch((e: Error) => messages.push(e.message));
     await provider.completeOAuth(TOKEN).catch((e: Error) => messages.push(e.message));
 
     const logged = [...log.mock.calls, ...warn.mock.calls, ...err.mock.calls].flat().map(String);
@@ -212,16 +209,13 @@ describe("errors map to AuthProviderError", () => {
 });
 
 describe("signUpWithPassword", () => {
-  test("passes the redirect and the profile metadata", async () => {
+  test("passes the profile metadata and no emailRedirectTo (the email carries a code only)", async () => {
     const { provider, client } = make();
     await provider.signUpWithPassword(signUpInput);
     expect(client.auth.signUp).toHaveBeenCalledWith({
       email: "ada@example.com",
       password: PASSWORD,
-      options: {
-        emailRedirectTo: REDIRECT,
-        data: { display_name: "Ada", terms_version: "2026-11" },
-      },
+      options: { data: { display_name: "Ada", terms_version: "2026-11" } },
     });
   });
 
@@ -245,18 +239,6 @@ describe("signUpWithPassword", () => {
   test("returns the obfuscated id Supabase answers for an already-confirmed address", async () => {
     const { provider } = make(makeClient({ signUp: ok({ user: { id: "obfuscated-id", identities: [] }, session: null }) }));
     expect(await provider.signUpWithPassword(signUpInput)).toEqual({ userId: "obfuscated-id" });
-  });
-
-  test("without redirectTo it sends no emailRedirectTo (codes only)", async () => {
-    const { provider, client } = make();
-    const { redirectTo: _unused, ...withoutRedirect } = signUpInput;
-    void _unused;
-    await provider.signUpWithPassword(withoutRedirect);
-    expect(client.auth.signUp).toHaveBeenCalledWith({
-      email: "ada@example.com",
-      password: PASSWORD,
-      options: { data: { display_name: "Ada", terms_version: "2026-11" } },
-    });
   });
 });
 
@@ -586,16 +568,6 @@ describe("getUser", () => {
 });
 
 describe("other operations", () => {
-  test("resendConfirmation resends the sign-up email with the redirect", async () => {
-    const { provider, client } = make();
-    await provider.resendConfirmation({ email: "ada@example.com", redirectTo: REDIRECT });
-    expect(client.auth.resend).toHaveBeenCalledWith({
-      type: "signup",
-      email: "ada@example.com",
-      options: { emailRedirectTo: REDIRECT },
-    });
-  });
-
   test('startGoogleSignIn passes provider "google", the redirectTo and prompt=select_account, and returns the URL', async () => {
     const { provider, client } = make();
     expect(await provider.startGoogleSignIn({ redirectTo: REDIRECT })).toEqual({
@@ -613,25 +585,6 @@ describe("other operations", () => {
     expect(client.auth.exchangeCodeForSession).toHaveBeenCalledWith("code-1");
     const bad = make(makeClient({ exchangeCodeForSession: fails(new AuthApiError("invalid flow state", 404, "flow_state_not_found")) }));
     expect(await bad.provider.completeOAuth("code-1")).toBe(false);
-  });
-
-  test.each(["email", "recovery"] as const)("confirmEmailToken calls verifyOtp with the token hash and type %s", async (type) => {
-    const { provider, client } = make();
-    expect(await provider.confirmEmailToken({ tokenHash: TOKEN, type })).toBe(true);
-    expect(client.auth.verifyOtp).toHaveBeenCalledWith({ token_hash: TOKEN, type });
-  });
-
-  test("confirmEmailToken returns false on error", async () => {
-    const { provider } = make(
-      makeClient({ verifyOtp: fails(new AuthApiError("Email link is invalid or has expired", 403, "otp_expired")) }),
-    );
-    expect(await provider.confirmEmailToken({ tokenHash: TOKEN, type: "email" })).toBe(false);
-  });
-
-  test("sendPasswordReset sends the reset email with the redirect", async () => {
-    const { provider, client } = make();
-    await provider.sendPasswordReset({ email: "ada@example.com", redirectTo: REDIRECT });
-    expect(client.auth.resetPasswordForEmail).toHaveBeenCalledWith("ada@example.com", { redirectTo: REDIRECT });
   });
 
   test("updatePassword sets the new password", async () => {

@@ -1,77 +1,34 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { requestDeps } from "@/server/auth/request-deps";
 import {
   acceptTerms,
   CONFIRM_EMAIL_CODE,
   logIn,
   logOut,
-  requestPasswordResetLink,
-  resendConfirmation,
-  resetPassword,
-  signUpWithLink,
+  requestPasswordReset,
+  setPassword,
   startGoogle,
-  type ActionResult,
   updateProfile,
-  type Deps,
 } from "@/server/auth/use-cases";
 import { getCurrentUser } from "@/server/auth/session";
-import { clientIp } from "@/server/request-ip";
-import { getAccountDirectory, getAuthProvider, getRateLimiter } from "@/server/services";
-import { getSiteUrl } from "@/server/site-url";
+import { getAuthProvider } from "@/server/services";
 import type { FormState } from "@/shared/form-state";
 import { safeNextPath } from "@/shared/safe-next-path";
+import { failed, text } from "./form-data";
 
 /*
   Thin server actions: read the form, call the use-case, turn its result into what the
   screen shows. Validation, rate limits and neutral replies all live in the use-cases.
-  Passwords are never echoed back.
+  Passwords are never echoed back. The sign-up and code screen actions are in
+  signup-actions.ts.
 */
-
-async function deps(): Promise<Deps> {
-  const [auth, requestHeaders] = await Promise.all([getAuthProvider(), headers()]);
-  return {
-    auth,
-    limiter: getRateLimiter(),
-    siteUrl: getSiteUrl(),
-    ip: clientIp(requestHeaders.get("x-forwarded-for")),
-    directory: getAccountDirectory(),
-    // Task 5 reads the pending sign-up cookie here (readPendingSignup); the link flow below ignores it.
-    pending: null,
-  };
-}
-
-function text(form: FormData, name: string): string {
-  const value = form.get(name);
-  return typeof value === "string" ? value : "";
-}
-
-function failed(result: Extract<ActionResult<unknown>, { ok: false }>, values: Record<string, string>): FormState {
-  return { status: "error", fieldErrors: result.fieldErrors, formError: result.formError, values };
-}
-
-export async function signUpAction(_state: FormState, form: FormData): Promise<FormState> {
-  const values = {
-    displayName: text(form, "displayName"),
-    email: text(form, "email"),
-    acceptTerms: text(form, "acceptTerms"),
-  };
-  const raw = {
-    displayName: values.displayName,
-    email: values.email,
-    password: text(form, "password"),
-    acceptTerms: values.acceptTerms === "on",
-  };
-  const result = await signUpWithLink(await deps(), raw, text(form, "next"));
-  if (!result.ok) return failed(result, values);
-  return { status: "done", values: { email: values.email.trim() } };
-}
 
 export async function logInAction(_state: FormState, form: FormData): Promise<FormState> {
   const values = { email: text(form, "email") };
-  const result = await logIn(await deps(), { email: values.email, password: text(form, "password") }, text(form, "next"));
+  const result = await logIn(await requestDeps(), { email: values.email, password: text(form, "password") }, text(form, "next"));
   if (!result.ok) {
     if (result.formError === CONFIRM_EMAIL_CODE) {
       return { status: "error", needsConfirmation: true, values: { email: values.email.trim() } };
@@ -81,33 +38,32 @@ export async function logInAction(_state: FormState, form: FormData): Promise<Fo
   redirect(result.data.redirectTo);
 }
 
-export async function resendConfirmationAction(_state: FormState, form: FormData): Promise<FormState> {
-  const values = { email: text(form, "email") };
-  const result = await resendConfirmation(await deps(), values, text(form, "next"));
-  if (!result.ok) return failed(result, values);
-  return { status: "done" };
-}
+/*
+  Forgot password and reset: Task 6 replaces these two screens with the code flow. Until then
+  the request already sends a recovery CODE (the link methods are gone) and the reset screen
+  sets a password for whoever holds a code session.
+*/
 
 export async function forgotPasswordAction(_state: FormState, form: FormData): Promise<FormState> {
   const values = { email: text(form, "email") };
-  const result = await requestPasswordResetLink(await deps(), values);
+  const result = await requestPasswordReset(await requestDeps(), values);
   if (!result.ok) return failed(result, values);
   return { status: "done", values: { email: values.email.trim() } };
 }
 
 export async function resetPasswordAction(_state: FormState, form: FormData): Promise<FormState> {
-  const result = await resetPassword(await deps(), {
+  const result = await setPassword(await requestDeps(), {
     password: text(form, "password"),
     confirmPassword: text(form, "confirmPassword"),
   });
   if (!result.ok) return failed(result, {});
-  redirect("/");
+  redirect(result.data.redirectTo);
 }
 
 export async function startGoogleAction(_state: FormState, form: FormData): Promise<FormState> {
   // Google returns to /auth/callback, which finishes sign-in and then goes on to `next`.
   const next = safeNextPath(text(form, "next"));
-  const result = await startGoogle(await deps(), `/auth/callback?next=${encodeURIComponent(next)}`);
+  const result = await startGoogle(await requestDeps(), `/auth/callback?next=${encodeURIComponent(next)}`);
   if (!result.ok) return failed(result, {});
   // Google's address is on another site, so redirect() sends the browser there. A same-site
   // address (only the test-mode fake Google) would instead be followed inside the server,
@@ -120,7 +76,7 @@ export async function startGoogleAction(_state: FormState, form: FormData): Prom
 export async function acceptTermsAction(_state: FormState, form: FormData): Promise<FormState> {
   const values = { acceptTerms: text(form, "acceptTerms") };
   const raw = { acceptTerms: values.acceptTerms === "on", termsVersion: text(form, "termsVersion") };
-  const result = await acceptTerms(await deps(), raw, text(form, "next"));
+  const result = await acceptTerms(await requestDeps(), raw, text(form, "next"));
   if (!result.ok) return failed(result, values);
   redirect(result.data.redirectTo);
 }
@@ -129,7 +85,7 @@ export async function updateProfileAction(_state: FormState, form: FormData): Pr
   // The page requires sign-in, but a stale tab can still post here after the session ended.
   if (!(await getCurrentUser())) redirect("/login?next=%2Faccount");
   const values = { displayName: text(form, "displayName") };
-  const result = await updateProfile(await deps(), values);
+  const result = await updateProfile(await requestDeps(), values);
   if (!result.ok) return failed(result, values);
   // The name is shown in the shell header of every page, so refresh them all.
   revalidatePath("/", "layout");

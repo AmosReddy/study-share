@@ -125,11 +125,10 @@ export function createSupabaseAuthProvider(
       return toAuthUser(claims.sub, claims.email, meta);
     },
 
-    async signUpWithPassword({ email, password, displayName, termsVersion, redirectTo }) {
+    async signUpWithPassword({ email, password, displayName, termsVersion }) {
       const data = { display_name: displayName, terms_version: termsVersion };
-      // redirectTo is the deprecated link flow; without it the email carries the code only.
-      const options = redirectTo ? { emailRedirectTo: redirectTo, data } : { data };
-      const result = await call(() => auth.signUp({ email, password, options }));
+      // No emailRedirectTo: the email carries the code only.
+      const result = await call(() => auth.signUp({ email, password, options: { data } }));
       if (result.error) {
         // Already registered: answer as for a new address. No id is known; callers ask the AccountDirectory.
         if (isAlreadyRegistered(result.error)) return { userId: "" };
@@ -193,12 +192,6 @@ export function createSupabaseAuthProvider(
       return { userId: data.user.id };
     },
 
-    /** @deprecated Link flow; Task 5 removes it. */
-    async resendConfirmation({ email, redirectTo }) {
-      const { error } = await call(() => auth.resend({ type: "signup", email, options: { emailRedirectTo: redirectTo } }));
-      if (error) throw toProviderError(error);
-    },
-
     async signInWithPassword({ email, password }) {
       const { error } = await call(() => auth.signInWithPassword({ email, password }));
       if (!error) return { ok: true };
@@ -226,18 +219,6 @@ export function createSupabaseAuthProvider(
     async completeOAuth(code) {
       const { error } = await call(() => auth.exchangeCodeForSession(code));
       return !error;
-    },
-
-    /** @deprecated Link flow; Task 5 removes it. */
-    async confirmEmailToken({ tokenHash, type }) {
-      const { error } = await call(() => auth.verifyOtp({ token_hash: tokenHash, type }));
-      return !error;
-    },
-
-    /** @deprecated Link flow; Task 5 removes it. */
-    async sendPasswordReset({ email, redirectTo }) {
-      const { error } = await call(() => auth.resetPasswordForEmail(email, { redirectTo }));
-      if (error) throw toProviderError(error);
     },
 
     async updatePassword(newPassword, opts) {

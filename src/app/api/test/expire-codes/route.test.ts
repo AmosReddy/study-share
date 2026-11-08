@@ -5,6 +5,7 @@ vi.mock("next/server", async (importOriginal) => ({
   connection: vi.fn(async () => {}),
 }));
 
+import { NextRequest } from "next/server";
 import { createFakeAuthProvider, getFakeAuthStore, resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
 import { POST } from "./route";
 
@@ -55,5 +56,18 @@ describe("POST /api/test/expire-codes", () => {
     await provider.resendSignUpCode({ email: EMAIL });
     const fresh = provider.outbox.lastCodeFor(EMAIL)!.code;
     expect((await provider.verifyCode({ email: EMAIL, code: fresh, kind: "signup" })).ok).toBe(true);
+  });
+
+  test("with ?email= it expires only that address's codes", async () => {
+    vi.stubEnv("SERVICES_MODE", "fake");
+    const { provider, code } = await pendingCode();
+    await provider.signUpWithPassword({ email: "other@example.com", password: "correct horse", displayName: "O", termsVersion: "2026-11" });
+    const other = provider.outbox.lastCodeFor("other@example.com")!.code;
+    const response = await POST(new NextRequest(`http://localhost/api/test/expire-codes?email=${encodeURIComponent("Other@Example.com")}`, { method: "POST" }));
+    expect(response.status).toBe(204);
+    expect((await provider.verifyCode({ email: "other@example.com", code: other, kind: "signup" })).ok).toBe(false);
+    expect((await provider.verifyCode({ email: EMAIL, code, kind: "signup" })).ok).toBe(true);
+    // An unknown address expires nothing.
+    await POST(new NextRequest("http://localhost/api/test/expire-codes?email=nobody%40example.com", { method: "POST" }));
   });
 });

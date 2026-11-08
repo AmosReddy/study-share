@@ -14,18 +14,12 @@ type ResendFormProps = {
   buttonLabel: string;
 };
 
-/** Asks for a new confirmation link. The reply is the same whether or not one was sent. */
+/**
+ * Asks for a new sign-up code for an address that is not confirmed yet; the action then opens
+ * the code screen. The reply is the same whether or not a code was sent.
+ */
 export function ResendForm({ action, next, email, buttonLabel }: ResendFormProps) {
   const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
-
-  if (state.status === "done") {
-    return (
-      <FormMessage tone="success" title="Check your email">
-        If this address still needs confirming, we&apos;ve sent a new link. It can take a minute to arrive, so
-        check your spam folder too.
-      </FormMessage>
-    );
-  }
 
   return (
     <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-4">

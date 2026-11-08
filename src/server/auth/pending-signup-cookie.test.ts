@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   PENDING_SIGNUP_COOKIE,
   PENDING_SIGNUP_MAX_AGE_SECONDS,
+  pendingCookieName,
   pendingCookieOptions,
   readPendingSignup,
   signPendingSignup,
@@ -104,5 +105,10 @@ describe("pending sign-up cookie", () => {
     expect(PENDING_SIGNUP_MAX_AGE_SECONDS).toBe(1800);
     expect(pendingCookieOptions(true)).toEqual({ httpOnly: true, secure: true, sameSite: "lax", path: "/signup", maxAge: 1800 });
     expect(pendingCookieOptions(false).secure).toBe(false);
+  });
+
+  it("is named with the __Secure- prefix on https (allowed with path /signup), and plainly on http", () => {
+    expect(pendingCookieName(true)).toBe("__Secure-pending-signup");
+    expect(pendingCookieName(false)).toBe("pending-signup");
   });
 });

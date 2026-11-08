@@ -18,6 +18,16 @@ import { z } from "zod";
 export const PENDING_SIGNUP_COOKIE = "pending-signup";
 export const PENDING_SIGNUP_MAX_AGE_SECONDS = 30 * 60;
 
+/**
+ * The cookie's name on this site. On https it carries the `__Secure-` prefix, so the browser
+ * only accepts it with the Secure flag from a secure page (a plain-http page or a sibling
+ * subdomain over http cannot plant one). The prefix allows any path, so `/signup` is kept;
+ * `__Host-` would require path `/`. Local http runs use the bare name (the prefix needs https).
+ */
+export function pendingCookieName(secure: boolean): string {
+  return secure ? `__Secure-${PENDING_SIGNUP_COOKIE}` : PENDING_SIGNUP_COOKIE;
+}
+
 export type PendingSignup = { userId: string; email: string };
 
 const MAX_AGE_MS = PENDING_SIGNUP_MAX_AGE_SECONDS * 1000;

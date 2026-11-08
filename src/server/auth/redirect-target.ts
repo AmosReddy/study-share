@@ -1,5 +1,3 @@
-import { safeNextPath } from "@/shared/safe-next-path";
-
 /** Parses an absolute address, or returns null for anything else (including `//host` and plain paths). */
 function absoluteUrl(value: string): URL | null {
   try {
@@ -7,17 +5,6 @@ function absoluteUrl(value: string): URL | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Where an email link sends someone once the token is verified. The link carries the
- * full address it was issued for (`redirect_to`); only its path and query are kept, and
- * those must pass `safeNextPath`, so the result is always a path on this site.
- */
-export function confirmLinkTarget(redirectTo: unknown): string {
-  if (typeof redirectTo !== "string") return "/";
-  const url = absoluteUrl(redirectTo);
-  return safeNextPath(url ? url.pathname + url.search : redirectTo);
 }
 
 /**

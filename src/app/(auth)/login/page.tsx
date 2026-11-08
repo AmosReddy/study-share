@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { AuthCardSkeleton } from "@/client/components/auth/auth-card";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { GoogleButton } from "@/client/components/auth/google-button";
 import { InAppBrowserNotice } from "@/client/components/auth/in-app-browser-notice";
 import { LoginForm } from "@/client/components/auth/login-form";
-import { ResendForm } from "@/client/components/auth/resend-form";
-import { logInAction, resendConfirmationAction, startGoogleAction } from "../actions";
+import { getCurrentUser } from "@/server/auth/session";
+import { logInAction, startGoogleAction } from "../actions";
 import { inAppBrowser, nextFrom, param, withNext } from "../page-params";
+import { sendNewCodeAction } from "../signup-actions";
 
 export const metadata: Metadata = { title: "Log in | study-share" };
 
@@ -22,39 +24,28 @@ export default function LoginPage({ searchParams }: PageProps<"/login">) {
 async function Login({ searchParams }: Pick<PageProps<"/login">, "searchParams">) {
   const params = await searchParams;
   const next = nextFrom(params);
-  const error = param(params, "error");
   const alternative = (await inAppBrowser()) ? (
     <InAppBrowserNotice />
   ) : (
-    <GoogleButton action={startGoogleAction} next={next} />
+    <div className="flex flex-col gap-3">
+      <GoogleButton action={startGoogleAction} next={next} />
+      <p className="text-center text-sm text-muted-foreground">Signed up with Google? Use Continue with Google.</p>
+    </div>
   );
+  // Already signed in: go on (spec 6).
+  if (await getCurrentUser()) redirect(next);
 
-  let notice = null;
-  if (param(params, "confirmed") === "1") {
-    // The confirmation link confirms the address but does not sign in (see src/server/auth/email-link.ts).
-    notice = <FormMessage tone="success" title="Your email is confirmed. Log in to continue." />;
-  } else if (error === "link_expired") {
-    notice = (
-      <div className="flex flex-col gap-4">
-        <FormMessage tone="error" title="This link has expired or was already used">
-          Email links work once and only for a while. If you have confirmed already, just log in. Otherwise enter your
-          email and we&apos;ll send a new confirmation link.
-        </FormMessage>
-        <ResendForm action={resendConfirmationAction} next={next} buttonLabel="Send a new link" />
-      </div>
-    );
-  } else if (error === "oauth_failed") {
-    notice = (
+  const notice =
+    param(params, "error") === "oauth_failed" ? (
       <FormMessage tone="error" title="Google sign-in did not finish">
         Please try again, or log in with your email.
       </FormMessage>
-    );
-  }
+    ) : null;
 
   return (
     <LoginForm
       action={logInAction}
-      resendAction={resendConfirmationAction}
+      resendAction={sendNewCodeAction}
       next={next}
       signupHref={withNext("/signup", next)}
       forgotHref="/forgot-password"

@@ -18,25 +18,29 @@ export async function isolateRateLimits(page: Page) {
   await page.setExtraHTTPHeaders({ "x-forwarded-for": `10.${part()}.${part()}.${part()}` });
 }
 
-/** The newest link the fake provider "emailed" to this address. */
-export async function lastEmailedLink(request: APIRequestContext, email: string): Promise<string> {
-  let url = "";
-  await expect(async () => {
-    const response = await request.get(`/api/test/outbox?email=${encodeURIComponent(email)}`);
-    expect(response.status()).toBe(200);
-    url = ((await response.json()) as { url: string | null }).url ?? "";
-    expect(url).not.toBe("");
-  }).toPass({ timeout: 5000 });
-  return url;
+type OutboxBody = { code: string | null; purpose: "signup" | "recovery" | null };
+
+/** The newest email the fake provider "sent" to this address: `{ code, purpose }`, or nulls when none. */
+export async function latestEmail(request: APIRequestContext, email: string): Promise<OutboxBody> {
+  const response = await request.get(`/api/test/outbox?email=${encodeURIComponent(email)}`);
+  expect(response.status()).toBe(200);
+  return (await response.json()) as OutboxBody;
 }
 
-/**
- * Opens an emailed link and taps Continue, as a person does. Opening the link alone never
- * uses its token (mail scanners open links too); only the Continue button does.
- */
-export async function followEmailLink(page: Page, link: string): Promise<void> {
-  await page.goto(link);
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+/** The newest code the fake provider "emailed" to this address (waits briefly for it). */
+export async function lastEmailedCode(
+  request: APIRequestContext,
+  email: string,
+  purpose: "signup" | "recovery" = "signup",
+): Promise<string> {
+  let code = "";
+  await expect(async () => {
+    const body = await latestEmail(request, email);
+    expect(body.purpose).toBe(purpose);
+    code = body.code ?? "";
+    expect(code).toMatch(/^\d+$/);
+  }).toPass({ timeout: 5000 });
+  return code;
 }
 
 /**
@@ -48,34 +52,41 @@ export async function forgetEmailCooldown(request: APIRequestContext, email: str
   expect(response.status()).toBe(204);
 }
 
-/**
- * After a confirmation link: the log-in page says the email is confirmed (the link itself does
- * not sign in), and the person logs in with their password.
- */
-export async function logInAfterConfirming(page: Page, email: string, password = PASSWORD): Promise<void> {
-  await expect(page).toHaveURL(/\/login\?confirmed=1/);
-  // By role: while the page streams in, a hidden copy of the message can briefly exist too.
-  await expect(page.getByRole("status").filter({ hasText: "Your email is confirmed. Log in to continue." })).toBeVisible();
+/** The one consent box on the sign-up form. */
+export const termsBox = (page: Page) => page.getByRole("checkbox", { name: /18 or older/ });
+
+/** The code box on the code screen. */
+export const codeBox = (page: Page) => page.getByLabel("Code", { exact: true });
+
+/** Fills in and submits the sign-up form on the page that is open, and waits for the code screen. */
+export async function submitSignUp(
+  page: Page,
+  { name, email, password = PASSWORD }: { name: string; email: string; password?: string },
+): Promise<void> {
+  await page.getByLabel("Name", { exact: true }).fill(name);
   await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Log in", exact: true }).click();
+  await termsBox(page).check();
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page).toHaveURL(/\/signup\/verify/);
+  await expect(page.getByRole("heading", { level: 1, name: "Enter the code" })).toBeVisible();
+}
+
+/** Types a code into the code box and taps Verify. */
+export async function enterCode(page: Page, code: string): Promise<void> {
+  await codeBox(page).fill(code);
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
 }
 
 /**
- * Signs up through the real form, opens the emailed confirmation link, logs in, and leaves
- * the page signed in on `/`. The sign-up form records the terms, so no /welcome step follows.
+ * Signs up through the real form, types the emailed code, and leaves the page signed in on
+ * `/`. The sign-up form records the terms, so no /welcome step follows.
  */
 export async function signUpAndConfirm(page: Page, { name, email }: { name: string; email?: string }): Promise<string> {
   const address = email ?? uniqueEmail("person");
   await page.goto("/signup");
-  await page.getByLabel("Name", { exact: true }).fill(name);
-  await page.getByLabel("Email", { exact: true }).fill(address);
-  await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
-  await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-  await followEmailLink(page, await lastEmailedLink(page.request, address));
-  await logInAfterConfirming(page, address);
+  await submitSignUp(page, { name, email: address });
+  await enterCode(page, await lastEmailedCode(page.request, address));
   await expect(page).toHaveURL("/");
   return address;
 }

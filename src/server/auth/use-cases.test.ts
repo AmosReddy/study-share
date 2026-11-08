@@ -11,14 +11,11 @@ import {
   logIn,
   logOut,
   repairGoogleAccount,
+  secondsUntilEmailAllowed,
   requestPasswordReset,
-  requestPasswordResetLink,
-  resendConfirmation,
   resendSignUpCode,
-  resetPassword,
   setPassword,
   signUp,
-  signUpWithLink,
   startGoogle,
   updateProfile,
   verifyResetCode,
@@ -63,9 +60,8 @@ const COULD_NOT_SEND = "We couldn't send the email right now. Please try again i
 
 /** Creates a confirmed account directly through the provider, then signs out. */
 async function registerConfirmed(auth: ReturnType<typeof setup>["auth"], email: string, password: string) {
-  await auth.signUpWithPassword({ email, password, displayName: "Test Person", termsVersion: TERMS_VERSION, redirectTo: SITE });
-  const url = new URL(auth.outbox.lastFor(email)!.url, SITE);
-  await auth.confirmEmailToken({ tokenHash: url.searchParams.get("token_hash")!, type: "email" });
+  await auth.signUpWithPassword({ email, password, displayName: "Test Person", termsVersion: TERMS_VERSION });
+  await auth.verifyCode({ email, code: auth.outbox.lastCodeFor(email)!.code, kind: "signup" });
   await auth.signOut();
 }
 
@@ -76,12 +72,12 @@ const validSignUp = (email = "new@x.com") => ({
   acceptTerms: true,
 });
 
-describe("signUpWithLink (deprecated link flow, Task 5 deletes it)", () => {
+describe("signUp: validation and limits", () => {
   it("returns field errors keyed by field and calls nothing when input is invalid", async () => {
     const { auth, deps } = setup();
     const spy = vi.spyOn(auth, "signUpWithPassword");
     const hit = vi.spyOn(deps.limiter, "hit");
-    const result = await signUpWithLink(deps, { displayName: "A", email: "nope", password: "short", acceptTerms: false }, "/");
+    const result = await signUp(deps, { displayName: "A", email: "nope", password: "short", acceptTerms: false }, "/");
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(Object.keys(result.fieldErrors ?? {}).sort()).toEqual(["acceptTerms", "displayName", "email", "password"]);
@@ -91,40 +87,23 @@ describe("signUpWithLink (deprecated link flow, Task 5 deletes it)", () => {
 
   it("treats a non-object body as a form error", async () => {
     const { deps } = setup();
-    const result = await signUpWithLink(deps, null, "/");
+    const result = await signUp(deps, null, "/");
     expect(result.ok).toBe(false);
     expect(!result.ok && result.formError).toBeTruthy();
   });
 
-  it("calls the provider once with an absolute redirectTo and the terms version", async () => {
+  it("calls the provider once with the terms version and no link", async () => {
     const { auth, deps } = setup();
     const spy = vi.spyOn(auth, "signUpWithPassword");
-    const result = await signUpWithLink(deps, validSignUp(" New@X.com "), "/invite/abc?x=1");
-    expect(result).toEqual({ ok: true, data: { status: "check_email" } });
+    const result = await signUp(deps, validSignUp(" New@X.com "), "/invite/abc?x=1");
+    expect(result).toMatchObject({ ok: true, data: { email: "new@x.com" } });
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith({
       email: "new@x.com",
       password: "correct horse",
       displayName: "Asha Rao",
       termsVersion: TERMS_VERSION,
-      redirectTo: `${SITE}/invite/abc?x=1`,
     });
-  });
-
-  it("replaces an unsafe next with /", async () => {
-    const { auth, deps } = setup();
-    const spy = vi.spyOn(auth, "signUpWithPassword");
-    await signUpWithLink(deps, validSignUp(), "//evil.com");
-    expect(spy.mock.calls[0][0].redirectTo).toBe(`${SITE}/`);
-  });
-
-  it("returns the same result for an existing email as for a new one", async () => {
-    const { auth, deps } = setup();
-    await registerConfirmed(auth, "taken@x.com", "first password");
-    const existing = await signUpWithLink(deps, validSignUp("taken@x.com"), "/");
-    const fresh = await signUpWithLink(deps, validSignUp("fresh@x.com"), "/");
-    expect(existing).toEqual(fresh);
-    expect(existing).toEqual({ ok: true, data: { status: "check_email" } });
   });
 
   // Attempts are spaced past the one-email-a-minute cooldown, so only the hourly limit decides.
@@ -132,10 +111,10 @@ describe("signUpWithLink (deprecated link flow, Task 5 deletes it)", () => {
     const { auth, deps, advance } = setup();
     const spy = vi.spyOn(auth, "signUpWithPassword");
     for (let i = 0; i < 5; i++) {
-      expect((await signUpWithLink(deps, validSignUp(), "/")).ok).toBe(true);
+      expect((await signUp(deps, validSignUp(), "/")).ok).toBe(true);
       advance(PAST_COOLDOWN);
     }
-    const sixth = await signUpWithLink(deps, validSignUp(), "/");
+    const sixth = await signUp(deps, validSignUp(), "/");
     expect(sixth.ok).toBe(false);
     if (sixth.ok) return;
     expect(sixth.retryAfterSeconds).toBeGreaterThan(0);
@@ -147,29 +126,28 @@ describe("signUpWithLink (deprecated link flow, Task 5 deletes it)", () => {
     const { deps, advance } = setup();
     const variants = ["A@x.com", "a@x.com", " A@X.COM ", "a@X.com", "A@x.com"];
     for (const email of variants) {
-      expect((await signUpWithLink(deps, validSignUp(email), "/")).ok).toBe(true);
+      expect((await signUp(deps, validSignUp(email), "/")).ok).toBe(true);
       advance(PAST_COOLDOWN);
     }
-    expect((await signUpWithLink(deps, validSignUp("a@x.com"), "/")).ok).toBe(false);
+    expect((await signUp(deps, validSignUp("a@x.com"), "/")).ok).toBe(false);
   });
 
   it("refuses the 31st attempt from one IP while another IP is still allowed", async () => {
     const limiter = createMemoryRateLimiter();
-    const { auth } = setup();
-    const a: Deps = { ...setup().deps, auth, limiter, ip: "1.1.1.1" };
+    const a: Deps = { ...setup().deps, limiter, ip: "1.1.1.1" };
     const b: Deps = { ...a, ip: "2.2.2.2" };
-    for (let i = 0; i < 30; i++) expect((await signUpWithLink(a, validSignUp(`u${i}@x.com`), "/")).ok).toBe(true);
-    const refused = await signUpWithLink(a, validSignUp("u31@x.com"), "/");
+    for (let i = 0; i < 30; i++) expect((await signUp(a, validSignUp(`u${i}@x.com`), "/")).ok).toBe(true);
+    const refused = await signUp(a, validSignUp("u31@x.com"), "/");
     expect(refused.ok).toBe(false);
     expect(!refused.ok && refused.retryAfterSeconds).toBeGreaterThan(0);
     // Another address: u31's one-a-minute cooldown was counted by the refused attempt above.
-    expect((await signUpWithLink(b, validSignUp("u32@x.com"), "/")).ok).toBe(true);
+    expect((await signUp(b, validSignUp("u32@x.com"), "/")).ok).toBe(true);
   });
 
   it("uses namespaced keys", async () => {
     const hit = vi.fn<RateLimiter["hit"]>(async () => ({ allowed: true, retryAfterSeconds: 0 }));
     const { deps } = setup({ limiter: { hit, peek: allowPeek } });
-    await signUpWithLink(deps, validSignUp("k@x.com"), "/");
+    await signUp(deps, validSignUp("k@x.com"), "/");
     expect(hit.mock.calls.map((c) => c[0].key)).toEqual([
       "email-send:k@x.com",
       "signup:email:k@x.com",
@@ -180,9 +158,9 @@ describe("signUpWithLink (deprecated link flow, Task 5 deletes it)", () => {
 
 describe("one email a minute per address (shared by sign-up, resend and reset)", () => {
   const flows = {
-    signUp: (deps: Deps, email: string) => signUpWithLink(deps, validSignUp(email), "/"),
-    resend: (deps: Deps, email: string) => resendConfirmation(deps, { email }, "/"),
-    reset: (deps: Deps, email: string) => requestPasswordResetLink(deps, { email }),
+    signUp: (deps: Deps, email: string) => signUp(deps, validSignUp(email), "/"),
+    resend: (deps: Deps, email: string) => resendSignUpCode(deps, { email }),
+    reset: (deps: Deps, email: string) => requestPasswordReset(deps, { email }),
   } as const;
 
   it.each(Object.keys(flows) as (keyof typeof flows)[])(
@@ -191,8 +169,8 @@ describe("one email a minute per address (shared by sign-up, resend and reset)",
       const { auth, deps, advance } = setup();
       const providerCalls = [
         vi.spyOn(auth, "signUpWithPassword"),
-        vi.spyOn(auth, "resendConfirmation"),
-        vi.spyOn(auth, "sendPasswordReset"),
+        vi.spyOn(auth, "resendSignUpCode"),
+        vi.spyOn(auth, "sendPasswordResetCode"),
       ];
       const calls = () => providerCalls.reduce((n, spy) => n + spy.mock.calls.length, 0);
 
@@ -227,7 +205,7 @@ describe("one email a minute per address (shared by sign-up, resend and reset)",
 
   it("does not count a request that fails validation", async () => {
     const { deps } = setup();
-    const invalid = await signUpWithLink(deps, { ...validSignUp("a@x.com"), password: "short" }, "/");
+    const invalid = await signUp(deps, { ...validSignUp("a@x.com"), password: "short" }, "/");
     expect(!invalid.ok && invalid.fieldErrors?.password).toBeTruthy();
     expect((await flows.signUp(deps, "a@x.com")).ok).toBe(true);
   });
@@ -247,7 +225,7 @@ describe("one email a minute per address (shared by sign-up, resend and reset)",
 
 describe("provider errors become plain messages", () => {
   const secret = "vendor-secret-token-abc123";
-  type R = Awaited<ReturnType<typeof signUpWithLink>>;
+  type R = Awaited<ReturnType<typeof signUp>>;
 
   it.each([
     ["unavailable", (r: R) => !r.ok && /something went wrong/i.test(r.formError ?? "")],
@@ -255,7 +233,7 @@ describe("provider errors become plain messages", () => {
   ] as const)("%s on sign-up", async (code, check) => {
     const { auth, deps } = setup();
     vi.spyOn(auth, "signUpWithPassword").mockRejectedValue(new AuthProviderError(code, secret));
-    const result = await signUpWithLink(deps, validSignUp(), "/");
+    const result = await signUp(deps, validSignUp(), "/");
     expect(check(result)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(secret);
   });
@@ -263,11 +241,11 @@ describe("provider errors become plain messages", () => {
   it("never leaks vendor text from log-in, reset request or Google", async () => {
     const { auth, deps } = setup();
     vi.spyOn(auth, "signInWithPassword").mockRejectedValue(new AuthProviderError("rate_limited", secret));
-    vi.spyOn(auth, "sendPasswordReset").mockRejectedValue(new AuthProviderError("unavailable", secret));
+    vi.spyOn(auth, "sendPasswordResetCode").mockRejectedValue(new AuthProviderError("unavailable", secret));
     vi.spyOn(auth, "startGoogleSignIn").mockRejectedValue(new AuthProviderError("unavailable", secret));
     const results = [
       await logIn(deps, { email: "a@x.com", password: "pw" }, "/"),
-      await requestPasswordResetLink(deps, { email: "a@x.com" }),
+      await requestPasswordReset(deps, { email: "a@x.com" }),
       await startGoogle(deps, "/"),
     ];
     for (const r of results) {
@@ -313,7 +291,6 @@ describe("logIn", () => {
       password: "right password",
       displayName: "Pending",
       termsVersion: TERMS_VERSION,
-      redirectTo: SITE,
     });
     const result = await logIn(deps, { email: "pending@x.com", password: "right password" }, "/");
     expect(result).toEqual({ ok: false, formError: "confirm_email" });
@@ -349,111 +326,71 @@ describe("logIn", () => {
   });
 });
 
-describe("resendConfirmation", () => {
-  it("sends with the sign-up redirect and is limited to 3 per email per hour", async () => {
+describe("resendSignUpCode: limits", () => {
+  it("is limited to 3 per email per hour", async () => {
     const { auth, deps, advance } = setup();
-    const spy = vi.spyOn(auth, "resendConfirmation");
+    const spy = vi.spyOn(auth, "resendSignUpCode");
     for (let i = 0; i < 3; i++) {
-      expect(await resendConfirmation(deps, { email: "Pending@x.com" }, "/invite/z")).toEqual({ ok: true, data: undefined });
+      expect(await resendSignUpCode(deps, { email: "Pending@x.com" })).toEqual({ ok: true, data: undefined });
       advance(PAST_COOLDOWN);
     }
-    expect(spy).toHaveBeenCalledWith({ email: "pending@x.com", redirectTo: `${SITE}/invite/z` });
-    const fourth = await resendConfirmation(deps, { email: "pending@x.com" }, "/invite/z");
+    expect(spy).toHaveBeenCalledWith({ email: "pending@x.com" });
+    const fourth = await resendSignUpCode(deps, { email: "pending@x.com" });
     expect(!fourth.ok && fourth.retryAfterSeconds).toBeGreaterThan(0);
     expect(spy).toHaveBeenCalledTimes(3);
   });
 
   it("rejects an invalid email without calling anything", async () => {
     const { auth, deps } = setup();
-    const spy = vi.spyOn(auth, "resendConfirmation");
-    const result = await resendConfirmation(deps, { email: "nope" }, "/");
+    const spy = vi.spyOn(auth, "resendSignUpCode");
+    const result = await resendSignUpCode(deps, { email: "nope" });
     expect(!result.ok && result.fieldErrors?.email).toBeTruthy();
     expect(spy).not.toHaveBeenCalled();
   });
 });
 
-describe("requestPasswordResetLink (deprecated link flow, Task 5 deletes it)", () => {
-  it("returns check_email for an unknown email and sends nothing", async () => {
-    const { auth, deps } = setup();
-    const result = await requestPasswordResetLink(deps, { email: "ghost@x.com" });
-    expect(result).toEqual({ ok: true, data: { status: "check_email" } });
-    expect(auth.outbox.entries).toHaveLength(0);
-  });
-
-  it("returns the same result for a known email and uses the reset-password redirect", async () => {
-    const { auth, deps } = setup();
-    await registerConfirmed(auth, "me@x.com", "my password");
-    const spy = vi.spyOn(auth, "sendPasswordReset");
-    const result = await requestPasswordResetLink(deps, { email: "ME@x.com" });
-    expect(result).toEqual({ ok: true, data: { status: "check_email" } });
-    expect(spy).toHaveBeenCalledWith({ email: "me@x.com", redirectTo: `${SITE}/reset-password` });
-  });
-
+describe("requestPasswordReset: limits", () => {
   it("refuses the 4th request for an email in an hour", async () => {
     const { auth, deps, advance } = setup();
-    const spy = vi.spyOn(auth, "sendPasswordReset");
+    const spy = vi.spyOn(auth, "sendPasswordResetCode");
     for (let i = 0; i < 3; i++) {
-      expect((await requestPasswordResetLink(deps, { email: "a@x.com" })).ok).toBe(true);
+      expect((await requestPasswordReset(deps, { email: "a@x.com" })).ok).toBe(true);
       advance(PAST_COOLDOWN);
     }
-    const fourth = await requestPasswordResetLink(deps, { email: "A@x.com" });
+    const fourth = await requestPasswordReset(deps, { email: "A@x.com" });
     expect(!fourth.ok && fourth.retryAfterSeconds).toBeGreaterThan(0);
     expect(spy).toHaveBeenCalledTimes(3);
   });
 
   it("refuses the 31st request from one IP", async () => {
     const { deps } = setup();
-    for (let i = 0; i < 30; i++) await requestPasswordResetLink(deps, { email: `u${i}@x.com` });
-    expect((await requestPasswordResetLink(deps, { email: "u31@x.com" })).ok).toBe(false);
+    for (let i = 0; i < 30; i++) await requestPasswordReset(deps, { email: `u${i}@x.com` });
+    expect((await requestPasswordReset(deps, { email: "u31@x.com" })).ok).toBe(false);
   });
 });
 
-describe("resetPassword", () => {
-  /** Signed in by a recovery link: the provider refuses a password change from a password sign-in session. */
+describe("setPassword: rules", () => {
+  /** Signed in by a recovery code: the provider refuses a password change from a password sign-in session. */
   async function signedIn() {
     const ctx = setup();
     await registerConfirmed(ctx.auth, "me@x.com", "old password");
-    await ctx.auth.sendPasswordReset({ email: "me@x.com", redirectTo: `${SITE}/reset-password` });
-    const url = new URL(ctx.auth.outbox.lastFor("me@x.com")!.url, SITE);
-    await ctx.auth.confirmEmailToken({ tokenHash: url.searchParams.get("token_hash")!, type: "recovery" });
+    await ctx.auth.sendPasswordResetCode({ email: "me@x.com" });
+    await ctx.auth.verifyCode({ email: "me@x.com", code: ctx.auth.outbox.lastCodeFor("me@x.com")!.code, kind: "recovery" });
     return ctx;
   }
-
-  it("needs a matching confirm password", async () => {
-    const { auth, deps } = await signedIn();
-    const spy = vi.spyOn(auth, "updatePassword");
-    const result = await resetPassword(deps, { password: "new password 1", confirmPassword: "different" });
-    expect(!result.ok && result.fieldErrors?.confirmPassword).toBeTruthy();
-    expect(spy).not.toHaveBeenCalled();
-  });
 
   it("needs at least 8 characters", async () => {
     const { auth, deps } = await signedIn();
     const spy = vi.spyOn(auth, "updatePassword");
-    const result = await resetPassword(deps, { password: "short", confirmPassword: "short" });
+    const result = await setPassword(deps, { password: "short", confirmPassword: "short" });
     expect(!result.ok && result.fieldErrors?.password).toBeTruthy();
     expect(spy).not.toHaveBeenCalled();
-  });
-
-  it("updates the password when valid", async () => {
-    const { auth, deps } = await signedIn();
-    const result = await resetPassword(deps, { password: "new password 1", confirmPassword: "new password 1" });
-    expect(result).toEqual({ ok: true, data: undefined });
-    await auth.signOut();
-    expect(await auth.signInWithPassword({ email: "me@x.com", password: "new password 1" })).toEqual({ ok: true });
-  });
-
-  it("asks the person to start again when there is no session", async () => {
-    const { deps } = setup();
-    const result = await resetPassword(deps, { password: "new password 1", confirmPassword: "new password 1" });
-    expect(result.ok).toBe(false);
-    expect(!result.ok && result.formError).toBeTruthy();
   });
 
   it("maps weak_password from the provider to a password field error", async () => {
     const { auth, deps } = await signedIn();
     vi.spyOn(auth, "updatePassword").mockRejectedValue(new AuthProviderError("weak_password", "vendor text"));
-    const result = await resetPassword(deps, { password: "new password 1", confirmPassword: "new password 1" });
+    const result = await setPassword(deps, { password: "new password 1", confirmPassword: "new password 1" });
     expect(!result.ok && result.fieldErrors?.password).toBeTruthy();
     expect(JSON.stringify(result)).not.toContain("vendor text");
   });
@@ -463,9 +400,9 @@ describe("resetPassword", () => {
     const spy = vi.spyOn(auth, "updatePassword");
     for (let i = 0; i < 10; i++) {
       const pw = `new password ${i}`;
-      expect((await resetPassword(deps, { password: pw, confirmPassword: pw })).ok).toBe(true);
+      expect((await setPassword(deps, { password: pw, confirmPassword: pw })).ok).toBe(true);
     }
-    const eleventh = await resetPassword(deps, { password: "new password x", confirmPassword: "new password x" });
+    const eleventh = await setPassword(deps, { password: "new password x", confirmPassword: "new password x" });
     expect(!eleventh.ok && eleventh.retryAfterSeconds).toBeGreaterThan(0);
     expect(spy).toHaveBeenCalledTimes(10);
   });
@@ -560,17 +497,19 @@ describe("a rate limit store that never answers", () => {
     vi.useRealTimers();
   });
 
-  it("gives up after 2 seconds, allows sign-up and logs the same single warning", async () => {
+  // Sign-up checks the minted-recovery cooldown (a peek) before its three counters: four waits, and
+  // one fixed warning for the peek plus one for the counters.
+  it("gives up after 2 seconds per check, allows sign-up and logs only the fixed warning", async () => {
     const { auth, deps } = setup({ limiter: hanging });
     const spy = vi.spyOn(auth, "signUpWithPassword");
-    const pending = signUpWithLink(deps, validSignUp("a@x.com"), "/");
+    const pending = signUp(deps, validSignUp("a@x.com"), "/");
     await vi.advanceTimersByTimeAsync(1999);
     expect(spy).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(2000 * 3);
-    expect(await pending).toEqual({ ok: true, data: { status: "check_email" } });
+    await vi.advanceTimersByTimeAsync(2000 * 4);
+    expect(await pending).toMatchObject({ ok: true });
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toBe("Rate limit store unavailable; allowing the request.");
+    expect(warn).toHaveBeenCalledTimes(2);
+    for (const call of warn.mock.calls) expect(call[0]).toBe("Rate limit store unavailable; allowing the request.");
   });
 
   it("does not stop log-in either", async () => {
@@ -589,11 +528,11 @@ describe("a rate limit store that never answers", () => {
       peek: (i) => new Promise((resolve) => setTimeout(() => resolve(real.peek(i)), 1500)),
     };
     const { deps } = setup({ limiter: slow });
-    const first = signUpWithLink(deps, validSignUp("a@x.com"), "/");
-    await vi.advanceTimersByTimeAsync(1500 * 3);
+    const first = signUp(deps, validSignUp("a@x.com"), "/");
+    await vi.advanceTimersByTimeAsync(1500 * 4);
     expect((await first).ok).toBe(true);
-    const second = signUpWithLink(deps, validSignUp("a@x.com"), "/");
-    await vi.advanceTimersByTimeAsync(1500 * 3);
+    const second = signUp(deps, validSignUp("a@x.com"), "/");
+    await vi.advanceTimersByTimeAsync(1500 * 4);
     expect(await second).toMatchObject({ ok: false, formError: COOLDOWN_MESSAGE });
     expect(warn).not.toHaveBeenCalled();
   });
@@ -615,21 +554,22 @@ describe("a rate limit store that fails", () => {
   });
   afterEach(() => warn.mockRestore());
 
-  function expectOneCleanWarning() {
-    expect(warn).toHaveBeenCalledTimes(1);
-    const text = JSON.stringify(warn.mock.calls[0]);
+  /** One fixed line per guarded step (sign-up has two: the minted-cooldown peek and the counters). */
+  function expectOneCleanWarning(times = 1) {
+    expect(warn).toHaveBeenCalledTimes(times);
+    const text = JSON.stringify(warn.mock.calls);
     for (const leak of ["a@x.com", "10.0.0.1", "signup:", "login:", "postgres://", "pw@"]) {
       expect(text).not.toContain(leak);
     }
   }
 
-  it("does not stop sign-up and logs one warning", async () => {
+  it("does not stop sign-up and logs only the fixed warning", async () => {
     const { auth, deps } = setup({ limiter: failing });
     const spy = vi.spyOn(auth, "signUpWithPassword");
-    const result = await signUpWithLink(deps, validSignUp("a@x.com"), "/");
-    expect(result).toEqual({ ok: true, data: { status: "check_email" } });
+    const result = await signUp(deps, validSignUp("a@x.com"), "/");
+    expect(result).toMatchObject({ ok: true });
     expect(spy).toHaveBeenCalledTimes(1);
-    expectOneCleanWarning();
+    expectOneCleanWarning(2);
   });
 
   it("does not stop log-in and logs one warning", async () => {
@@ -652,14 +592,11 @@ describe("a rate limit store that fails", () => {
   That is an accepted pilot risk, see "Known risks accepted for the pilot" in the Phase 1 spec.
 */
 describe("a provider rate limit is reported honestly, the same for known and unknown addresses", () => {
-  type Flow = "signUp" | "resend" | "reset";
-  const methods = { signUp: "signUpWithPassword", resend: "resendConfirmation", reset: "sendPasswordReset" } as const;
+  // Forgot password answers a provider rate limit neutrally instead (ruling P11; tested with the code use-cases).
+  type Flow = "signUp" | "resend";
+  const methods = { signUp: "signUpWithPassword", resend: "resendSignUpCode" } as const;
   const run = (flow: Flow, deps: Deps, email: string) =>
-    flow === "signUp"
-      ? signUpWithLink(deps, validSignUp(email), "/")
-      : flow === "resend"
-        ? resendConfirmation(deps, { email }, "/")
-        : requestPasswordResetLink(deps, { email });
+    flow === "signUp" ? signUp(deps, validSignUp(email), "/") : resendSignUpCode(deps, { email });
 
   let warn: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
@@ -667,11 +604,15 @@ describe("a provider rate limit is reported honestly, the same for known and unk
   });
   afterEach(() => warn.mockRestore());
 
-  it.each(["signUp", "resend", "reset"] as const)("%s: known and unknown addresses get the same honest error", async (flow) => {
+  it.each(["signUp", "resend"] as const)("%s: known and unknown addresses get the same honest error", async (flow) => {
     const { auth, deps } = setup();
     await registerConfirmed(auth, "known@x.com", "my password");
+    // Sign-up tells a confirmed address so before any email is attempted, so use a pending one there.
+    if (flow === "signUp") {
+      await auth.signUpWithPassword({ email: "pend@x.com", password: "a password", displayName: "P", termsVersion: TERMS_VERSION });
+    }
     vi.spyOn(auth, methods[flow]).mockRejectedValue(new AuthProviderError("rate_limited", "over_email_send_rate_limit"));
-    const known = await run(flow, deps, "known@x.com");
+    const known = await run(flow, deps, flow === "signUp" ? "pend@x.com" : "known@x.com");
     const unknown = await run(flow, deps, "ghost@x.com");
     expect(known).toEqual({ ok: false, formError: COULD_NOT_SEND });
     expect(unknown).toEqual(known);
@@ -679,23 +620,20 @@ describe("a provider rate limit is reported honestly, the same for known and unk
 
   it("logs one fixed line per refusal, with no email, key, IP or provider text", async () => {
     const { auth, deps } = setup();
-    vi.spyOn(auth, "sendPasswordReset").mockRejectedValue(new AuthProviderError("rate_limited", "over_email_send_rate_limit"));
-    await requestPasswordResetLink(deps, { email: "known@x.com" });
+    vi.spyOn(auth, "resendSignUpCode").mockRejectedValue(new AuthProviderError("rate_limited", "over_email_send_rate_limit"));
+    await resendSignUpCode(deps, { email: "known@x.com" });
     expect(warn).toHaveBeenCalledTimes(1);
     const text = JSON.stringify(warn.mock.calls);
     for (const leak of ["known@x.com", "email-send:", "over_email_send_rate_limit", "10.0.0.1"]) expect(text).not.toContain(leak);
   });
 
-  it("without any limit, an existing and a new address still get the identical neutral result", async () => {
+  it("without any limit, an existing and a new address still get the identical neutral result from resend", async () => {
     const { auth, deps } = setup();
     await registerConfirmed(auth, "known@x.com", "my password");
-    for (const flow of ["signUp", "resend", "reset"] as const) {
-      const known = await run(flow, deps, `known@x.com`);
-      const fresh = await run(flow, deps, `${flow.toLowerCase()}-fresh@x.com`);
-      expect(known.ok).toBe(true);
-      expect(known).toEqual(fresh);
-      deps.limiter = createMemoryRateLimiter();
-    }
+    const known = await run("resend", deps, "known@x.com");
+    const fresh = await run("resend", deps, "resend-fresh@x.com");
+    expect(known.ok).toBe(true);
+    expect(known).toEqual(fresh);
   });
 
   it("logIn still reports too many attempts", async () => {
@@ -715,12 +653,12 @@ describe("the client address", () => {
   };
 
   it.each(["", "   "])("skips the per-IP limit when the address is unknown (%j)", async (ip) => {
-    expect(await keysFor(ip, (d) => signUpWithLink(d, validSignUp("k@x.com"), "/"))).toEqual([
+    expect(await keysFor(ip, (d) => signUp(d, validSignUp("k@x.com"), "/"))).toEqual([
       "email-send:k@x.com",
       "signup:email:k@x.com",
     ]);
     expect(await keysFor(ip, (d) => logIn(d, { email: "k@x.com", password: "pw" }, "/"))).toEqual(["login:email:k@x.com"]);
-    expect(await keysFor(ip, (d) => requestPasswordResetLink(d, { email: "k@x.com" }))).toEqual([
+    expect(await keysFor(ip, (d) => requestPasswordReset(d, { email: "k@x.com" }))).toEqual([
       "email-send:k@x.com",
       "reset:email:k@x.com",
     ]);
@@ -728,12 +666,12 @@ describe("the client address", () => {
 
   it("does not put everyone without an address into one bucket", async () => {
     const { deps } = setup({ ip: "" });
-    for (let i = 0; i < 31; i++) expect((await signUpWithLink(deps, validSignUp(`u${i}@x.com`), "/")).ok).toBe(true);
+    for (let i = 0; i < 31; i++) expect((await signUp(deps, validSignUp(`u${i}@x.com`), "/")).ok).toBe(true);
   });
 
   it("trims the address and caps its length at 64 characters in the key", async () => {
     const long = "a".repeat(200);
-    const [, , ipKey] = await keysFor(`  ${long}  `, (d) => signUpWithLink(d, validSignUp("k@x.com"), "/"));
+    const [, , ipKey] = await keysFor(`  ${long}  `, (d) => signUp(d, validSignUp("k@x.com"), "/"));
     expect(ipKey).toBe(`signup:ip:${"a".repeat(64)}`);
     const [, loginIp] = await keysFor("1.2.3.4 ", (d) => logIn(d, { email: "k@x.com", password: "pw" }, "/"));
     expect(loginIp).toBe("login:ip:1.2.3.4");
@@ -848,7 +786,7 @@ describe("signUp (codes)", () => {
     expect(result).toEqual({ ok: true, data: { pendingUserId: state.kind === "pending" && state.userId, email: "new@example.invalid" } });
     expect(spy).toHaveBeenCalledWith({ email: "new@example.invalid", password: PW, displayName: "Asha Rao", termsVersion: TERMS_VERSION });
     expect(ctx.auth.outbox.lastCodeFor("new@example.invalid")?.purpose).toBe("signup");
-    expect(ctx.auth.outbox.lastFor("new@example.invalid")).toBeUndefined();
+    expect(ctx.auth.outbox.entries.every((e) => e.kind === "code")).toBe(true);
   });
 
   it("does not trust the provider's id: an empty id still returns the directory's pending id", async () => {
@@ -1714,5 +1652,26 @@ describe("repairGoogleAccount (spec 5.3)", () => {
     expect(await repairGoogleAccount(ctx.deps, user)).toEqual({ ok: false, formError: AUTH_MESSAGES.googleFailed });
     expect(await ctx.auth.getUser()).toBeNull();
     warn.mockRestore();
+  });
+});
+
+describe("secondsUntilEmailAllowed (the code screen's starting countdown)", () => {
+  it("is 0 before any email, the cooldown's remaining seconds after one, and counts nothing", async () => {
+    const { deps, advance } = setup();
+    expect(await secondsUntilEmailAllowed(deps.limiter, "a@x.com")).toBe(0);
+    expect((await signUp(deps, validSignUp("a@x.com"), "/")).ok).toBe(true);
+    expect(await secondsUntilEmailAllowed(deps.limiter, " A@X.com ")).toBe(60);
+    advance(20);
+    expect(await secondsUntilEmailAllowed(deps.limiter, "a@x.com")).toBe(40);
+    advance(41);
+    expect(await secondsUntilEmailAllowed(deps.limiter, "a@x.com")).toBe(0);
+    // Peeking opened no window: a send is still allowed straight away.
+    expect((await resendSignUpCode(deps, { email: "a@x.com" })).ok).toBe(true);
+  });
+
+  it("fails open with 0 when the store fails", async () => {
+    const down = async () => Promise.reject(new Error("down"));
+    const failing: RateLimiter = { hit: down, peek: down };
+    expect(await secondsUntilEmailAllowed(failing, "a@x.com")).toBe(0);
   });
 });

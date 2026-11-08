@@ -17,7 +17,7 @@ test("the Google flow goes through /welcome once, and a second visit skips it", 
   await page.goto("/login?next=/privacy");
   await page.getByRole("button", { name: "Continue with Google" }).click();
   await expect(page).toHaveURL("/welcome?next=%2Fprivacy");
-  await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
+  await page.getByRole("checkbox", { name: /18 or older/ }).check();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page).toHaveURL("/privacy");
 
@@ -38,7 +38,7 @@ test("a Google person who has not accepted the terms is sent to /welcome from / 
   await page.goto("/account");
   await expect(page).toHaveURL("/welcome?next=%2Faccount");
 
-  await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
+  await page.getByRole("checkbox", { name: /18 or older/ }).check();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page).toHaveURL("/account");
   await expect(page.getByRole("heading", { name: "Account", level: 1 })).toBeVisible();

@@ -1,24 +1,33 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Request } from "@playwright/test";
+import { AUTH_MESSAGES } from "../src/shared/auth-messages";
+import { CODE_LENGTH } from "../src/shared/auth-schemas";
 import { CONTACT_EMAIL } from "../src/shared/legal";
 import {
-  followEmailLink,
+  codeBox,
+  enterCode,
   forgetEmailCooldown,
   isolateRateLimits,
-  lastEmailedLink,
-  logInAfterConfirming,
+  lastEmailedCode,
+  latestEmail,
   PASSWORD,
+  sidewaysOverflow,
+  signUpAndConfirm,
+  submitSignUp,
+  termsBox,
   uniqueEmail,
 } from "./helpers";
 
 /*
-  Sign-up, log-in, reset and terms, against the fake auth provider (SERVICES_MODE=fake).
-  The fake is more lenient than real Supabase in two ways, so no test here relies on them:
-  a recovery link also confirms an unconfirmed account, and old links stay valid after a
-  resend. "Expired or reused" links below are ones that were already used or never existed.
+  Sign-up with an emailed code, log-in and the terms, against the fake auth provider
+  (SERVICES_MODE=fake). Codes are read from the fake outbox (GET /api/test/outbox). Emails
+  carry codes only: there is no link flow any more.
 */
 
 const IN_APP_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36 Instagram 350.0.0.0.0";
+
+/** The one Google account of the fake provider (see fake-auth-provider.ts). */
+const FAKE_GOOGLE_EMAIL = "google.user@example.test";
 
 // Each test gets its own made-up client address, so the per-IP rate limits of one test
 // (or of an earlier run against the same server) never block another.
@@ -26,36 +35,33 @@ test.beforeEach(async ({ page }) => {
   await isolateRateLimits(page);
 });
 
-async function fillSignUp(page: Page, { name, email, password }: { name: string; email: string; password: string }) {
-  await page.getByLabel("Name", { exact: true }).fill(name);
-  await page.getByLabel("Email", { exact: true }).fill(email);
-  await page.getByLabel("Password", { exact: true }).fill(password);
+const verifyButton = (page: Page) => page.getByRole("button", { name: "Verify", exact: true });
+const resendButton = (page: Page) => page.getByRole("button", { name: /^Resend code/ });
+const accountMenu = (page: Page, name: string) => page.getByRole("banner").getByRole("button", { name, exact: true });
+const codeHeading = (page: Page) => page.getByRole("heading", { level: 1, name: "Enter the code" });
+const passwordHeading = (page: Page) => page.getByRole("heading", { level: 1, name: "Create your password" });
+
+/** A code of the right shape that is not `code`: every digit moved on by one. */
+function wrongCode(code: string): string {
+  return code.replace(/\d/g, (d) => String((Number(d) + 1) % 10));
 }
 
-async function signUp(page: Page, email: string, path = "/signup") {
+/** "123456" as a person might paste it, with `separator` in the middle. */
+function spaced(code: string, separator: string): string {
+  const half = Math.floor(code.length / 2);
+  return `${code.slice(0, half)}${separator}${code.slice(half)}`;
+}
+
+/** Opens /signup (optionally with a query) and submits the form; ends on the code screen. */
+async function startSignUp(page: Page, email: string, { name = "Asha Rao", password = PASSWORD, path = "/signup" } = {}) {
   await page.goto(path);
-  await fillSignUp(page, { name: "Asha Rao", email, password: PASSWORD });
-  await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+  await submitSignUp(page, { name, email, password });
 }
 
-/** Signs up and confirms. The link does not sign in, so the person is left signed out. */
-async function createConfirmedUser(page: Page, email: string) {
-  await signUp(page, email);
-  await followEmailLink(page, await lastEmailedLink(page.request, email));
-  await expect(page).toHaveURL("/login?confirmed=1");
+/** A confirmed account through the code flow, then signed out (cookies cleared). */
+async function createConfirmedUser(page: Page, email: string, name = "Asha Rao") {
+  await signUpAndConfirm(page, { name, email });
   await page.context().clearCookies();
-}
-
-/** Asks for a reset link for `email` through the form and returns the link. */
-async function requestResetLink(page: Page, email: string): Promise<string> {
-  await forgetEmailCooldown(page.request, email);
-  await page.goto("/forgot-password");
-  await page.getByLabel("Email", { exact: true }).fill(email);
-  await page.getByRole("button", { name: "Send reset link" }).click();
-  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-  return lastEmailedLink(page.request, email);
 }
 
 async function logIn(page: Page, email: string, password: string) {
@@ -64,44 +70,315 @@ async function logIn(page: Page, email: string, password: string) {
   await page.getByRole("button", { name: "Log in", exact: true }).click();
 }
 
-/** Signed in with the terms accepted: /welcome sends the person straight on to `/`. */
-async function expectSignedIn(page: Page) {
-  await page.goto("/welcome");
-  await expect(page).toHaveURL("/");
+/** Logs in on a fresh /login (cookies cleared first) and says whether it reached `/`. */
+async function passwordWorks(page: Page, email: string, password: string): Promise<boolean> {
+  await page.context().clearCookies();
+  await page.goto("/login");
+  await logIn(page, email, password);
+  const wrong = page.getByText(AUTH_MESSAGES.badLogin);
+  // The signed-in home (whatever the account's name), or the one generic error.
+  await expect(wrong.or(page.getByRole("main").getByRole("button", { name: "Create a group" }))).toBeVisible();
+  return (await wrong.count()) === 0;
 }
 
-test.describe("sign-up", () => {
-  test("confirming the emailed link asks the person to log in, then lands on / signed in", async ({ page }) => {
+/** Fills the create-password step and submits it. */
+async function createPassword(page: Page, password: string) {
+  await expect(passwordHeading(page)).toBeVisible();
+  await page.getByLabel("New password", { exact: true }).fill(password);
+  await page.getByLabel("Confirm new password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Save password" }).click();
+}
+
+/** The server-action POSTs a page sends to `path`. */
+function countActionPosts(page: Page, path: string): () => number {
+  let count = 0;
+  page.on("request", (request: Request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === path && request.headers()["next-action"]) count++;
+  });
+  return () => count;
+}
+
+test.describe("sign-up with an emailed code", () => {
+  test("the code signs the person in and lands on / with their name", async ({ page }) => {
     const email = uniqueEmail("signup");
-    await signUp(page, email);
-    await followEmailLink(page, await lastEmailedLink(page.request, email));
-    await expect(page).toHaveURL("/login?confirmed=1");
-    // The link confirmed the address but did not sign in.
-    await expect(page.getByRole("banner").getByRole("button", { name: "Asha Rao", exact: true })).toHaveCount(0);
-    await logInAfterConfirming(page, email);
+    await startSignUp(page, email);
+    // The screen names the address the code went to.
+    await expect(page.getByRole("main")).toContainText(email);
+    await enterCode(page, await lastEmailedCode(page.request, email));
     await expect(page).toHaveURL("/");
-    await expectSignedIn(page);
-    // The person's name shows in the account menu on the home page.
-    await expect(page.getByRole("banner").getByRole("button", { name: "Asha Rao", exact: true })).toBeVisible();
+    await expect(accountMenu(page, "Asha Rao")).toBeVisible();
   });
 
-  test("an address that already has an account gets the identical screen", async ({ page }) => {
+  test("the code screen carries on to the page the person was heading for", async ({ page }) => {
+    const email = uniqueEmail("next");
+    await startSignUp(page, email, { path: "/signup?next=/privacy" });
+    await enterCode(page, await lastEmailedCode(page.request, email));
+    await expect(page).toHaveURL("/privacy");
+  });
+
+  test("a wrong code keeps the screen with the error; after 5 wrong codes even the right one is locked", async ({ page }) => {
+    const email = uniqueEmail("wrong");
+    await startSignUp(page, email);
+    const code = await lastEmailedCode(page.request, email);
+
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await enterCode(page, wrongCode(code));
+      await expect(page.getByText(AUTH_MESSAGES.codeInvalid)).toBeVisible();
+      await expect(codeHeading(page)).toBeVisible();
+      // The error belongs to the code box, which is marked and focused for a retry.
+      await expect(codeBox(page)).toHaveAttribute("aria-invalid", "true");
+      await expect(codeBox(page)).toHaveAccessibleDescription(new RegExp(AUTH_MESSAGES.codeInvalid.replace(/\./g, "\\.")));
+      await expect(codeBox(page)).toBeFocused();
+    }
+
+    await enterCode(page, code);
+    await expect(page.getByText(AUTH_MESSAGES.tooManyCodes)).toBeVisible();
+    await expect(page).toHaveURL(/\/signup\/verify/);
+  });
+
+  test("an expired code says so, and Resend works once the countdown has run", async ({ page }) => {
+    await page.clock.install();
+    const email = uniqueEmail("expired");
+    await startSignUp(page, email);
+    const firstCode = await lastEmailedCode(page.request, email);
+
+    // The code just went out: Resend waits for the app's one-email-a-minute cooldown.
+    await expect(resendButton(page)).toBeDisabled();
+    await expect(resendButton(page)).toHaveText(/Resend code in \d:\d\d/);
+
+    // Only this address's codes: other tests run side by side on the same server.
+    const expire = await page.request.post(`/api/test/expire-codes?email=${encodeURIComponent(email)}`);
+    expect(expire.status()).toBe(204);
+    await enterCode(page, firstCode);
+    await expect(page.getByText(AUTH_MESSAGES.codeInvalid)).toBeVisible();
+
+    await forgetEmailCooldown(page.request, email);
+    await page.clock.fastForward("01:05");
+    await expect(resendButton(page)).toBeEnabled();
+    await expect(resendButton(page)).toHaveText("Resend code");
+    await resendButton(page).click();
+    await expect(page.getByText(/we've sent a new code/)).toBeVisible();
+    // The countdown starts again.
+    await expect(resendButton(page)).toBeDisabled();
+
+    let secondCode = "";
+    await expect(async () => {
+      secondCode = await lastEmailedCode(page.request, email);
+      expect(secondCode).not.toBe(firstCode);
+    }).toPass({ timeout: 5000 });
+    await enterCode(page, secondCode);
+    await expect(page).toHaveURL("/");
+  });
+
+  test("while the countdown runs Resend is disabled, sends nothing, and the countdown keeps its width", async ({ page }) => {
+    const email = uniqueEmail("cooldown");
+    await startSignUp(page, email);
+    await expect(resendButton(page)).toBeDisabled();
+    // A countdown that does not change width as it ticks.
+    const numbers = await resendButton(page).evaluate((el) => getComputedStyle(el).fontVariantNumeric);
+    expect(numbers).toContain("tabular-nums");
+    const first = await lastEmailedCode(page.request, email);
+    // Nothing new was sent while the button waits.
+    expect((await latestEmail(page.request, email)).code).toBe(first);
+  });
+
+  test("an address that already has an account gets the clear message, and nothing is sent", async ({ page }) => {
+    const email = uniqueEmail("taken");
+    await createConfirmedUser(page, email);
+    const before = await latestEmail(page.request, email);
+
+    await forgetEmailCooldown(page.request, email);
+    await page.goto("/signup");
+    await page.getByLabel("Name", { exact: true }).fill("Someone Else");
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    await page.getByLabel("Password", { exact: true }).fill("another password");
+    await termsBox(page).check();
+    await page.getByRole("button", { name: "Create account" }).click();
+
+    await expect(page.getByText(AUTH_MESSAGES.emailTaken)).toBeVisible();
+    await expect(page).toHaveURL("/signup");
+    expect(await latestEmail(page.request, email)).toEqual(before);
+    // The existing password still works.
+    expect(await passwordWorks(page, email, PASSWORD)).toBe(true);
+  });
+
+  test("an address registered through Google gets the Google message, and nothing is sent", async ({ page, browser, baseURL }) => {
+    // The fake provider's one Google account exists once someone has continued with Google.
+    const google = await browser.newPage({ baseURL });
+    try {
+      await isolateRateLimits(google);
+      await google.goto("/signup");
+      await google.getByRole("button", { name: "Continue with Google" }).click();
+      await expect(google).toHaveURL(/\/welcome/);
+    } finally {
+      await google.close();
+    }
+    const before = await latestEmail(page.request, FAKE_GOOGLE_EMAIL);
+
+    await page.goto("/signup");
+    await page.getByLabel("Name", { exact: true }).fill("Someone Else");
+    await page.getByLabel("Email", { exact: true }).fill(FAKE_GOOGLE_EMAIL);
+    await termsBox(page).check();
+    // The other screen sizes run this test at the same time against the same address, and the
+    // shared one-email-a-minute cooldown may answer first: clear it and try again.
+    await expect(async () => {
+      await forgetEmailCooldown(page.request, FAKE_GOOGLE_EMAIL);
+      await page.getByLabel("Password", { exact: true }).fill("another password");
+      await page.getByRole("button", { name: "Create account" }).click();
+      await expect(page.getByText(AUTH_MESSAGES.googleOnly)).toBeVisible({ timeout: 3000 });
+    }).toPass({ timeout: 20_000 });
+    await expect(page).toHaveURL("/signup");
+    expect(await latestEmail(page.request, FAKE_GOOGLE_EMAIL)).toEqual(before);
+  });
+
+  test("signing up twice: only the newest password works after the latest code", async ({ page }) => {
     const email = uniqueEmail("twice");
-    await signUp(page, email);
-    const first = await page.getByRole("main").innerText();
+    await startSignUp(page, email, { password: "the first password" });
+
+    await forgetEmailCooldown(page.request, email);
+    await startSignUp(page, email, { password: "the second password" });
+    await enterCode(page, await lastEmailedCode(page.request, email));
+    await expect(page).toHaveURL("/");
+
+    expect(await passwordWorks(page, email, "the first password")).toBe(false);
+    expect(await passwordWorks(page, email, "the second password")).toBe(true);
+  });
+
+  test("a stranger's later sign-up: the owner's code forces a new password, and the stranger's password is dead", async ({ page, browser, baseURL }) => {
+    const email = uniqueEmail("stranger");
+    await startSignUp(page, email);
+
+    // Just after the owner, a stranger signs up the same address with their own password.
+    const strangersPassword = "the stranger's password";
+    const stranger = await browser.newPage({ baseURL });
+    try {
+      await isolateRateLimits(stranger);
+      await forgetEmailCooldown(stranger.request, email);
+      await startSignUp(stranger, email, { name: "Stranger", password: strangersPassword });
+    } finally {
+      await stranger.close();
+    }
+
+    // The owner's inbox now holds a code for the stranger's pending account. The owner's
+    // browser did not create that account, so it is not signed straight in.
+    await enterCode(page, await lastEmailedCode(page.request, email));
+    await expect(page).toHaveURL("/signup/password");
+    const ownersPassword = "the owner's own password";
+    await createPassword(page, ownersPassword);
+    await expect(page).toHaveURL("/");
+
+    expect(await passwordWorks(page, email, strangersPassword)).toBe(false);
+    expect(await passwordWorks(page, email, ownersPassword)).toBe(true);
+  });
+
+  test("without the cookie (another device), the address and code sign in, then a password must be created", async ({ page }) => {
+    const email = uniqueEmail("nocookie");
+    await startSignUp(page, email);
+    const code = await lastEmailedCode(page.request, email);
 
     await page.context().clearCookies();
-    await forgetEmailCooldown(page.request, email);
-    await signUp(page, email);
-    expect(await page.getByRole("main").innerText()).toBe(first);
+    await page.reload();
+    await expect(codeHeading(page)).toBeVisible();
+    // No remembered address: the screen asks for it above the code box.
+    const address = page.getByLabel("Email", { exact: true });
+    await expect(address).toBeVisible();
+    await expect(address).toHaveAttribute("autocomplete", "email");
+    await address.fill(email);
+    await enterCode(page, spaced(code, "-"));
+
+    await expect(page).toHaveURL("/signup/password");
+    await createPassword(page, "my new device password");
+    await expect(page).toHaveURL("/");
+    await expect(accountMenu(page, "Asha Rao")).toBeVisible();
+    expect(await passwordWorks(page, email, "my new device password")).toBe(true);
+    // The password typed at sign-up was replaced.
+    expect(await passwordWorks(page, email, PASSWORD)).toBe(false);
+  });
+
+  test("the create-password step needs a session", async ({ page }) => {
+    await page.goto("/signup/password");
+    await expect(page).toHaveURL("/login");
+  });
+
+  test("a reload keeps the code screen; Change email goes back to the form and forgets the address", async ({ page }) => {
+    const email = uniqueEmail("reload");
+    await startSignUp(page, email);
+    await page.reload();
+    await expect(codeHeading(page)).toBeVisible();
+    await expect(page.getByRole("main")).toContainText(email);
+    await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Change email" }).click();
+    await expect(page).toHaveURL("/signup");
+    await expect(page.getByRole("heading", { level: 1, name: "Create your account" })).toBeVisible();
+
+    // The code screen no longer knows the address.
+    await page.goto("/signup/verify");
+    await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
+    await expect(page.getByRole("main")).not.toContainText(email);
+  });
+
+  test("the code box: one-time-code autofill, numeric keypad, large, and a code pasted with a space works", async ({ page }) => {
+    const email = uniqueEmail("codebox");
+    await startSignUp(page, email);
+
+    const box = codeBox(page);
+    await expect(box).toHaveAttribute("autocomplete", "one-time-code");
+    await expect(box).toHaveAttribute("inputmode", "numeric");
+    // Room for a pasted code with separators ("123 456", "123-456", "12 34 56").
+    const maxLength = Number(await box.getAttribute("maxlength"));
+    expect(maxLength).toBeGreaterThanOrEqual(CODE_LENGTH + 3);
+    const size = await box.evaluate((el) => ({ font: parseFloat(getComputedStyle(el).fontSize), height: el.getBoundingClientRect().height }));
+    expect(size.font).toBeGreaterThanOrEqual(16);
+    expect(size.height).toBeGreaterThanOrEqual(44);
+    await expect(box).toBeFocused();
+
+    // Every control on the screen is a full tap target, and nothing scrolls sideways.
+    for (const button of [verifyButton(page), resendButton(page), page.getByRole("button", { name: "Change email" })]) {
+      expect((await button.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
+    expect(await sidewaysOverflow(page)).toBeLessThanOrEqual(0);
+    // Verify sits in the first screenful, above where a phone keyboard opens.
+    const verify = await verifyButton(page).boundingBox();
+    const viewport = page.viewportSize();
+    expect((verify?.y ?? 0) + (verify?.height ?? 0)).toBeLessThanOrEqual((viewport?.height ?? 0) * 0.6);
+
+    const pasted = spaced(await lastEmailedCode(page.request, email), " ");
+    await box.fill(pasted);
+    await expect(box).toHaveValue(pasted);
+    await verifyButton(page).click();
+    await expect(page).toHaveURL("/");
+  });
+
+  test("a double tap on Verify submits once and signs in", async ({ page }) => {
+    const email = uniqueEmail("doubletap");
+    await startSignUp(page, email);
+    const posts = countActionPosts(page, "/signup/verify");
+
+    await codeBox(page).fill(await lastEmailedCode(page.request, email));
+    await verifyButton(page).dblclick();
+    await expect(page).toHaveURL("/");
+    await expect(accountMenu(page, "Asha Rao")).toBeVisible();
+    expect(posts()).toBe(1);
+    await expect(page.getByText(AUTH_MESSAGES.codeInvalid)).toHaveCount(0);
+  });
+
+  test("a signed-in person who opens /signup, /signup/verify or /login goes home", async ({ page }) => {
+    await signUpAndConfirm(page, { name: "Asha Rao" });
+    for (const path of ["/signup", "/signup/verify", "/login"]) {
+      await page.goto(path);
+      await expect(page).toHaveURL("/");
+    }
   });
 
   test("without the terms box ticked it shows the field error and focuses the box", async ({ page }) => {
     await page.goto("/signup");
-    await fillSignUp(page, { name: "Asha Rao", email: uniqueEmail("noterms"), password: PASSWORD });
+    await page.getByLabel("Name", { exact: true }).fill("Asha Rao");
+    await page.getByLabel("Email", { exact: true }).fill(uniqueEmail("noterms"));
+    await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
     await page.getByRole("button", { name: "Create account" }).click();
 
-    const box = page.getByRole("checkbox", { name: /I'm 18 or older/ });
+    const box = termsBox(page);
     await expect(page.getByText("You need to accept the terms to sign up.")).toBeVisible();
     await expect(box).toHaveAttribute("aria-invalid", "true");
     await expect(box).toHaveAccessibleDescription("You need to accept the terms to sign up.");
@@ -109,6 +386,11 @@ test.describe("sign-up", () => {
     // What was typed is kept.
     await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Asha Rao");
     await expect(page.getByLabel("Password", { exact: true })).toHaveValue(PASSWORD);
+  });
+
+  test("the consent box reads as one sentence about age, Terms and Privacy Notice", async ({ page }) => {
+    await page.goto("/signup");
+    await expect(termsBox(page)).toHaveAccessibleName("I am 18 or older and accept the Terms and Privacy Notice");
   });
 });
 
@@ -119,7 +401,7 @@ test.describe("log-in", () => {
 
     await page.goto("/login?next=/terms");
     await logIn(page, email, "not the password");
-    await expect(page.getByText("That email and password do not match.")).toHaveCount(1);
+    await expect(page.getByText(AUTH_MESSAGES.badLogin)).toHaveCount(1);
     await expect(page.getByLabel("Email", { exact: true })).toHaveValue(email);
 
     await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
@@ -136,244 +418,38 @@ test.describe("log-in", () => {
     await expect(page).toHaveURL(`${baseURL}/`);
   });
 
-  test("an unconfirmed account is asked to confirm and can resend the email", async ({ page }) => {
+  test("shows the hint for people who signed up with Google", async ({ page }) => {
+    await page.goto("/login");
+    await expect(page.getByText("Signed up with Google? Use Continue with Google.")).toBeVisible();
+  });
+
+  test("an unconfirmed account is told so, and the button sends a new code and opens the code screen", async ({ page }) => {
     const email = uniqueEmail("unconfirmed");
-    await signUp(page, email);
-    const firstLink = await lastEmailedLink(page.request, email);
+    await startSignUp(page, email);
+    const firstCode = await lastEmailedCode(page.request, email);
+    // Another device or a cleared browser: no pending sign-up cookie.
+    await page.context().clearCookies();
 
     await page.goto("/login");
     await logIn(page, email, PASSWORD);
-    await expect(page.getByText("Confirm your email to log in")).toBeVisible();
-
-    // The sign-up email went out moments ago: one email a minute per address.
-    await page.getByRole("button", { name: "Resend confirmation email" }).click();
-    await expect(page.getByText("We just sent you an email. Please wait a minute before trying again.")).toBeVisible();
-    expect(await lastEmailedLink(page.request, email)).toBe(firstLink);
+    await expect(page.getByText("Your email is not confirmed yet")).toBeVisible();
 
     await forgetEmailCooldown(page.request, email);
-    await page.getByRole("button", { name: "Resend confirmation email" }).click();
-    await expect(page.getByText(/we've sent a new link/)).toBeVisible();
-    expect(await lastEmailedLink(page.request, email)).not.toBe(firstLink);
-  });
-});
+    await page.getByRole("button", { name: "Send a new code" }).click();
+    await expect(page).toHaveURL("/signup/verify");
+    await expect(codeHeading(page)).toBeVisible();
+    // The address is filled in for the person.
+    await expect(page.getByLabel("Email", { exact: true })).toHaveValue(email);
 
-test.describe("email links", () => {
-  test("a link that never existed lands on the expired-link screen with a resend form", async ({ page }) => {
-    await followEmailLink(page, "/auth/confirm?token_hash=never-issued&type=email&redirect_to=/");
-    await expect(page).toHaveURL("/login?error=link_expired");
-    await expect(page.getByText("This link has expired or was already used")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Send a new link" })).toBeVisible();
-  });
-
-  test("a link with an unknown type or no token goes straight to the expired-link screen", async ({ page }) => {
-    await page.goto("/auth/confirm?token_hash=x&type=magiclink&redirect_to=/");
-    await expect(page).toHaveURL("/login?error=link_expired");
-    await page.goto("/auth/confirm?type=email");
-    await expect(page).toHaveURL("/login?error=link_expired");
-    await page.goto("/auth/confirm?type=recovery");
-    await expect(page).toHaveURL("/forgot-password?error=link_expired");
-  });
-
-  test("opening a link only shows a Continue page and never uses the token", async ({ page, baseURL }) => {
-    const email = uniqueEmail("scanner");
-    await signUp(page, email);
-    const link = await lastEmailedLink(page.request, email);
-    const token = new URL(link, baseURL).searchParams.get("token_hash")!;
-
-    // What a mail scanner does: open the link (twice, even), and never press anything.
-    const thirdParty: string[] = [];
-    page.on("request", (request) => {
-      if (new URL(request.url()).origin !== baseURL) thirdParty.push(request.url());
-    });
-    for (let i = 0; i < 2; i++) {
-      const response = await page.goto(link);
-      expect(response?.status()).toBe(200);
-      expect(response?.headers()["cache-control"]).toBe("no-store");
-      expect(response?.headers()["referrer-policy"]).toBe("no-referrer");
-    }
-    await expect(page.getByRole("heading", { level: 1, name: "Confirm your email" })).toBeVisible();
-    await expect(page.locator("body")).not.toContainText(token);
-    expect(thirdParty).toEqual([]);
-    // Opening the link signed nobody in and confirmed nothing.
-    await page.goto("/login");
-    await logIn(page, email, PASSWORD);
-    await expect(page.getByText("Confirm your email to log in")).toBeVisible();
-
-    // The person then taps Continue: the token still works.
-    await followEmailLink(page, link);
-    await logInAfterConfirming(page, email);
+    let code = "";
+    await expect(async () => {
+      code = await lastEmailedCode(page.request, email);
+      expect(code).not.toBe(firstCode);
+    }).toPass({ timeout: 5000 });
+    await enterCode(page, code);
+    // Without the cookie of the browser that signed up, the person sets a password (spec 5.1).
+    await createPassword(page, "a fresh password");
     await expect(page).toHaveURL("/");
-    await expectSignedIn(page);
-  });
-
-  test.describe("without JavaScript", () => {
-    test.use({ javaScriptEnabled: false });
-
-    test("the Continue button still works, and is a large tap target", async ({ page }) => {
-      await page.goto("/auth/confirm?token_hash=never-issued&type=recovery&redirect_to=/");
-      const button = page.getByRole("button", { name: "Continue", exact: true });
-      expect((await button.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
-      await button.click();
-      await expect(page).toHaveURL("/forgot-password?error=link_expired");
-    });
-  });
-
-  test("a link that was already used lands on the expired-link screen", async ({ page }) => {
-    const email = uniqueEmail("reused");
-    await signUp(page, email);
-    const link = await lastEmailedLink(page.request, email);
-    await followEmailLink(page, link);
-    await expect(page).toHaveURL("/login?confirmed=1");
-
-    await page.context().clearCookies();
-    await followEmailLink(page, link);
-    await expect(page).toHaveURL("/login?error=link_expired");
-    await expect(page.getByText("This link has expired or was already used")).toBeVisible();
-
-    await forgetEmailCooldown(page.request, email);
-    await page.getByLabel("Email", { exact: true }).first().fill(email);
-    await page.getByRole("button", { name: "Send a new link" }).click();
-    await expect(page.getByText(/we've sent a new link/)).toBeVisible();
-  });
-
-  test("a confirmation link returns to the page the person was heading for, never off-site", async ({ page, baseURL }) => {
-    const email = uniqueEmail("next");
-    await signUp(page, email, "/signup?next=/privacy");
-    const link = await lastEmailedLink(page.request, email);
-    expect(new URL(link, baseURL).searchParams.get("redirect_to")).toBe(`${baseURL}/privacy`);
-    await followEmailLink(page, link);
-    await expect(page).toHaveURL(`/login?confirmed=1&next=${encodeURIComponent("/privacy")}`);
-    await logInAfterConfirming(page, email);
-    await expect(page).toHaveURL("/privacy");
-
-    // An off-site redirect_to is reduced to a path on this site before it reaches the form.
-    await page.goto("/auth/confirm?token_hash=x&type=email&redirect_to=https://evil.com/x");
-    await expect(page.locator('input[name="redirect_to"]')).toHaveValue("/x");
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
-    expect(new URL(page.url()).origin).toBe(baseURL);
-  });
-});
-
-/*
-  Real Supabase keeps the FIRST password when an unconfirmed address signs up twice, so someone
-  could sign up with another person's address and their own password, wait, and keep that
-  password after the real owner confirms. The confirmation link therefore never signs in: the
-  owner logs in, finds their password does not work, and replaces it with Forgot password.
-*/
-test.describe("an address someone else signed up first", () => {
-  test("the owner is not signed in by the link, and Forgot password takes the account back", async ({ page, browser, baseURL }) => {
-    const email = uniqueEmail("prereg");
-    const strangersPassword = "the stranger's password";
-
-    // A stranger signs up with the owner's address and never confirms.
-    await page.goto("/signup");
-    await fillSignUp(page, { name: "Stranger", email, password: strangersPassword });
-    await page.getByRole("checkbox", { name: /I'm 18 or older/ }).check();
-    await page.getByRole("button", { name: "Create account" }).click();
-    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-    await page.context().clearCookies();
-
-    // Later the owner signs up with their own password and confirms through the email they get.
-    await forgetEmailCooldown(page.request, email);
-    await signUp(page, email);
-    await followEmailLink(page, await lastEmailedLink(page.request, email));
-    await expect(page).toHaveURL("/login?confirmed=1");
-
-    // The owner's password does not work: nobody was signed in to the stranger's account.
-    await logInAfterConfirming(page, email);
-    await expect(page.getByText("That email and password do not match.")).toBeVisible();
-
-    // Forgot password replaces the stranger's password.
-    await page.context().clearCookies();
-    const ownersPassword = "the owner's new password";
-    await forgetEmailCooldown(page.request, email);
-    await page.goto("/forgot-password");
-    await page.getByLabel("Email", { exact: true }).fill(email);
-    await page.getByRole("button", { name: "Send reset link" }).click();
-    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-    await followEmailLink(page, await lastEmailedLink(page.request, email));
-    await expect(page).toHaveURL("/reset-password");
-    await page.getByLabel("New password", { exact: true }).fill(ownersPassword);
-    await page.getByLabel("Confirm new password", { exact: true }).fill(ownersPassword);
-    await page.getByRole("button", { name: "Save password" }).click();
-    await expect(page).toHaveURL("/");
-
-    // The stranger's password no longer works.
-    const stranger = await browser.newPage({ baseURL });
-    try {
-      await isolateRateLimits(stranger);
-      await stranger.goto("/login");
-      await logIn(stranger, email, strangersPassword);
-      await expect(stranger.getByText("That email and password do not match.")).toBeVisible();
-    } finally {
-      await stranger.close();
-    }
-  });
-});
-
-test.describe("password reset", () => {
-  test("unknown and known addresses get the same message, and the link sets a new password", async ({ page }) => {
-    const email = uniqueEmail("reset");
-    await createConfirmedUser(page, email);
-
-    await page.goto("/forgot-password");
-    await page.getByLabel("Email", { exact: true }).fill(uniqueEmail("nobody"));
-    await page.getByRole("button", { name: "Send reset link" }).click();
-    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-    const unknown = (await page.getByRole("main").innerText()).replace(/\S+@example\.test/, "<email>");
-
-    await forgetEmailCooldown(page.request, email);
-    await page.goto("/forgot-password");
-    await page.getByLabel("Email", { exact: true }).fill(email);
-    await page.getByRole("button", { name: "Send reset link" }).click();
-    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-    const known = (await page.getByRole("main").innerText()).replace(/\S+@example\.test/, "<email>");
-    expect(known).toBe(unknown);
-
-    await followEmailLink(page, await lastEmailedLink(page.request, email));
-    await expect(page).toHaveURL("/reset-password");
-    const newPassword = "a brand new secret";
-    await page.getByLabel("New password", { exact: true }).fill(newPassword);
-    await page.getByLabel("Confirm new password", { exact: true }).fill(newPassword);
-    await page.getByRole("button", { name: "Save password" }).click();
-    await expect(page).toHaveURL("/");
-    await expectSignedIn(page);
-
-    await page.context().clearCookies();
-    await page.goto("/login");
-    await logIn(page, email, PASSWORD);
-    await expect(page.getByText("That email and password do not match.")).toBeVisible();
-    await page.getByLabel("Password", { exact: true }).fill(newPassword);
-    await page.getByRole("button", { name: "Log in", exact: true }).click();
-    await expect(page).toHaveURL("/");
-  });
-
-  test("an expired reset link explains itself and offers a new one", async ({ page }) => {
-    await followEmailLink(page, "/auth/confirm?token_hash=never-issued&type=recovery&redirect_to=/");
-    await expect(page).toHaveURL("/forgot-password?error=link_expired");
-    await expect(page.getByText("This reset link has expired or was already used.")).toBeVisible();
-    await expect(page.getByText("Enter your email and we will send a new one.")).toBeVisible();
-
-    await page.getByLabel("Email", { exact: true }).fill(uniqueEmail("expired-reset"));
-    await page.getByRole("button", { name: "Send reset link" }).click();
-    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-  });
-
-  test("a reset link used twice ends on the same screen, and a new link works", async ({ page }) => {
-    const email = uniqueEmail("reset-twice");
-    await createConfirmedUser(page, email);
-    const link = await requestResetLink(page, email);
-    await followEmailLink(page, link);
-    await expect(page).toHaveURL("/reset-password");
-
-    await page.context().clearCookies();
-    await followEmailLink(page, link);
-    await expect(page).toHaveURL("/forgot-password?error=link_expired");
-    await expect(page.getByText("This reset link has expired or was already used.")).toBeVisible();
-
-    await followEmailLink(page, await requestResetLink(page, email));
-    await expect(page).toHaveURL("/reset-password");
-    await expect(page.getByRole("heading", { level: 1, name: "Choose a new password" })).toBeVisible();
   });
 });
 
@@ -415,6 +491,8 @@ test.describe("fields", () => {
     const newPassword = page.getByLabel("Password", { exact: true });
     await expect(newPassword).toHaveAttribute("type", "password");
     await expect(newPassword).toHaveAttribute("autocomplete", "new-password");
+    await page.getByRole("button", { name: "Show password" }).click();
+    await expect(newPassword).toHaveAttribute("type", "text");
 
     await page.goto("/login");
     await expectEmailField();
@@ -426,13 +504,16 @@ test.describe("fields", () => {
     await page.getByRole("button", { name: "Hide password" }).click();
     await expect(password).toHaveAttribute("type", "password");
 
+    await page.goto("/signup/verify");
+    await expectEmailField();
+
     await page.goto("/forgot-password");
     await expectEmailField();
   });
 
   test("the terms checkbox row and the footer links are at least 44px tall", async ({ page }) => {
     await page.goto("/signup");
-    const box = page.getByRole("checkbox", { name: /I'm 18 or older/ });
+    const box = termsBox(page);
     const row = page.locator("label").filter({ has: box });
     const rowBox = await row.boundingBox();
     expect(rowBox?.height ?? 0).toBeGreaterThanOrEqual(44);

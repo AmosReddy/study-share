@@ -8,7 +8,6 @@ import {
   expireAllCodes,
   getFakeAuthStore,
   resetFakeAuthStore,
-  type FakeLinkEntry,
 } from "./fake-auth-provider";
 
 function jar() {
@@ -25,8 +24,12 @@ const input = {
   password: "correct horse",
   displayName: "Ada",
   termsVersion: "2026-11",
-  redirectTo: "http://localhost:3000/after",
 };
+
+/** Signs up and confirms through the emailed code, which also signs this provider's browser in. */
+async function confirmByCode(p: ReturnType<typeof createFakeAuthProvider>, email: string) {
+  await p.verifyCode({ email, code: p.outbox.lastCodeFor(email)!.code, kind: "signup" });
+}
 
 describe("getFakeAuthStore", () => {
   test("returns one shared store, so separately built providers see the same users and outbox", async () => {
@@ -35,7 +38,7 @@ describe("getFakeAuthStore", () => {
     expect(getFakeAuthStore()).toBe(getFakeAuthStore());
     await a.signUpWithPassword({ ...input, email: "shared@example.com" });
     expect(b.outbox).toBe(a.outbox);
-    expect(b.outbox.lastFor("shared@example.com")?.kind).toBe("confirm");
+    expect(b.outbox.lastCodeFor("shared@example.com")?.purpose).toBe("signup");
   });
 
   test("keeps the store on globalThis rather than in module state", () => {
@@ -46,7 +49,7 @@ describe("getFakeAuthStore", () => {
 });
 
 describe("resetFakeAuthStore", () => {
-  test("empties the shared store in place: users, tokens, Google codes and the outbox", async () => {
+  test("empties the shared store in place: users, codes, Google codes and the outbox", async () => {
     const store = getFakeAuthStore();
     const cookies = jar();
     const p = createFakeAuthProvider({ store, cookies });
@@ -60,7 +63,7 @@ describe("resetFakeAuthStore", () => {
 
     expect(getFakeAuthStore()).toBe(store);
     expect(store.users.size).toBe(0);
-    expect(store.tokens.size).toBe(0);
+    expect(store.codes.size).toBe(0);
     expect(store.oauthCodes.size).toBe(0);
     expect(store.outbox.entries).toHaveLength(0);
     expect(p.outbox).toBe(store.outbox);
@@ -81,41 +84,23 @@ describe("createFakeAuthStore", () => {
   });
 });
 
-describe("fake outbox", () => {
-  test("records a confirm link shaped like the real one, with a unique unguessable token each time", async () => {
-    const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
-    await p.signUpWithPassword(input);
-    await p.resendConfirmation({ email: input.email, redirectTo: input.redirectTo });
-    const [first, second] = p.outbox.entries as FakeLinkEntry[];
-    expect(first.to).toBe("ada@example.com");
-    expect(first.kind).toBe("confirm");
-    expect(first.url.startsWith("/auth/confirm?")).toBe(true);
-    const t1 = new URL(first.url, "http://x").searchParams.get("token_hash")!;
-    const t2 = new URL(second.url, "http://x").searchParams.get("token_hash")!;
-    expect(t1).toMatch(/^[0-9a-f-]{36}$/);
-    expect(t1).not.toBe(t2);
-    expect(p.outbox.lastFor("ADA@example.com")).toBe(second);
-  });
-});
-
 describe("fake provider safety", () => {
   test("the session lives in the cookie jar, so a fresh provider on the same jar is signed in", async () => {
     const store = createFakeAuthStore();
     const cookies = jar();
     const a = createFakeAuthProvider({ store, cookies });
     await a.signUpWithPassword(input);
-    const token = new URL(a.outbox.lastFor(input.email)!.url, "http://x").searchParams.get("token_hash")!;
-    await a.confirmEmailToken({ tokenHash: token, type: "email" });
+    await confirmByCode(a, input.email);
     const b = createFakeAuthProvider({ store, cookies });
     expect((await b.getUser())?.email).toBe("ada@example.com");
     expect(await createFakeAuthProvider({ store, cookies: jar() }).getUser()).toBeNull();
   });
 
-  test("errors never contain a password or a token", async () => {
+  test("errors never contain a password or a code", async () => {
     const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
     await p.signUpWithPassword(input);
-    const token = new URL(p.outbox.lastFor(input.email)!.url, "http://x").searchParams.get("token_hash")!;
-    await p.confirmEmailToken({ tokenHash: token, type: "email" });
+    const token = p.outbox.lastCodeFor(input.email)!.code;
+    await confirmByCode(p, input.email);
     const errors: string[] = [];
     for (const attempt of [
       () => p.updatePassword("short"),
@@ -150,8 +135,6 @@ describe("fake codes", () => {
     expect(sent).toEqual({ to: "ada@example.com", kind: "code", purpose: "signup", code: expect.any(String) });
     expect(sent?.kind === "code" && sent.code).toMatch(new RegExp(`^\\d{${CODE_LENGTH}}$`));
     expect(p.outbox.lastCodeFor("ADA@example.com")).toBe(sent);
-    // The deprecated link lookup ignores code emails.
-    expect(p.outbox.lastFor("ada@example.com")).toBeUndefined();
   });
 
   test("codes are random, not a fixed or counting value", async () => {
@@ -170,13 +153,6 @@ describe("fake codes", () => {
     await p.signUpWithPassword(codeInput);
     await p.sendPasswordResetCode({ email: "ada@example.com" });
     expect(p.outbox.latestFor("ada@example.com")).toMatchObject({ kind: "code", purpose: "recovery" });
-  });
-
-  test("a sign-up with the deprecated redirectTo still records a link, so the existing flow keeps working", async () => {
-    const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
-    await p.signUpWithPassword(input);
-    expect(p.outbox.latestFor("ada@example.com")).toMatchObject({ kind: "confirm" });
-    expect(p.outbox.lastCodeFor("ada@example.com")).toBeUndefined();
   });
 
   test("expireAllCodes defaults to the shared store, and a reset clears the expiry and every code", async () => {
@@ -313,8 +289,7 @@ describe("failNextSignOut (test mode only)", () => {
     const cookies = jar();
     const provider = createFakeAuthProvider({ store, cookies });
     await provider.signUpWithPassword({ ...input, email: "out@example.com" });
-    const token = new URL(provider.outbox.lastFor("out@example.com")!.url, "http://x").searchParams.get("token_hash")!;
-    await provider.confirmEmailToken({ tokenHash: token, type: "email" });
+    await confirmByCode(provider, "out@example.com");
 
     store.failNextSignOut = true;
     await expect(provider.signOut()).rejects.toMatchObject({ name: "AuthProviderError", code: "unavailable" });

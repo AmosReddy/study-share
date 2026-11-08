@@ -11,6 +11,12 @@ export type FormState = {
   values?: Record<string, string>;
   /** A same-site address the browser must load as a full page (see startGoogleAction). */
   navigateTo?: string;
+  /** Seconds until another email may be sent: where the Resend countdown starts. */
+  retryAfterSeconds?: number;
+  /** A success that still needs saying (for example the password changed, other devices maybe not signed out). */
+  notice?: string;
+  /** With `notice`: the same-site path the person continues to. */
+  continueTo?: string;
 };
 
 export type FormAction = (state: FormState, formData: FormData) => Promise<FormState>;
