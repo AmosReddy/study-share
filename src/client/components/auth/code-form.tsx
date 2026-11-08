@@ -5,6 +5,7 @@ import { Button } from "@/client/components/ui/button";
 import { cn } from "@/client/lib/utils";
 import { AUTH_MESSAGES } from "@/shared/auth-messages";
 import { CODE_LENGTH } from "@/shared/auth-schemas";
+import { ErrorAnnouncer } from "./error-announcer";
 import { FormMessage } from "./form-message";
 import { SubmitButton } from "./submit-button";
 import { describedBy, EmailField, FieldError, inputClassName } from "./text-field";
@@ -25,6 +26,8 @@ type CodeFormProps = {
   action: (formData: FormData) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   formRef: RefObject<HTMLFormElement | null>;
+  /** The live region for an error that focus cannot announce: from useAuthForm. */
+  announcerRef: RefObject<HTMLParagraphElement | null>;
   pending: boolean;
   values?: Record<string, string>;
   fieldErrors?: Record<string, string>;
@@ -54,6 +57,7 @@ export function CodeForm({
   action,
   onSubmit,
   formRef,
+  announcerRef,
   pending,
   values = {},
   fieldErrors = {},
@@ -72,6 +76,7 @@ export function CodeForm({
   return (
     <>
       <form ref={formRef} action={action} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
+        <ErrorAnnouncer announcerRef={announcerRef} />
         <input type="hidden" name="next" value={next} />
         {otherError ? <FormMessage tone="error" title={otherError} /> : null}
         {email === null ? (

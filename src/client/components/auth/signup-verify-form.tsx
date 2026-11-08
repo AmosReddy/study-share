@@ -35,7 +35,7 @@ export function SignupVerifyForm({
   resendAction,
   changeEmailAction,
 }: SignupVerifyFormProps) {
-  const { state, formAction, pending, formRef, onSubmit } = useAuthForm(verifyAction);
+  const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(verifyAction);
   const [resendState, resendFormAction, resendPending] = useActionState(resendAction, IDLE);
 
   // One code check at a time: a double tap must not send the code twice (the second would find
@@ -101,6 +101,7 @@ export function SignupVerifyForm({
         action={formAction}
         onSubmit={submitOnce}
         formRef={formRef}
+        announcerRef={announcerRef}
         pending={pending}
         values={state.values}
         fieldErrors={fieldErrors}

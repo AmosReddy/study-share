@@ -5,6 +5,7 @@ import { FormMessage } from "./form-message";
 import { SubmitButton } from "./submit-button";
 import { EmailField } from "./text-field";
 import { useAuthForm } from "./use-auth-form";
+import { ErrorAnnouncer } from "./error-announcer";
 
 type ResendFormProps = {
   action: FormAction;
@@ -19,10 +20,11 @@ type ResendFormProps = {
  * the code screen. The reply is the same whether or not a code was sent.
  */
 export function ResendForm({ action, next, email, buttonLabel }: ResendFormProps) {
-  const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
+  const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
 
   return (
     <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-4">
+      <ErrorAnnouncer announcerRef={announcerRef} />
       <input type="hidden" name="next" value={next} />
       {email === undefined ? (
         <EmailField id="resend-email" defaultValue={state.values?.email} error={state.fieldErrors?.email} />

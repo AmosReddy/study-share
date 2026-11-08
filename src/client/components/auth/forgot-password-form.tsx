@@ -8,10 +8,11 @@ import { FormMessage } from "./form-message";
 import { SubmitButton } from "./submit-button";
 import { EmailField } from "./text-field";
 import { useAuthForm } from "./use-auth-form";
+import { ErrorAnnouncer } from "./error-announcer";
 
 /** `notice` shows above the form, for example when a reset link had expired. */
 export function ForgotPasswordForm({ action, notice }: { action: FormAction; notice?: ReactNode }) {
-  const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
+  const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const values = state.values ?? {};
   const backToLogin = (
     <Link href="/login" className={linkTarget}>
@@ -41,6 +42,7 @@ export function ForgotPasswordForm({ action, notice }: { action: FormAction; not
       footer={backToLogin}
     >
       <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
+        <ErrorAnnouncer announcerRef={announcerRef} />
         {notice}
         {state.formError ? <FormMessage tone="error" title={state.formError} /> : null}
         <EmailField defaultValue={values.email} error={state.fieldErrors?.email} />

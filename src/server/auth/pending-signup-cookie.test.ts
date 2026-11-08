@@ -4,6 +4,7 @@ import {
   PENDING_SIGNUP_COOKIE,
   PENDING_SIGNUP_MAX_AGE_SECONDS,
   pendingCookieName,
+  pendingForCodeScreen,
   pendingCookieOptions,
   readPendingSignup,
   signPendingSignup,
@@ -110,5 +111,26 @@ describe("pending sign-up cookie", () => {
   it("is named with the __Secure- prefix on https (allowed with path /signup), and plainly on http", () => {
     expect(pendingCookieName(true)).toBe("__Secure-pending-signup");
     expect(pendingCookieName(false)).toBe("pending-signup");
+  });
+});
+
+describe("pendingForCodeScreen", () => {
+  const pending = { userId: "user-a", email: "a@example.invalid" };
+
+  it("keeps the pending sign-up when the log-in page sent no code since", () => {
+    expect(pendingForCodeScreen(pending, null)).toBe(pending);
+  });
+
+  it("keeps it when the log-in page sent the code to the same address (case and spaces ignored)", () => {
+    expect(pendingForCodeScreen(pending, " A@Example.invalid ")).toBe(pending);
+  });
+
+  it("ignores it when the log-in page has since sent a code to another address", () => {
+    expect(pendingForCodeScreen(pending, "b@example.invalid")).toBeNull();
+  });
+
+  it("is null without a pending sign-up", () => {
+    expect(pendingForCodeScreen(null, "b@example.invalid")).toBeNull();
+    expect(pendingForCodeScreen(null, null)).toBeNull();
   });
 });

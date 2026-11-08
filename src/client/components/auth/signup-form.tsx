@@ -12,6 +12,7 @@ import { SubmitButton } from "./submit-button";
 import { TermsCheckbox } from "./terms-checkbox";
 import { EmailField, TextField } from "./text-field";
 import { useAuthForm } from "./use-auth-form";
+import { ErrorAnnouncer } from "./error-announcer";
 
 type SignupFormProps = {
   action: FormAction;
@@ -24,7 +25,7 @@ type SignupFormProps = {
 
 /** The sign-up form. On success the action opens the code screen (/signup/verify). */
 export function SignupForm({ action, next, loginHref, forgotHref, alternative }: SignupFormProps) {
-  const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
+  const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const values = state.values ?? {};
   const errors = state.fieldErrors ?? {};
 
@@ -42,6 +43,7 @@ export function SignupForm({ action, next, loginHref, forgotHref, alternative }:
       }
     >
       <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
+        <ErrorAnnouncer announcerRef={announcerRef} />
         <input type="hidden" name="next" value={next} />
         {state.formError ? (
           <FormMessage tone="error" title={state.formError}>

@@ -9,6 +9,7 @@ import { FormMessage } from "./form-message";
 import { PasswordField } from "./password-field";
 import { SubmitButton } from "./submit-button";
 import { useAuthForm } from "./use-auth-form";
+import { ErrorAnnouncer } from "./error-announcer";
 
 type SetPasswordFormProps = {
   action: FormAction;
@@ -26,7 +27,7 @@ type SetPasswordFormProps = {
  * of a password reset. Show/hide on both fields, `new-password` for password managers.
  */
 export function SetPasswordForm({ action, next, title, description, accountEmail, recovery }: SetPasswordFormProps) {
-  const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
+  const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const errors = state.fieldErrors ?? {};
 
   if (state.status === "done" && state.notice) {
@@ -45,6 +46,7 @@ export function SetPasswordForm({ action, next, title, description, accountEmail
   return (
     <AuthCard title={title} description={description}>
       <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
+        <ErrorAnnouncer announcerRef={announcerRef} />
         <input type="hidden" name="next" value={next} />
         {/* Lets password managers file the new password under this account. */}
         <input type="email" name="username" autoComplete="username" value={accountEmail} readOnly hidden />

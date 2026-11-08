@@ -88,6 +88,19 @@ export function readPendingSignup(secret: string, value: string | undefined, now
 }
 
 /**
+ * The pending sign-up the code screen may act on. `lastCodeAddress` is where the log-in page's
+ * "send a new code" last sent a code from this browser (null if it did not): that request is
+ * newer than any sign-up (a sign-up clears it), so a pending sign-up for ANOTHER address is
+ * stale and is ignored; otherwise the code would go to one address while the screen checked
+ * another. The same address keeps the pending sign-up (and its spec 5.1 binding).
+ */
+export function pendingForCodeScreen(pending: PendingSignup | null, lastCodeAddress: string | null): PendingSignup | null {
+  if (pending === null || lastCodeAddress === null) return pending;
+  const same = pending.email.trim().toLowerCase() === lastCodeAddress.trim().toLowerCase();
+  return same ? pending : null;
+}
+
+/**
  * Options for writing the cookie: httpOnly (no browser code reads it), sameSite lax, Secure on
  * https, only sent to the sign-up pages (`/signup` and `/signup/verify`), 30 minutes.
  * `secure` is siteUsesHttps() from the auth cookie options.

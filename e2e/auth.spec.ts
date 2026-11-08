@@ -89,6 +89,16 @@ async function createPassword(page: Page, password: string) {
   await page.getByRole("button", { name: "Save password" }).click();
 }
 
+/** Types a code into the focused code box and submits with Enter, as the phone keyboard's Go does. */
+async function submitCodeWithEnter(page: Page, code: string) {
+  await codeBox(page).focus();
+  await codeBox(page).fill(code);
+  await codeBox(page).press("Enter");
+}
+
+/** A live region (role="alert") saying exactly `message`. */
+const liveError = (page: Page, message: string) => page.getByRole("alert").filter({ hasText: new RegExp(`^${message.replace(/[.?]/g, "\\$&")}$`) });
+
 /** The server-action POSTs a page sends to `path`. */
 function countActionPosts(page: Page, path: string): () => number {
   let count = 0;
@@ -121,18 +131,31 @@ test.describe("sign-up with an emailed code", () => {
     await startSignUp(page, email);
     const code = await lastEmailedCode(page.request, email);
 
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      await enterCode(page, wrongCode(code));
-      await expect(page.getByText(AUTH_MESSAGES.codeInvalid)).toBeVisible();
+    // Attempts 1 to 4 with Enter (the phone keyboard's Go): focus never leaves the code box, so
+    // focusing it cannot announce the error; the live region must, and the box keeps focus.
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await submitCodeWithEnter(page, wrongCode(code));
+      await expect(page.getByText(AUTH_MESSAGES.codeInvalid).first()).toBeVisible();
       await expect(codeHeading(page)).toBeVisible();
-      // The error belongs to the code box, which is marked and focused for a retry.
-      await expect(codeBox(page)).toHaveAttribute("aria-invalid", "true");
-      await expect(codeBox(page)).toHaveAccessibleDescription(new RegExp(AUTH_MESSAGES.codeInvalid.replace(/\./g, "\\.")));
+      await expect(liveError(page, AUTH_MESSAGES.codeInvalid)).toHaveCount(1);
       await expect(codeBox(page)).toBeFocused();
+      // The error still belongs to the code box.
+      await expect(codeBox(page)).toHaveAttribute("aria-invalid", "true");
+      await expect(codeBox(page)).toHaveAccessibleDescription(AUTH_MESSAGES.codeInvalid);
     }
 
-    await enterCode(page, code);
-    await expect(page.getByText(AUTH_MESSAGES.tooManyCodes)).toBeVisible();
+    // Attempt 5 by tapping Verify: focus moves back to the code box, which reads its error once;
+    // the live region stays empty, so it is not said twice.
+    await enterCode(page, wrongCode(code));
+    await expect(codeBox(page)).toBeFocused();
+    await expect(codeBox(page)).toHaveAccessibleDescription(AUTH_MESSAGES.codeInvalid);
+    await expect(liveError(page, AUTH_MESSAGES.codeInvalid)).toHaveCount(0);
+
+    // Even the right code is refused now, with the lock message, announced from the focused box.
+    await submitCodeWithEnter(page, code);
+    await expect(liveError(page, AUTH_MESSAGES.tooManyCodes)).toHaveCount(1);
+    await expect(codeBox(page)).toBeFocused();
+    await expect(codeBox(page)).toHaveAccessibleDescription(AUTH_MESSAGES.tooManyCodes);
     await expect(page).toHaveURL(/\/signup\/verify/);
   });
 
@@ -287,6 +310,15 @@ test.describe("sign-up with an emailed code", () => {
     await enterCode(page, spaced(code, "-"));
 
     await expect(page).toHaveURL("/signup/password");
+    // A mismatch submitted with Enter from the confirm field is announced there, and focus stays.
+    await expect(passwordHeading(page)).toBeVisible();
+    await page.getByLabel("New password", { exact: true }).fill("my new device password");
+    const confirm = page.getByLabel("Confirm new password", { exact: true });
+    await confirm.fill("something else entirely");
+    await confirm.press("Enter");
+    await expect(liveError(page, AUTH_MESSAGES.passwordsDiffer)).toHaveCount(1);
+    await expect(confirm).toBeFocused();
+    await expect(confirm).toHaveAttribute("aria-invalid", "true");
     await createPassword(page, "my new device password");
     await expect(page).toHaveURL("/");
     await expect(accountMenu(page, "Asha Rao")).toBeVisible();
@@ -450,6 +482,43 @@ test.describe("log-in", () => {
     // Without the cookie of the browser that signed up, the person sets a password (spec 5.1).
     await createPassword(page, "a fresh password");
     await expect(page).toHaveURL("/");
+  });
+});
+
+test.describe("a leftover sign-up in this browser and the log-in page's new code", () => {
+  test("the code screen shows and checks the address the new code went to, not the leftover one", async ({ page, browser, baseURL }) => {
+    // This browser started a sign-up for A and still holds its pending cookie.
+    const first = uniqueEmail("leftover-a");
+    await startSignUp(page, first);
+
+    // B is someone's unconfirmed sign-up from another browser.
+    const second = uniqueEmail("leftover-b");
+    const other = await browser.newPage({ baseURL });
+    try {
+      await isolateRateLimits(other);
+      await startSignUp(other, second);
+    } finally {
+      await other.close();
+    }
+
+    // In this browser, B logs in, is told the email is not confirmed, and asks for a new code.
+    await page.goto("/login");
+    await logIn(page, second, PASSWORD);
+    await expect(page.getByText("Your email is not confirmed yet")).toBeVisible();
+    await forgetEmailCooldown(page.request, second);
+    await page.getByRole("button", { name: "Send a new code" }).click();
+    await expect(page).toHaveURL("/signup/verify");
+    await expect(codeHeading(page)).toBeVisible();
+
+    // The screen is about B (the code went there), not A from the leftover cookie.
+    await expect(page.getByRole("main")).not.toContainText(first);
+    await expect(page.getByLabel("Email", { exact: true })).toHaveValue(second);
+
+    // B's newest code signs in (with the one-step password of spec 5.1).
+    await enterCode(page, await lastEmailedCode(page.request, second));
+    await createPassword(page, "b's own new password");
+    await expect(page).toHaveURL("/");
+    expect(await passwordWorks(page, second, "b's own new password")).toBe(true);
   });
 });
 

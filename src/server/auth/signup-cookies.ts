@@ -9,6 +9,7 @@ import {
   PENDING_SIGNUP_MAX_AGE_SECONDS,
   pendingCookieName,
   pendingCookieOptions,
+  pendingForCodeScreen,
   readPendingSignup,
   signPendingSignup,
   type PendingSignup,
@@ -34,12 +35,25 @@ const prefillSchema = z.email().max(320);
 
 const prefixed = (name: string, secure: boolean) => (secure ? `__Secure-${name}` : name);
 
-/** The pending sign-up this browser created, or null (missing, forged, expired or unreadable). */
+/** The address the log-in page last sent a code to from this browser, or null. */
+async function readSignupEmailCookie(): Promise<string | null> {
+  const store = await cookies();
+  const parsed = prefillSchema.safeParse(store.get(prefixed(SIGNUP_EMAIL_COOKIE, siteUsesHttps()))?.value);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The pending sign-up this browser created, or null (missing, forged, expired or unreadable,
+ * or for another address than the one the log-in page has since sent a code to: see
+ * pendingForCodeScreen). Every reader goes through here, so the screen and its actions agree.
+ */
 export async function readPendingSignupCookie(): Promise<PendingSignup | null> {
   const store = await cookies();
   const value = store.get(pendingCookieName(siteUsesHttps()))?.value;
+  const lastCodeAddress = await readSignupEmailCookie();
   if (!value) return null;
-  return readPendingSignup(getServerEnv().SUPABASE_SERVICE_ROLE_KEY, value, Date.now());
+  const pending = readPendingSignup(getServerEnv().SUPABASE_SERVICE_ROLE_KEY, value, Date.now());
+  return pendingForCodeScreen(pending, lastCodeAddress);
 }
 
 /** Remembers the pending account a sign-up just created. Server actions only. */
@@ -84,11 +98,10 @@ export async function readCodeScreenState(): Promise<CodeScreenState> {
   // The cookie's age and the cooldown are read against the clock: only for a real request,
   // never while a prefetch prerenders the page.
   await connection();
-  const store = await cookies();
-  const prefill = prefillSchema.safeParse(store.get(prefixed(SIGNUP_EMAIL_COOKIE, siteUsesHttps()))?.value);
+  const prefill = await readSignupEmailCookie();
   const pending = await readPendingSignupCookie();
   const email = pending?.email ?? null;
-  const prefillEmail = email === null && prefill.success ? prefill.data : "";
+  const prefillEmail = email === null && prefill !== null ? prefill : "";
   const address = email ?? prefillEmail;
   const cooldownSeconds = address ? await secondsUntilEmailAllowed(getRateLimiter(), address) : 0;
   return { email, prefillEmail, cooldownSeconds };

@@ -83,7 +83,9 @@ export async function changeEmailAction(form: FormData): Promise<void> {
  * The log-in page's "send a new code" for an address that is not confirmed yet. It cannot
  * prove which pending account is this person's (the log-in use-case returns no id), so it sets
  * no signed cookie: the code screen asks for the address (pre-filled) and a code from it then
- * takes the one-step password path of spec 5.1.
+ * takes the one-step password path of spec 5.1. The pending cookie (path /signup) is not sent
+ * here, so it cannot be compared now; the address cookie written below makes every later read
+ * ignore a pending cookie for another address (pendingForCodeScreen).
  */
 export async function sendNewCodeAction(_state: FormState, form: FormData): Promise<FormState> {
   const values = { email: text(form, "email") };

@@ -58,7 +58,8 @@ test("the account page shows the message by the button, stays put, and a retry w
   await failNextSignOut(page.request);
   await button.click();
 
-  await expect(page.getByRole("main").getByRole("alert")).toHaveText(MESSAGE);
+  // The form also holds an empty live region for field errors (see useAuthForm), so pick the message.
+  await expect(page.getByRole("main").getByRole("alert").filter({ hasText: MESSAGE })).toHaveText(MESSAGE);
   await expect(page).toHaveURL("/account");
   await expect(page.getByRole("banner").getByRole("button", { name: "Asha Rao", exact: true })).toBeVisible();
   await expect(button).toBeEnabled();

@@ -6,6 +6,7 @@ import { FormMessage } from "./form-message";
 import { SubmitButton } from "./submit-button";
 import { TextField } from "./text-field";
 import { useAuthForm } from "./use-auth-form";
+import { ErrorAnnouncer } from "./error-announcer";
 
 type AccountFormProps = {
   action: FormAction;
@@ -17,7 +18,7 @@ type AccountFormProps = {
 
 /** The account page: change the display name, see the email (read-only), log out. */
 export function AccountForm({ action, logOutAction, name, email }: AccountFormProps) {
-  const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
+  const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const {
     state: logOutState,
     formAction: logOutFormAction,
@@ -31,6 +32,7 @@ export function AccountForm({ action, logOutAction, name, email }: AccountFormPr
   return (
     <AuthCard title="Account" description="How you appear to people in your groups.">
       <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
+        <ErrorAnnouncer announcerRef={announcerRef} />
         {state.formError ? <FormMessage tone="error" title={state.formError} /> : null}
         {state.status === "done" ? <FormMessage tone="success" title="Your name has been saved." /> : null}
         <TextField

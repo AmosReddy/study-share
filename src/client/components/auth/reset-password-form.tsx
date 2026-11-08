@@ -7,14 +7,16 @@ import { FormMessage } from "./form-message";
 import { PasswordField } from "./password-field";
 import { SubmitButton } from "./submit-button";
 import { useAuthForm } from "./use-auth-form";
+import { ErrorAnnouncer } from "./error-announcer";
 
 export function ResetPasswordForm({ action }: { action: FormAction }) {
-  const { state, formAction, pending, formRef, onSubmit } = useAuthForm(action);
+  const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const errors = state.fieldErrors ?? {};
 
   return (
     <AuthCard title="Choose a new password" description="Use at least 8 characters. You'll stay logged in on this device.">
       <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
+        <ErrorAnnouncer announcerRef={announcerRef} />
         {state.formError ? (
           <FormMessage tone="error" title={state.formError}>
             <Link href="/forgot-password" className={linkTarget}>
