@@ -141,3 +141,37 @@ export async function saveNewPassword(page: Page, password: string): Promise<voi
   await page.getByLabel("Confirm new password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Save password" }).click();
 }
+
+/** A group made through the Create a group form, with what its invite and address look like. */
+export type CreatedGroup = { id: string; path: string; invitePath: string; token: string; code: string };
+
+/**
+ * Creates a group through the real /groups/new form as the person signed in on `page`, and
+ * leaves the page on the group's Library. The password (for "password" mode) is typed in and
+ * never returned: callers already know it.
+ */
+export async function createGroupThroughForm(
+  page: Page,
+  { name, mode, password = "maths-key-42" }: { name: string; mode: "password" | "link"; password?: string },
+): Promise<CreatedGroup> {
+  await page.goto("/groups/new");
+  await page.getByLabel("Group name", { exact: true }).fill(name);
+  if (mode === "link") await page.getByRole("radio", { name: /Link only/ }).check();
+  else await page.getByLabel("Group password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Create group" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Group created" })).toBeVisible();
+
+  const link = (await page.getByTestId("invite-link").textContent())?.trim() ?? "";
+  const code = (await page.getByTestId("invite-code").textContent())?.trim() ?? "";
+  const href = (await page.getByRole("link", { name: "Open the group" }).getAttribute("href")) ?? "";
+  const id = /^\/groups\/([0-9a-f-]{36})$/.exec(href)?.[1] ?? "";
+  expect(id).not.toBe("");
+  const invitePath = new URL(link).pathname;
+  expect(invitePath).toMatch(/^\/invite\/[A-Za-z0-9_-]{43}$/);
+  expect(code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/);
+
+  await page.getByRole("link", { name: "Open the group" }).click();
+  await expect(page).toHaveURL(`/groups/${id}`);
+  await expect(page.getByRole("heading", { level: 1, name, exact: true })).toBeVisible();
+  return { id, path: `/groups/${id}`, invitePath, token: invitePath.split("/invite/")[1] ?? "", code };
+}

@@ -209,6 +209,7 @@ Each phase ends deployed, tested and merged. Each gets its own detailed task pla
 - **Done when:** a pull request runs CI, gets a preview link, and merging deploys to production.
 
 ### Phase 1: Accounts and groups
+- **Status:** Phase 1a (accounts) is done. Phase 1b (create group, invite link and code, join, member list, leave, owner settings) is built and awaiting live acceptance ([PHASE_1B_ACCEPTANCE.md](PHASE_1B_ACCEPTANCE.md)). Email invites, remove member, transfer ownership and delete group are Phase 1c.
 - Register, Google sign-in, email verification, password reset and profile.
 - Age confirmation, short terms and privacy notice, with acceptance recorded.
 - Create group, group list, join mode setting, invite link and code, join by password.
