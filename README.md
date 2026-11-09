@@ -22,7 +22,18 @@ npm run dev                  # http://localhost:3000
 
 Never commit `.env.local`. It holds secrets.
 
-Accounts need setup outside the code (Supabase Auth settings, Gmail for email, Google sign-in, Vercel variables). The click-by-click guide is [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md).
+Accounts need setup outside the code (Supabase Auth settings and the two code-only email templates, Gmail for email, Google sign-in, Vercel variables). The click-by-click guide is [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md). Nothing secret belongs in the repository: secrets live in `.env.local`, a production settings file kept outside the project folder, and the dashboards.
+
+## Sign-in
+
+- **Email sign-up with an emailed 6-digit code.** Name, email, password and one tick box, then the code from the email. The email contains the code only: there is no verification link anywhere. A person who enters the code on a different device from the one they signed up on creates a password on the spot and accepts the Terms again.
+- **Continue with Google**, with the Google account chooser shown every time. Pressing the button records the 18+ and Terms acceptance.
+- **Forgot password by code**: email, code, new password. Other devices are signed out.
+- **Log in** with email and password. One generic error for a wrong email or password.
+- Sign-up says clearly when an email already has an account (or is registered with Google). A newer sign-up replaces an older unconfirmed one, so a stranger's earlier password never works.
+- Both Supabase projects must issue **6-digit codes** (`Email OTP Length = 6`) that last 600 seconds, and use the code-only templates. The setup guide has the exact steps.
+
+The design is in [the registration redesign spec](docs/superpowers/specs/2026-11-07-registration-redesign-design.md); it replaces the sign-up, confirmation and reset parts of [the Phase 1 design](docs/superpowers/specs/2026-11-06-phase-1-accounts-and-groups-design.md).
 
 ### Settings
 
@@ -49,7 +60,9 @@ Accounts need setup outside the code (Supabase Auth settings, Gmail for email, G
 | `npm run db:generate` | Create a migration after changing `src/server/db/schema.ts` |
 | `npm run db:migrate` | Apply migrations using `DATABASE_MIGRATION_URL` |
 | `npm run check:services` | Check the database, file storage, email login and auth (it creates a throwaway confirmed user, signs in, signs out and deletes it) against the settings in `.env.local` |
-| `npm run check:auth-behaviour` | Probe how the real Supabase Auth behaves in the cases our test double copies. **Dev project only**: it creates and deletes test users, sends about three emails to plus-addresses of the project mailbox, and refuses production settings |
+| `npm run check:auth-behaviour` | Probe how the real Supabase Auth behaves for emailed codes, passwords and sessions (the cases our test double copies), and show the length of the codes the project issues. **Dev project only**: it creates and deletes test users, sends up to about a dozen emails to plus-addresses of the project mailbox, takes several minutes, and refuses production settings |
+
+To run the services check against production, load only the production settings file (kept outside the project folder): `npx tsx --conditions=react-server --env-file="<path to your production file>" scripts/check-services.ts`. Never point `check:auth-behaviour` at production.
 
 ## How the code is organised
 
