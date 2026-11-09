@@ -426,11 +426,11 @@ export function createFakeAuthProvider(deps: {
       requireUser().termsVersion = null;
     },
 
-    async resetUserMetadata(userId, { displayName }) {
+    async resetUserMetadata(userId, { displayName, acceptedTermsVersion }) {
       const u = store.users.get(userId);
       if (!u) throw new AuthProviderError("unavailable", "The account could not be updated.");
       u.displayName = displayName;
-      u.termsVersion = null;
+      u.termsVersion = acceptedTermsVersion ?? null;
     },
 
     async updateDisplayName(name) {

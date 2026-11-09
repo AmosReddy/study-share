@@ -53,7 +53,8 @@ const serverEnvSchema = z
     // "fake" swaps outside services for in-memory test doubles. Never allowed on production data.
     SERVICES_MODE: z.enum(["real", "fake"]).default("real"),
 
-    // The public address of this deployment, used in email links. Empty counts as not set.
+    // The public address of this deployment, used for Google sign-in's return address and the
+    // sign-in cookies. Empty counts as not set.
     NEXT_PUBLIC_SITE_URL: z
       .string()
       .optional()
@@ -105,8 +106,8 @@ export function parseServerEnv(
       );
     }
   }
-  // Production must say where it lives: without it, email links, Google sign-in and cookies
-  // would fall back to a Vercel deployment address.
+  // Production must say where it lives: without it, Google sign-in and cookies would fall back
+  // to a Vercel deployment address.
   if (env.APP_ENV === "production" && !env.NEXT_PUBLIC_SITE_URL) {
     throw new EnvError("Missing or invalid environment variables: NEXT_PUBLIC_SITE_URL (required when APP_ENV is production)");
   }

@@ -192,7 +192,6 @@ function providerFailure(error: unknown): Failure {
   }
 }
 
-const confirmRedirect = (deps: Deps, next: unknown) => deps.siteUrl + safeNextPath(next);
 
 export async function logIn(deps: Deps, raw: unknown, next: unknown): Promise<ActionResult<{ redirectTo: string }>> {
   const parsed = parse(loginSchema, raw);
@@ -221,7 +220,8 @@ export async function logIn(deps: Deps, raw: unknown, next: unknown): Promise<Ac
 
 export async function startGoogle(deps: Deps, next: unknown): Promise<ActionResult<{ url: string }>> {
   try {
-    const { url } = await deps.auth.startGoogleSignIn({ redirectTo: confirmRedirect(deps, next) });
+    // Google returns to this absolute, same-site address (made safe here).
+    const { url } = await deps.auth.startGoogleSignIn({ redirectTo: deps.siteUrl + safeNextPath(next) });
     return { ok: true, data: { url } };
   } catch (error) {
     return providerFailure(error);
@@ -412,15 +412,9 @@ async function createAndCheck(deps: Deps, input: SignUpInput): Promise<CreateOut
  * recreates it once.
  *
  * On success the caller sets the pending sign-up cookie to `{ userId: pendingUserId, email }`
- * (signPendingSignup) and shows the code screen. `next` is not used here: the code screen
- * carries it on to verifySignUpCode.
+ * (signPendingSignup) and shows the code screen, which carries `next` on to verifySignUpCode.
  */
-export async function signUp(
-  deps: Deps,
-  raw: unknown,
-  next: unknown,
-): Promise<ActionResult<{ pendingUserId: string; email: string }>> {
-  void next;
+export async function signUp(deps: Deps, raw: unknown): Promise<ActionResult<{ pendingUserId: string; email: string }>> {
   const parsed = parse(signUpSchema, raw);
   if ("failure" in parsed) return parsed.failure;
   const { email } = parsed.data;
@@ -545,34 +539,38 @@ async function scrambleWithRetry(auth: AuthProvider, userId: string): Promise<bo
 
 /**
  * A code confirmed an account this browser did not create, or there is no cookie (spec 5.1,
- * ruling P9). Order: replace the password with a random one (the auth server then rejects every
- * session of the account, including the one the code just made, so a stranger's password and
- * sessions are dead), start the email cooldown, then open a fresh session here for exactly the
- * user the code proved. The person must then create a password (setPassword).
- * Returns a failure, after signing the person out, when any step fails.
+ * ruling P9). Order (final review I1: nothing is written while the account, now confirmed,
+ * still accepts the other sign-up's password):
+ * 1. replace the password with a random one at once (the auth server then rejects every session
+ *    of the account, including the one the code just made). If the admin scramble fails twice,
+ *    the code session is still alive, so the password is replaced from it instead (Task 4),
+ *    then the details below, then the person is signed out;
+ * 2. the name and terms that came from whoever signed up are replaced with the admin client
+ *    (no session needed), tried twice (P13);
+ * 3. the email cooldown starts and a fresh session opens here for exactly the user the code
+ *    proved;
+ * 4. only if step 2 failed: the same writes from that fresh session, the last fallback.
+ * The person must then create a password (setPassword). Returns a failure, after signing the
+ * person out, when the account cannot be left safe and clean for them.
  */
 async function takeOverForeignCode(deps: Deps, email: string, userId: string): Promise<Failure | null> {
-  // While the code session still works (the scramble ends it): the name and the terms
-  // acceptance came from whoever signed up, so they are replaced (P13). A failure here never
-  // stops the scramble below; the writes are tried again from the fresh session.
-  // If those fail, the admin client writes the same details with no session (fix round 1),
-  // so even the sign-out paths below leave nothing of the other sign-up's behind.
-  const detailsReplaced =
-    (await replaceOtherSignUpsDetails(deps, email, userId)) || (await replaceDetailsAsAdmin(deps, email, userId));
-
   if (!(await scrambleWithRetry(deps.auth, userId))) {
-    // The sign-up-code session verifyCode just opened is still alive (nothing scrambled), and a
-    // password change works from a code session (probes l2, o): replace the password that way,
-    // through a different API path from the admin call that failed. The value is never kept.
+    // Nothing scrambled, so the code session verifyCode opened is still alive, and a password
+    // change works from a code session (probes l2, o): replace the password that way, through a
+    // different API path from the admin call that failed. The value is never kept.
     try {
       await deps.auth.updatePassword(randomPassword());
       console.warn("Replaced the password from the code session after the scramble failed; signed the person out.");
     } catch {
       console.warn(PASSWORD_NOT_REPLACED_WARNING);
     }
+    // The person is sent to Forgot password, which never touches the name or terms.
+    await replaceDetailsAsAdmin(deps, email, userId);
     await signOutQuietly(deps.auth);
     return { ok: false, formError: MESSAGES.confirmedSetPassword };
   }
+
+  const detailsReplaced = await replaceDetailsAsAdmin(deps, email, userId);
 
   // Started before the attempt: even a failed one may have recorded a recovery request.
   await startMintedCooldown(deps.limiter, email);
@@ -593,20 +591,35 @@ async function takeOverForeignCode(deps: Deps, email: string, userId: string): P
   return null;
 }
 
+/** How many times the admin writes of a takeover or repair are tried. */
+const ADMIN_WRITE_ATTEMPTS = 2;
+
+/** Runs `write` up to ADMIN_WRITE_ATTEMPTS times; true once it succeeds. Errors are not logged here. */
+async function withRetry(write: () => Promise<void>): Promise<boolean> {
+  for (let attempt = 0; attempt < ADMIN_WRITE_ATTEMPTS; attempt++) {
+    try {
+      await write();
+      return true;
+    } catch {
+      // Tried again, then the caller decides.
+    }
+  }
+  return false;
+}
+
 /**
- * The admin fallback for replaceOtherSignUpsDetails: the same name and cleared terms (metadata
- * through the provider's admin power, and the profile row), with no session. True when both
- * writes succeeded; any failure is one fixed warning.
+ * For an account a foreign code confirmed (P13), with no session: the name becomes the address's
+ * local part and the terms acceptance is cleared (metadata through the provider's admin power,
+ * and the profile row), so the terms gate sends the person to /welcome. Tried twice. True when
+ * both writes succeeded; a failure is one fixed warning.
  */
 async function replaceDetailsAsAdmin(deps: Deps, email: string, userId: string): Promise<boolean> {
-  try {
+  const done = await withRetry(async () => {
     await deps.auth.resetUserMetadata(userId, { displayName: nameFromEmail(email) });
     await fromProfiles(deps.profiles.clearTermsAcceptance(userId));
-    return true;
-  } catch {
-    console.warn("Could not replace the other sign-up's name and terms with the admin client either.");
-    return false;
-  }
+  });
+  if (!done) console.warn("Could not replace the other sign-up's name and terms with the admin client.");
+  return done;
 }
 
 /** A display name from an address: its local part, within the name rules, else "New user". */
@@ -621,10 +634,9 @@ function validName(candidate: string): string | null {
 }
 
 /**
- * For an account a foreign code confirmed (P13): the name becomes the address's local part and
- * the terms acceptance is cleared (metadata and profile row), so nothing the other sign-up typed
- * or accepted survives and the terms gate sends the person to /welcome. Needs a live session of
- * that user. True when all three writes succeeded; any failure is one fixed warning.
+ * The last fallback for replaceDetailsAsAdmin: the same writes from the fresh session the
+ * takeover opened (needs a live session of that user). True when all three writes succeeded;
+ * any failure is one fixed warning.
  */
 async function replaceOtherSignUpsDetails(deps: Deps, email: string, userId: string): Promise<boolean> {
   try {
@@ -874,17 +886,21 @@ export async function repairGoogleAccount(
   const target = safeNextPath(next);
   const email = normaliseEmail(user.email);
   try {
-    // Read only: the pending identity is removed only once the stranger's name, terms and
-    // password are gone, so if any of those steps fails the next Google sign-in finds it again
-    // and repeats them.
+    // Read only: the pending identity is removed only once the stranger's password, name and
+    // terms are gone, so if any of those steps fails the next Google sign-in finds it again and
+    // repeats them.
     if (await deps.directory.hasPendingEmailIdentity(user.id)) {
-      // While the Google session still works: the name and terms become the Google user's own.
-      await deps.auth.updateDisplayName(googleDisplayName(user));
-      // The profile row keeps the stranger's acceptance otherwise: the trigger fills it once.
-      await recordProfileTerms(deps.profiles, user.id);
-      await deps.auth.acceptTerms({ termsVersion: TERMS_VERSION });
-      // Kills the stranger's password and every session, the Google one included.
+      // First, at once: kills the stranger's password and every session, the Google one
+      // included (final review I1: nothing is written while that password still works).
       if (!(await scrambleWithRetry(deps.auth, user.id))) throw new Error("scramble failed");
+      // With no session left: the name and terms become the Google user's own, in the metadata
+      // and on the profile row (which the trigger fills only once). Tried twice; if that fails,
+      // the identity stays and the next sign-in repeats the repair.
+      const detailsWritten = await withRetry(async () => {
+        await deps.auth.resetUserMetadata(user.id, { displayName: googleDisplayName(user), acceptedTermsVersion: TERMS_VERSION });
+        await recordProfileTerms(deps.profiles, user.id);
+      });
+      if (!detailsWritten) throw new Error("details not written");
       // Before the minted session: redeeming a recovery code confirms the address, which marks
       // the email identity verified, and a verified identity is no longer removed.
       await deps.directory.repairAfterGoogle(user.id);
@@ -893,6 +909,14 @@ export async function repairGoogleAccount(
       return { ok: true, data: { redirectTo: target } };
     }
     if (!user.termsVersion) {
+      // An account with no email identity is Google's alone. The provider may already have
+      // repaired a stranger's sign-up itself (replacing the metadata with Google's claims), but
+      // the profile trigger keeps an earlier typed name unless display_name is written: write the
+      // Google user's name so the profile row follows (final review I3).
+      const state = await deps.directory.describeEmail(email);
+      if (state.kind === "confirmed" && !state.providers.includes("email")) {
+        await deps.auth.updateDisplayName(googleDisplayName(user));
+      }
       // Profile first: if the metadata write fails, the next sign-in still finds no version and
       // records both.
       await recordProfileTerms(deps.profiles, user.id);

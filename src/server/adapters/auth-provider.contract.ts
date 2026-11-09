@@ -253,6 +253,14 @@ function runCodeContract(make: () => ContractContext) {
       expect(await ctx.provider.getUser()).toMatchObject({ id: ctx.userId, displayName: "ada", termsVersion: null });
     });
 
+    test("resetUserMetadata with acceptedTermsVersion records that version by user id, with no session", async () => {
+      const ctx = await confirmed();
+      await ctx.provider.signOut();
+      await ctx.provider.resetUserMetadata(ctx.userId, { displayName: "Ada G", acceptedTermsVersion: "2027-01" });
+      await ctx.provider.signInWithPassword({ email: EMAIL, password: PASSWORD });
+      expect(await ctx.provider.getUser()).toMatchObject({ displayName: "Ada G", termsVersion: "2027-01" });
+    });
+
     test("updatePassword with signOutOthers keeps this session and ends the one on another device", async () => {
       const ctx = await confirmed();
       const here = ctx.provider;

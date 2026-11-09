@@ -19,12 +19,14 @@ type SignupFormProps = {
   next: string;
   loginHref: string;
   forgotHref: string;
+  /** The code screen, for someone who already has a code (spec 6). */
+  codeHref: string;
   /** The Google button, or the in-app browser notice in its place. */
   alternative: ReactNode;
 };
 
 /** The sign-up form. On success the action opens the code screen (/signup/verify). */
-export function SignupForm({ action, next, loginHref, forgotHref, alternative }: SignupFormProps) {
+export function SignupForm({ action, next, loginHref, forgotHref, codeHref, alternative }: SignupFormProps) {
   const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const values = state.values ?? {};
   const errors = state.fieldErrors ?? {};
@@ -74,6 +76,11 @@ export function SignupForm({ action, next, loginHref, forgotHref, alternative }:
           Create account
         </SubmitButton>
       </form>
+      <div className="mt-3 flex justify-center">
+        <Link href={codeHref} className={linkTarget}>
+          I already have a code
+        </Link>
+      </div>
       <OrDivider />
       {alternative}
     </AuthCard>

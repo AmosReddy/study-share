@@ -40,6 +40,7 @@ async function Signup({ searchParams }: Pick<PageProps<"/signup">, "searchParams
       next={next}
       loginHref={withNext("/login", next)}
       forgotHref="/forgot-password"
+      codeHref={withNext("/signup/verify", next)}
       alternative={alternative}
     />
   );

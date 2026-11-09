@@ -460,6 +460,24 @@ describe("resetUserMetadata", () => {
     expect(client.auth.updateUser).not.toHaveBeenCalled();
   });
 
+  test("with acceptedTermsVersion it records that version, accepted now, instead of clearing it", async () => {
+    vi.useFakeTimers({ now: new Date("2026-11-09T10:00:00.000Z") });
+    try {
+      const { provider, admin } = make();
+      await provider.resetUserMetadata(USER_ID, { displayName: "Google User", acceptedTermsVersion: "2026-11-06" });
+      expect(admin.auth.admin.updateUserById).toHaveBeenCalledWith(USER_ID, {
+        user_metadata: {
+          display_name: "Google User",
+          terms_version: "2026-11-06",
+          terms_accepted_at: "2026-11-09T10:00:00.000Z",
+          age_confirmed_at: "2026-11-09T10:00:00.000Z",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("a failure is an AuthProviderError with no vendor text, id or name", async () => {
     const { provider } = make(makeClient(), makeAdmin(fails(new AuthApiError("User not found for 6aa5 ada", 404, "user_not_found"))));
     const error = (await caught(provider.resetUserMetadata(USER_ID, { displayName: "ada" }))) as AuthProviderError;

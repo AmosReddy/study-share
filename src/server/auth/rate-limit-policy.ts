@@ -5,13 +5,24 @@ const HOUR = 60 * 60;
 const FIFTEEN_MINUTES = 15 * 60;
 
 export const SIGN_UP_EMAIL_LIMIT: Limit = { limit: 5, windowSeconds: HOUR };
-/** Generous, so one college Wi-Fi network is not locked out. */
-export const SIGN_UP_IP_LIMIT: Limit = { limit: 30, windowSeconds: HOUR };
+/*
+  Per-IP limits are generous on purpose: a whole class often registers together on one college
+  Wi-Fi network (one public address), and each person may need a few tries. The per-address
+  limits carry the security; these only stop one network from flooding the app.
+*/
+
+/** A class of 40 to 100 signing up at once, with retries, fits. */
+export const SIGN_UP_IP_LIMIT: Limit = { limit: 300, windowSeconds: HOUR };
 
 export const LOGIN_EMAIL_LIMIT: Limit = { limit: 10, windowSeconds: FIFTEEN_MINUTES };
-export const LOGIN_IP_LIMIT: Limit = { limit: 100, windowSeconds: HOUR };
+/** A class logging in together, typos included, fits. */
+export const LOGIN_IP_LIMIT: Limit = { limit: 300, windowSeconds: HOUR };
 
 export const PASSWORD_RESET_EMAIL_LIMIT: Limit = { limit: 3, windowSeconds: HOUR };
+/**
+ * Kept at 30: every request sends an email from the project's mailbox, a whole class rarely
+ * resets at once, and this cap stops one network from draining the email quota.
+ */
 export const PASSWORD_RESET_IP_LIMIT: Limit = { limit: 30, windowSeconds: HOUR };
 
 export const PASSWORD_UPDATE_USER_LIMIT: Limit = { limit: 10, windowSeconds: HOUR };
@@ -23,7 +34,8 @@ export const RESEND_EMAIL_LIMIT: Limit = { limit: 3, windowSeconds: HOUR };
  * does not reset it, so asking for new codes never buys more guesses.
  */
 export const CODE_ATTEMPTS: Limit = { limit: 5, windowSeconds: FIFTEEN_MINUTES };
-export const CODE_ATTEMPTS_IP: Limit = { limit: 30, windowSeconds: HOUR };
+/** Every code check from one network counts (right codes too): a class entering codes together fits. */
+export const CODE_ATTEMPTS_IP: Limit = { limit: 300, windowSeconds: HOUR };
 
 /**
  * At most one email a minute to an address, shared by sign-up, resend and reset (one key for

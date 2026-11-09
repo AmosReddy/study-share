@@ -137,11 +137,13 @@ export interface AuthProvider {
   clearTermsAcceptance(): Promise<void>;
   /**
    * Server side, with the provider's admin power and no session: sets the user's display name and
-   * empties their recorded terms acceptance, as clearTermsAcceptance plus updateDisplayName would
-   * for that user. The fallback when the session-based writes of a foreign-code takeover fail
-   * (ruling P13): it can be retried apart from the scramble. Errors name no id or value.
+   * their recorded terms acceptance, as updateDisplayName plus clearTermsAcceptance (or
+   * acceptTerms, with `acceptedTermsVersion`, accepted now) would for that user. Used right after
+   * the scramble of a foreign-code takeover (ruling P13) and of the Google repair, when the
+   * scramble has ended every session: the stranger's password is dead before anything else is
+   * written (final review I1). Errors name no id or value.
    */
-  resetUserMetadata(userId: string, i: { displayName: string }): Promise<void>;
+  resetUserMetadata(userId: string, i: { displayName: string; acceptedTermsVersion?: string }): Promise<void>;
   updateDisplayName(name: string): Promise<void>;
   signOut(): Promise<void>;
 }

@@ -81,7 +81,7 @@ describe("signUp: validation and limits", () => {
     const { auth, deps } = setup();
     const spy = vi.spyOn(auth, "signUpWithPassword");
     const hit = vi.spyOn(deps.limiter, "hit");
-    const result = await signUp(deps, { displayName: "A", email: "nope", password: "short", acceptTerms: false }, "/");
+    const result = await signUp(deps, { displayName: "A", email: "nope", password: "short", acceptTerms: false });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(Object.keys(result.fieldErrors ?? {}).sort()).toEqual(["acceptTerms", "displayName", "email", "password"]);
@@ -91,7 +91,7 @@ describe("signUp: validation and limits", () => {
 
   it("treats a non-object body as a form error", async () => {
     const { deps } = setup();
-    const result = await signUp(deps, null, "/");
+    const result = await signUp(deps, null);
     expect(result.ok).toBe(false);
     expect(!result.ok && result.formError).toBeTruthy();
   });
@@ -99,7 +99,7 @@ describe("signUp: validation and limits", () => {
   it("calls the provider once with the terms version and no link", async () => {
     const { auth, deps } = setup();
     const spy = vi.spyOn(auth, "signUpWithPassword");
-    const result = await signUp(deps, validSignUp(" New@X.com "), "/invite/abc?x=1");
+    const result = await signUp(deps, validSignUp(" New@X.com "));
     expect(result).toMatchObject({ ok: true, data: { email: "new@x.com" } });
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith({
@@ -115,10 +115,10 @@ describe("signUp: validation and limits", () => {
     const { auth, deps, advance } = setup();
     const spy = vi.spyOn(auth, "signUpWithPassword");
     for (let i = 0; i < 5; i++) {
-      expect((await signUp(deps, validSignUp(), "/")).ok).toBe(true);
+      expect((await signUp(deps, validSignUp())).ok).toBe(true);
       advance(PAST_COOLDOWN);
     }
-    const sixth = await signUp(deps, validSignUp(), "/");
+    const sixth = await signUp(deps, validSignUp());
     expect(sixth.ok).toBe(false);
     if (sixth.ok) return;
     expect(sixth.retryAfterSeconds).toBeGreaterThan(0);
@@ -130,28 +130,28 @@ describe("signUp: validation and limits", () => {
     const { deps, advance } = setup();
     const variants = ["A@x.com", "a@x.com", " A@X.COM ", "a@X.com", "A@x.com"];
     for (const email of variants) {
-      expect((await signUp(deps, validSignUp(email), "/")).ok).toBe(true);
+      expect((await signUp(deps, validSignUp(email))).ok).toBe(true);
       advance(PAST_COOLDOWN);
     }
-    expect((await signUp(deps, validSignUp("a@x.com"), "/")).ok).toBe(false);
+    expect((await signUp(deps, validSignUp("a@x.com"))).ok).toBe(false);
   });
 
-  it("refuses the 31st attempt from one IP while another IP is still allowed", async () => {
+  it("lets a whole class sign up from one network: refuses only the 301st attempt from one IP, while another IP is still allowed", async () => {
     const limiter = createMemoryRateLimiter();
     const a: Deps = { ...setup().deps, limiter, ip: "1.1.1.1" };
     const b: Deps = { ...a, ip: "2.2.2.2" };
-    for (let i = 0; i < 30; i++) expect((await signUp(a, validSignUp(`u${i}@x.com`), "/")).ok).toBe(true);
-    const refused = await signUp(a, validSignUp("u31@x.com"), "/");
-    expect(refused.ok).toBe(false);
+    for (let i = 0; i < 300; i++) expect((await signUp(a, validSignUp(`u${i}@x.com`))).ok).toBe(true);
+    const refused = await signUp(a, validSignUp("one-too-many@x.com"));
+    expect(refused).toMatchObject({ ok: false, formError: AUTH_MESSAGES.tooMany });
     expect(!refused.ok && refused.retryAfterSeconds).toBeGreaterThan(0);
-    // Another address: u31's one-a-minute cooldown was counted by the refused attempt above.
-    expect((await signUp(b, validSignUp("u32@x.com"), "/")).ok).toBe(true);
+    // Another address: the refused one's one-a-minute cooldown was counted by the attempt above.
+    expect((await signUp(b, validSignUp("other-network@x.com"))).ok).toBe(true);
   });
 
   it("uses namespaced keys", async () => {
     const hit = vi.fn<RateLimiter["hit"]>(async () => ({ allowed: true, retryAfterSeconds: 0 }));
     const { deps } = setup({ limiter: { hit, peek: allowPeek } });
-    await signUp(deps, validSignUp("k@x.com"), "/");
+    await signUp(deps, validSignUp("k@x.com"));
     expect(hit.mock.calls.map((c) => c[0].key)).toEqual([
       "email-send:k@x.com",
       "signup:email:k@x.com",
@@ -162,7 +162,7 @@ describe("signUp: validation and limits", () => {
 
 describe("one email a minute per address (shared by sign-up, resend and reset)", () => {
   const flows = {
-    signUp: (deps: Deps, email: string) => signUp(deps, validSignUp(email), "/"),
+    signUp: (deps: Deps, email: string) => signUp(deps, validSignUp(email)),
     resend: (deps: Deps, email: string) => resendSignUpCode(deps, { email }),
     reset: (deps: Deps, email: string) => requestPasswordReset(deps, { email }),
   } as const;
@@ -209,7 +209,7 @@ describe("one email a minute per address (shared by sign-up, resend and reset)",
 
   it("does not count a request that fails validation", async () => {
     const { deps } = setup();
-    const invalid = await signUp(deps, { ...validSignUp("a@x.com"), password: "short" }, "/");
+    const invalid = await signUp(deps, { ...validSignUp("a@x.com"), password: "short" });
     expect(!invalid.ok && invalid.fieldErrors?.password).toBeTruthy();
     expect((await flows.signUp(deps, "a@x.com")).ok).toBe(true);
   });
@@ -237,7 +237,7 @@ describe("provider errors become plain messages", () => {
   ] as const)("%s on sign-up", async (code, check) => {
     const { auth, deps } = setup();
     vi.spyOn(auth, "signUpWithPassword").mockRejectedValue(new AuthProviderError(code, secret));
-    const result = await signUp(deps, validSignUp(), "/");
+    const result = await signUp(deps, validSignUp());
     expect(check(result)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(secret);
   });
@@ -322,9 +322,11 @@ describe("logIn", () => {
     expect(spy).toHaveBeenCalledTimes(10);
   });
 
-  it("refuses the 101st attempt from one IP in an hour", async () => {
+  it("refuses only the 301st attempt from one IP in an hour (a class logging in together, typos included)", async () => {
     const { deps } = setup();
-    for (let i = 0; i < 100; i++) await logIn(deps, { email: `u${i}@x.com`, password: "pw" }, "/");
+    for (let i = 0; i < 300; i++) {
+      expect(await logIn(deps, { email: `u${i}@x.com`, password: "pw" }, "/")).toEqual({ ok: false, formError: AUTH_MESSAGES.badLogin });
+    }
     const result = await logIn(deps, { email: "u101@x.com", password: "pw" }, "/");
     expect(!result.ok && result.retryAfterSeconds).toBeGreaterThan(0);
   });
@@ -506,7 +508,7 @@ describe("a rate limit store that never answers", () => {
   it("gives up after 2 seconds per check, allows sign-up and logs only the fixed warning", async () => {
     const { auth, deps } = setup({ limiter: hanging });
     const spy = vi.spyOn(auth, "signUpWithPassword");
-    const pending = signUp(deps, validSignUp("a@x.com"), "/");
+    const pending = signUp(deps, validSignUp("a@x.com"));
     await vi.advanceTimersByTimeAsync(1999);
     expect(spy).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(2000 * 4);
@@ -532,10 +534,10 @@ describe("a rate limit store that never answers", () => {
       peek: (i) => new Promise((resolve) => setTimeout(() => resolve(real.peek(i)), 1500)),
     };
     const { deps } = setup({ limiter: slow });
-    const first = signUp(deps, validSignUp("a@x.com"), "/");
+    const first = signUp(deps, validSignUp("a@x.com"));
     await vi.advanceTimersByTimeAsync(1500 * 4);
     expect((await first).ok).toBe(true);
-    const second = signUp(deps, validSignUp("a@x.com"), "/");
+    const second = signUp(deps, validSignUp("a@x.com"));
     await vi.advanceTimersByTimeAsync(1500 * 4);
     expect(await second).toMatchObject({ ok: false, formError: COOLDOWN_MESSAGE });
     expect(warn).not.toHaveBeenCalled();
@@ -570,7 +572,7 @@ describe("a rate limit store that fails", () => {
   it("does not stop sign-up and logs only the fixed warning", async () => {
     const { auth, deps } = setup({ limiter: failing });
     const spy = vi.spyOn(auth, "signUpWithPassword");
-    const result = await signUp(deps, validSignUp("a@x.com"), "/");
+    const result = await signUp(deps, validSignUp("a@x.com"));
     expect(result).toMatchObject({ ok: true });
     expect(spy).toHaveBeenCalledTimes(1);
     expectOneCleanWarning(2);
@@ -600,7 +602,7 @@ describe("a provider rate limit is reported honestly, the same for known and unk
   type Flow = "signUp" | "resend";
   const methods = { signUp: "signUpWithPassword", resend: "resendSignUpCode" } as const;
   const run = (flow: Flow, deps: Deps, email: string) =>
-    flow === "signUp" ? signUp(deps, validSignUp(email), "/") : resendSignUpCode(deps, { email });
+    flow === "signUp" ? signUp(deps, validSignUp(email)) : resendSignUpCode(deps, { email });
 
   let warn: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
@@ -657,7 +659,7 @@ describe("the client address", () => {
   };
 
   it.each(["", "   "])("skips the per-IP limit when the address is unknown (%j)", async (ip) => {
-    expect(await keysFor(ip, (d) => signUp(d, validSignUp("k@x.com"), "/"))).toEqual([
+    expect(await keysFor(ip, (d) => signUp(d, validSignUp("k@x.com")))).toEqual([
       "email-send:k@x.com",
       "signup:email:k@x.com",
     ]);
@@ -670,12 +672,12 @@ describe("the client address", () => {
 
   it("does not put everyone without an address into one bucket", async () => {
     const { deps } = setup({ ip: "" });
-    for (let i = 0; i < 31; i++) expect((await signUp(deps, validSignUp(`u${i}@x.com`), "/")).ok).toBe(true);
+    for (let i = 0; i < 301; i++) expect((await signUp(deps, validSignUp(`u${i}@x.com`))).ok).toBe(true);
   });
 
   it("trims the address and caps its length at 64 characters in the key", async () => {
     const long = "a".repeat(200);
-    const [, , ipKey] = await keysFor(`  ${long}  `, (d) => signUp(d, validSignUp("k@x.com"), "/"));
+    const [, , ipKey] = await keysFor(`  ${long}  `, (d) => signUp(d, validSignUp("k@x.com")));
     expect(ipKey).toBe(`signup:ip:${"a".repeat(64)}`);
     const [, loginIp] = await keysFor("1.2.3.4 ", (d) => logIn(d, { email: "k@x.com", password: "pw" }, "/"));
     expect(loginIp).toBe("login:ip:1.2.3.4");
@@ -753,7 +755,7 @@ function trace<T extends object, K extends keyof T & string>(order: string[], ob
 
 /** Signs up through the use-case and remembers the pending cookie, as the action will. */
 async function signUpInBrowser(ctx: Ctx, email: string, password = PW, name = "Asha Rao") {
-  const result = await signUp(ctx.deps, signUpInput(email, password, name), "/");
+  const result = await signUp(ctx.deps, signUpInput(email, password, name));
   if (!result.ok) throw new Error(`sign-up failed: ${JSON.stringify(result)}`);
   ctx.deps.pending = { userId: result.data.pendingUserId, email: result.data.email };
   return result.data;
@@ -784,7 +786,7 @@ describe("signUp (codes)", () => {
   it("creates a pending account, emails a code (no link) and returns the pending id", async () => {
     const ctx = setup();
     const spy = vi.spyOn(ctx.auth, "signUpWithPassword");
-    const result = await signUp(ctx.deps, signUpInput(" New@Example.invalid "), "/");
+    const result = await signUp(ctx.deps, signUpInput(" New@Example.invalid "));
     const state = await ctx.directory.describeEmail("new@example.invalid");
     expect(state.kind).toBe("pending");
     expect(result).toEqual({ ok: true, data: { pendingUserId: state.kind === "pending" && state.userId, email: "new@example.invalid" } });
@@ -800,7 +802,7 @@ describe("signUp (codes)", () => {
       await real(i);
       return { userId: "" };
     });
-    const result = await signUp(ctx.deps, signUpInput("a@example.invalid"), "/");
+    const result = await signUp(ctx.deps, signUpInput("a@example.invalid"));
     expect(result.ok && result.data.pendingUserId).toBe(usersFor(ctx.store, "a@example.invalid")[0].id);
   });
 
@@ -810,7 +812,7 @@ describe("signUp (codes)", () => {
     const emails = ctx.auth.outbox.entries.length;
     const create = vi.spyOn(ctx.auth, "signUpWithPassword");
     const remove = vi.spyOn(ctx.directory, "removePendingSignup");
-    const result = await signUp(ctx.deps, signUpInput("taken@example.invalid", PW2), "/");
+    const result = await signUp(ctx.deps, signUpInput("taken@example.invalid", PW2));
     expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.emailTaken });
     expect(create).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
@@ -823,11 +825,11 @@ describe("signUp (codes)", () => {
     await ctx.auth.completeOAuth(new URL(url, SITE).searchParams.get("code")!);
     await ctx.auth.signOut();
     const create = vi.spyOn(ctx.auth, "signUpWithPassword");
-    expect(await signUp(ctx.deps, signUpInput(GOOGLE_EMAIL), "/")).toEqual({ ok: false, formError: AUTH_MESSAGES.googleOnly });
+    expect(await signUp(ctx.deps, signUpInput(GOOGLE_EMAIL))).toEqual({ ok: false, formError: AUTH_MESSAGES.googleOnly });
     // A repaired or scrambled Google account reads as "has a password" (port doc): still Google.
     await ctx.auth.scramblePassword(usersFor(ctx.store, GOOGLE_EMAIL)[0].id);
     ctx.advance(PAST_COOLDOWN);
-    expect(await signUp(ctx.deps, signUpInput(GOOGLE_EMAIL), "/")).toEqual({ ok: false, formError: AUTH_MESSAGES.googleOnly });
+    expect(await signUp(ctx.deps, signUpInput(GOOGLE_EMAIL))).toEqual({ ok: false, formError: AUTH_MESSAGES.googleOnly });
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -837,14 +839,14 @@ describe("signUp (codes)", () => {
     const { url } = await ctx.auth.startGoogleSignIn({ redirectTo: SITE });
     await ctx.auth.completeOAuth(new URL(url, SITE).searchParams.get("code")!);
     await ctx.auth.signOut();
-    expect(await signUp(ctx.deps, signUpInput(GOOGLE_EMAIL), "/")).toEqual({ ok: false, formError: AUTH_MESSAGES.emailTaken });
+    expect(await signUp(ctx.deps, signUpInput(GOOGLE_EMAIL))).toEqual({ ok: false, formError: AUTH_MESSAGES.emailTaken });
   });
 
   it("replaces an unconfirmed sign-up: the newest password is the one on the account", async () => {
     const ctx = setup();
     await ctx.auth.signUpWithPassword({ email: "a@example.invalid", password: STRANGER_PW, displayName: "Stranger", termsVersion: TERMS_VERSION });
     const oldId = usersFor(ctx.store, "a@example.invalid")[0].id;
-    const result = await signUp(ctx.deps, signUpInput("a@example.invalid", PW), "/");
+    const result = await signUp(ctx.deps, signUpInput("a@example.invalid", PW));
     expect(result.ok).toBe(true);
     const users = usersFor(ctx.store, "a@example.invalid");
     expect(users).toHaveLength(1);
@@ -870,7 +872,7 @@ describe("signUp (codes)", () => {
       await stranger.signUpWithPassword({ email: i.email, password: STRANGER_PW, displayName: "Stranger", termsVersion: TERMS_VERSION });
       return answer;
     });
-    const result = await signUp(ctx.deps, signUpInput("a@example.invalid", PW), "/");
+    const result = await signUp(ctx.deps, signUpInput("a@example.invalid", PW));
     expect(result.ok).toBe(true);
     // The id handed out (the cookie's) is an account whose password is the one this person typed.
     const users = usersFor(ctx.store, "a@example.invalid");
@@ -888,7 +890,7 @@ describe("signUp (codes)", () => {
       return real(i);
     });
     const remove = vi.spyOn(ctx.directory, "removePendingSignup");
-    const result = await signUp(ctx.deps, signUpInput("a@example.invalid", PW), "/");
+    const result = await signUp(ctx.deps, signUpInput("a@example.invalid", PW));
     expect(result.ok).toBe(true);
     expect(create).toHaveBeenCalledTimes(2);
     expect(remove).toHaveBeenCalledTimes(1);
@@ -909,7 +911,7 @@ describe("signUp (codes)", () => {
       await real({ ...i, password: STRANGER_PW });
       return real(i);
     });
-    const result = await signUp(ctx.deps, signUpInput("a@example.invalid", PW), "/");
+    const result = await signUp(ctx.deps, signUpInput("a@example.invalid", PW));
     expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.generic });
     expect(create).toHaveBeenCalledTimes(2);
   });
@@ -920,8 +922,8 @@ describe("signUp (codes)", () => {
     const a = setup({ limiter: allowAll, ip: "10.0.0.1" }, store);
     const b = setup({ limiter: allowAll, ip: "10.0.0.2" }, store);
     const results = await Promise.all([
-      signUp(a.deps, signUpInput("race@example.invalid", PW), "/"),
-      signUp(b.deps, signUpInput("race@example.invalid", PW2), "/"),
+      signUp(a.deps, signUpInput("race@example.invalid", PW)),
+      signUp(b.deps, signUpInput("race@example.invalid", PW2)),
     ]);
     const users = usersFor(store, "race@example.invalid");
     expect(users).toHaveLength(1);
@@ -941,7 +943,7 @@ describe("signUp (codes)", () => {
     const ctx = setup();
     const hit = vi.spyOn(ctx.deps.limiter, "hit");
     const lookup = vi.spyOn(ctx.directory, "describeEmail");
-    const result = await signUp(ctx.deps, { displayName: "A", email: "nope", password: "short", acceptTerms: false }, "/");
+    const result = await signUp(ctx.deps, { displayName: "A", email: "nope", password: "short", acceptTerms: false });
     expect(!result.ok && Object.keys(result.fieldErrors ?? {}).sort()).toEqual(["acceptTerms", "displayName", "email", "password"]);
     expect(hit).not.toHaveBeenCalled();
     expect(lookup).not.toHaveBeenCalled();
@@ -950,22 +952,22 @@ describe("signUp (codes)", () => {
   it("keeps the shared one-email-a-minute cooldown, also in front of the lookup of a registered address", async () => {
     const ctx = setup();
     await confirmedAccount(ctx, "taken@example.invalid");
-    expect(await signUp(ctx.deps, signUpInput("taken@example.invalid"), "/")).toMatchObject({ formError: AUTH_MESSAGES.emailTaken });
+    expect(await signUp(ctx.deps, signUpInput("taken@example.invalid"))).toMatchObject({ formError: AUTH_MESSAGES.emailTaken });
     const lookup = vi.spyOn(ctx.directory, "describeEmail");
-    expect(await signUp(ctx.deps, signUpInput("taken@example.invalid"), "/")).toEqual({
+    expect(await signUp(ctx.deps, signUpInput("taken@example.invalid"))).toEqual({
       ok: false,
       formError: COOLDOWN_MESSAGE,
       retryAfterSeconds: 60,
     });
     expect(lookup).not.toHaveBeenCalled();
-    expect((await signUp(ctx.deps, signUpInput("new@example.invalid"), "/")).ok).toBe(true);
-    expect(await signUp(ctx.deps, signUpInput("new@example.invalid"), "/")).toMatchObject({ formError: COOLDOWN_MESSAGE });
+    expect((await signUp(ctx.deps, signUpInput("new@example.invalid"))).ok).toBe(true);
+    expect(await signUp(ctx.deps, signUpInput("new@example.invalid"))).toMatchObject({ formError: COOLDOWN_MESSAGE });
   });
 
   it("uses the same namespaced limit keys as before", async () => {
     const hit = vi.fn<RateLimiter["hit"]>(async () => ({ allowed: true, retryAfterSeconds: 0 }));
     const { deps } = setup({ limiter: { hit, peek: allowPeek } });
-    await signUp(deps, signUpInput("k@example.invalid"), "/");
+    await signUp(deps, signUpInput("k@example.invalid"));
     expect(hit.mock.calls.map((c) => c[0].key)).toEqual(["email-send:k@example.invalid", "signup:email:k@example.invalid", "signup:ip:10.0.0.1"]);
   });
 
@@ -973,7 +975,7 @@ describe("signUp (codes)", () => {
     const ctx = setup();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(ctx.auth, "signUpWithPassword").mockRejectedValue(new AuthProviderError("rate_limited", "vendor text"));
-    expect(await signUp(ctx.deps, signUpInput("a@example.invalid"), "/")).toEqual({ ok: false, formError: COULD_NOT_SEND });
+    expect(await signUp(ctx.deps, signUpInput("a@example.invalid"))).toEqual({ ok: false, formError: COULD_NOT_SEND });
     warn.mockRestore();
   });
 
@@ -981,7 +983,7 @@ describe("signUp (codes)", () => {
     const ctx = setup();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(ctx.directory, "describeEmail").mockRejectedValue(new Error("connect ECONNREFUSED a@example.invalid"));
-    expect(await signUp(ctx.deps, signUpInput("a@example.invalid"), "/")).toEqual({ ok: false, formError: AUTH_MESSAGES.generic });
+    expect(await signUp(ctx.deps, signUpInput("a@example.invalid"))).toEqual({ ok: false, formError: AUTH_MESSAGES.generic });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(warn.mock.calls)).not.toContain("example.invalid");
     warn.mockRestore();
@@ -1226,7 +1228,7 @@ describe("verifySignUpCode", () => {
       const cooldown = { ok: false, formError: COOLDOWN_MESSAGE, retryAfterSeconds: 60 };
       expect(await requestPasswordReset(secondDeps, { email: "me@example.invalid" })).toEqual(cooldown);
       expect(await resendSignUpCode(secondDeps, { email: "me@example.invalid" })).toEqual(cooldown);
-      expect(await signUp(secondDeps, signUpInput("me@example.invalid"), "/")).toEqual(cooldown);
+      expect(await signUp(secondDeps, signUpInput("me@example.invalid"))).toEqual(cooldown);
       // Past the sign-up's own one-minute window, but still within a minute of the minted session.
       first.advance(31);
       expect(await requestPasswordReset(secondDeps, { email: "me@example.invalid" })).toEqual({ ...cooldown, retryAfterSeconds: 29 });
@@ -1270,7 +1272,7 @@ describe("verifySignUpCode", () => {
     await verifySignUpCode(deps, { email: "k@example.invalid", code: "123456" }, "/");
     expect(hit.mock.calls.map((c) => [c[0].key, c[0].limit, c[0].windowSeconds])).toEqual([
       ["code:email:k@example.invalid", 5, 900],
-      ["code:ip:10.0.0.1", 30, 3600],
+      ["code:ip:10.0.0.1", 300, 3600],
     ]);
   });
 
@@ -1526,21 +1528,25 @@ describe("repairGoogleAccount (spec 5.3)", () => {
     trace(order, g.auth, "updateDisplayName");
     trace(order, g.auth, "acceptTerms");
     trace(order, g.auth, "scramblePassword");
+    const admin = trace(order, g.auth, "resetUserMetadata");
+    trace(order, g.profiles, "recordTermsAcceptance");
     trace(order, g.directory, "repairAfterGoogle");
     const open = trace(order, g.auth, "openSessionWithoutEmail");
 
     const result = await repairGoogleAccount(g.deps, user, "/groups/7");
     expect(result).toEqual({ ok: true, data: { redirectTo: "/groups/7" } });
-    // Detect without deleting; name and terms while the Google session lives; remove the
-    // identity only after the scramble, and before the minted session confirms (verifies) it.
+    // Detect without deleting; scramble at once (final review I1); then the name and terms with
+    // the admin client (no session needed); remove the identity, before the minted session
+    // confirms (verifies) it.
     expect(order).toEqual([
       "hasPendingEmailIdentity",
-      "updateDisplayName",
-      "acceptTerms",
       "scramblePassword",
+      "resetUserMetadata",
+      "recordTermsAcceptance",
       "repairAfterGoogle",
       "openSessionWithoutEmail",
     ]);
+    expect(admin).toHaveBeenCalledWith(user.id, { displayName: "Google User", acceptedTermsVersion: TERMS_VERSION });
     expect(open).toHaveBeenCalledWith({ email: GOOGLE_EMAIL, expectedUserId: user.id });
 
     expect(await stranger.auth.signInWithPassword({ email: GOOGLE_EMAIL, password: STRANGER_PW })).toEqual({
@@ -1594,7 +1600,7 @@ describe("repairGoogleAccount (spec 5.3)", () => {
     expect(await ctx.auth.signInWithPassword({ email: GOOGLE_EMAIL, password: PW })).toEqual({ ok: true });
   });
 
-  it.each(["hasPendingEmailIdentity", "repairAfterGoogle", "scramblePassword", "openSessionWithoutEmail", "updateDisplayName", "acceptTerms"] as const)(
+  it.each(["hasPendingEmailIdentity", "repairAfterGoogle", "scramblePassword", "openSessionWithoutEmail", "resetUserMetadata"] as const)(
     "a failure in %s signs the person out with the Google message",
     async (step) => {
       const { g, user } = await strangerThenGoogle();
@@ -1663,7 +1669,7 @@ describe("secondsUntilEmailAllowed (the code screen's starting countdown)", () =
   it("is 0 before any email, the cooldown's remaining seconds after one, and counts nothing", async () => {
     const { deps, advance } = setup();
     expect(await secondsUntilEmailAllowed(deps.limiter, "a@x.com")).toBe(0);
-    expect((await signUp(deps, validSignUp("a@x.com"), "/")).ok).toBe(true);
+    expect((await signUp(deps, validSignUp("a@x.com"))).ok).toBe(true);
     expect(await secondsUntilEmailAllowed(deps.limiter, " A@X.com ")).toBe(60);
     advance(20);
     expect(await secondsUntilEmailAllowed(deps.limiter, "a@x.com")).toBe(40);
@@ -1751,7 +1757,7 @@ describe("a code that confirms someone else's sign-up: name and terms (P13)", ()
     return { store, owner, stranger, strangerId: pendingUserId, email };
   }
 
-  it("clears the terms and names the account after the address, while the code session lives, before the scramble", async () => {
+  it("scrambles first, then clears the terms and names the account after the address with the admin client (no session)", async () => {
     const { store, owner, strangerId, email } = await strangerAfterOwner();
     // The stranger's sign-up recorded their acceptance on the profile row.
     store.profileTerms.set(strangerId, { termsVersion: TERMS_VERSION, termsAcceptedAt: new Date(0), ageConfirmedAt: new Date(0) });
@@ -1759,21 +1765,17 @@ describe("a code that confirms someone else's sign-up: name and terms (P13)", ()
     trace(order, owner.auth, "verifyCode");
     const rename = trace(order, owner.auth, "updateDisplayName");
     trace(order, owner.auth, "clearTermsAcceptance");
+    const admin = trace(order, owner.auth, "resetUserMetadata");
     const clearProfile = trace(order, owner.profiles, "clearTermsAcceptance");
     trace(order, owner.auth, "scramblePassword");
     trace(order, owner.auth, "openSessionWithoutEmail");
 
     const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
     expect(result).toEqual({ ok: true, data: { redirectTo: "/", needsPassword: true } });
-    expect(order).toEqual([
-      "verifyCode",
-      "updateDisplayName",
-      "clearTermsAcceptance",
-      "clearTermsAcceptance",
-      "scramblePassword",
-      "openSessionWithoutEmail",
-    ]);
-    expect(rename).toHaveBeenCalledWith("asha.rao");
+    // The stranger's password dies straight after the code, before any other write (final review I1).
+    expect(order).toEqual(["verifyCode", "scramblePassword", "resetUserMetadata", "clearTermsAcceptance", "openSessionWithoutEmail"]);
+    expect(admin).toHaveBeenCalledWith(strangerId, { displayName: "asha.rao" });
+    expect(rename).not.toHaveBeenCalled();
     expect(clearProfile).toHaveBeenCalledWith(strangerId);
 
     const user = (await owner.auth.getUser())!;
@@ -1820,17 +1822,19 @@ describe("a code that confirms someone else's sign-up: name and terms (P13)", ()
     expect((await ctx.auth.getUser())?.displayName).toBe(expected);
   });
 
-  it("a failed session write never keeps the stranger's password or details: the admin client replaces them, and it scrambles", async () => {
+  it("an admin write that fails once is tried again; the session-based writes are not needed", async () => {
     const { owner, email, strangerId } = await strangerAfterOwner();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(owner.auth, "updateDisplayName").mockRejectedValue(new AuthProviderError("unavailable", "vendor"));
-    const admin = vi.spyOn(owner.auth, "resetUserMetadata");
+    const admin = vi.spyOn(owner.auth, "resetUserMetadata").mockRejectedValueOnce(new AuthProviderError("unavailable", "vendor"));
+    const rename = vi.spyOn(owner.auth, "updateDisplayName");
     const clearProfile = vi.spyOn(owner.profiles, "clearTermsAcceptance");
     const scramble = vi.spyOn(owner.auth, "scramblePassword");
     const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
     expect(result).toEqual({ ok: true, data: { redirectTo: "/", needsPassword: true } });
     expect(scramble).toHaveBeenCalledTimes(1);
-    expect(admin).toHaveBeenCalledWith(strangerId, { displayName: "asha.rao" });
+    expect(admin).toHaveBeenCalledTimes(2);
+    expect(admin).toHaveBeenLastCalledWith(strangerId, { displayName: "asha.rao" });
+    expect(rename).not.toHaveBeenCalled();
     expect(clearProfile).toHaveBeenCalledWith(strangerId);
     expect(await owner.auth.getUser()).toMatchObject({ displayName: "asha.rao", termsVersion: null });
     expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
@@ -2005,6 +2009,7 @@ describe("verifyResetCode on an account with a pending email sign-up (fix round 
     trace(order, owner.directory, "describeEmail");
     trace(order, owner.auth, "verifyCode");
     trace(order, owner.auth, "updateDisplayName");
+    trace(order, owner.auth, "resetUserMetadata");
     trace(order, owner.auth, "scramblePassword");
     const open = trace(order, owner.auth, "openSessionWithoutEmail");
 
@@ -2012,7 +2017,7 @@ describe("verifyResetCode on an account with a pending email sign-up (fix round 
     // The same reply as for any account: the screens cannot tell a pending account apart.
     expect(result).toEqual({ ok: true, data: undefined });
     // Read before verifying (verifying confirms the account), then the takeover.
-    expect(order).toEqual(["describeEmail", "verifyCode", "updateDisplayName", "scramblePassword", "openSessionWithoutEmail"]);
+    expect(order).toEqual(["describeEmail", "verifyCode", "scramblePassword", "resetUserMetadata", "openSessionWithoutEmail"]);
     expect(open).toHaveBeenCalledWith({ email, expectedUserId: strangerId });
 
     expect(await owner.auth.getUser()).toMatchObject({ id: strangerId, displayName: "victim.one", termsVersion: null });
@@ -2184,10 +2189,149 @@ describe("P13 admin fallback (fix round 1, Important 3)", () => {
     warn.mockRestore();
   });
 
-  it("the admin fallback is not used when the session writes succeed", async () => {
+  it("the session-based writes are only the last fallback, from the minted session, when the admin writes failed twice", async () => {
     const { owner, email } = await strangerAfterOwner();
-    const admin = vi.spyOn(owner.auth, "resetUserMetadata");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const order: string[] = [];
+    vi.spyOn(owner.auth, "resetUserMetadata").mockRejectedValue(new AuthProviderError("unavailable"));
+    trace(order, owner.auth, "openSessionWithoutEmail");
+    trace(order, owner.auth, "updateDisplayName");
+    trace(order, owner.auth, "clearTermsAcceptance");
+    const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect(result).toEqual({ ok: true, data: { redirectTo: "/", needsPassword: true } });
+    expect(order).toEqual(["openSessionWithoutEmail", "updateDisplayName", "clearTermsAcceptance"]);
+    expect(await owner.auth.getUser()).toMatchObject({ displayName: "asha.rao", termsVersion: null });
+    warn.mockRestore();
+  });
+
+  it("the stranger's password is already dead when the name and terms are written", async () => {
+    const { owner, email } = await strangerAfterOwner();
+    const real = owner.auth.resetUserMetadata.bind(owner.auth);
+    const checks: unknown[] = [];
+    vi.spyOn(owner.auth, "resetUserMetadata").mockImplementation(async (...args) => {
+      // A separate browser tries the stranger's password at the moment of the write.
+      checks.push(await setup({}, owner.store).auth.signInWithPassword({ email, password: STRANGER_PW }));
+      return real(...args);
+    });
     expect((await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/")).ok).toBe(true);
-    expect(admin).not.toHaveBeenCalled();
+    expect(checks).toEqual([{ ok: false, reason: "invalid_credentials" }]);
+  });
+
+  it("if the scramble fails twice, the password is replaced from the live code session first, then the details by the admin client", async () => {
+    const { store, owner, email, strangerId } = await strangerAfterOwner();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const order: string[] = [];
+    vi.spyOn(owner.auth, "scramblePassword").mockRejectedValue(new AuthProviderError("unavailable"));
+    trace(order, owner.auth, "updatePassword");
+    trace(order, owner.auth, "resetUserMetadata");
+    trace(order, owner.auth, "signOut");
+    const result = await verifySignUpCode(owner.deps, { email, code: codeFor(owner.auth, email) }, "/");
+    expect(result).toEqual({ ok: false, formError: AUTH_MESSAGES.confirmedSetPassword });
+    expect(order).toEqual(["updatePassword", "resetUserMetadata", "signOut"]);
+    expect(await owner.auth.signInWithPassword({ email, password: STRANGER_PW })).toEqual({ ok: false, reason: "invalid_credentials" });
+    expect(store.users.get(strangerId)).toMatchObject({ displayName: "asha.rao", termsVersion: null });
+    warn.mockRestore();
+  });
+});
+
+/* ------------------------------------------------------------------------------------------
+   Final fix wave: scramble first (I1) and the Google name after a provider-side repair (I3).
+------------------------------------------------------------------------------------------ */
+
+describe("the Google repair scrambles first (final review I1)", () => {
+  async function strangerThenGoogle() {
+    const store = createFakeAuthStore();
+    const stranger = setup({ ip: "10.9.9.9" }, store);
+    await signUpInBrowser(stranger, GOOGLE_EMAIL, STRANGER_PW, "Stranger Name");
+    const g = setup({}, store);
+    const { url } = await g.auth.startGoogleSignIn({ redirectTo: `${SITE}/auth/callback` });
+    await g.auth.completeOAuth(new URL(url, SITE).searchParams.get("code")!);
+    return { store, stranger, g, user: (await g.auth.getUser())! };
+  }
+
+  it("the stranger's password is already dead when the Google user's name and terms are written", async () => {
+    const { store, g, user } = await strangerThenGoogle();
+    const real = g.auth.resetUserMetadata.bind(g.auth);
+    const checks: unknown[] = [];
+    vi.spyOn(g.auth, "resetUserMetadata").mockImplementation(async (...args) => {
+      checks.push(await setup({}, store).auth.signInWithPassword({ email: GOOGLE_EMAIL, password: STRANGER_PW }));
+      return real(...args);
+    });
+    expect((await repairGoogleAccount(g.deps, user)).ok).toBe(true);
+    expect(checks).toEqual([{ ok: false, reason: "invalid_credentials" }]);
+    expect(await g.auth.getUser()).toMatchObject({ id: user.id, displayName: "Google User", termsVersion: TERMS_VERSION });
+  });
+
+  it("an admin write that fails once is tried again", async () => {
+    const { g, user } = await strangerThenGoogle();
+    const admin = vi.spyOn(g.auth, "resetUserMetadata").mockRejectedValueOnce(new AuthProviderError("unavailable"));
+    expect(await repairGoogleAccount(g.deps, user)).toEqual({ ok: true, data: { redirectTo: "/" } });
+    expect(admin).toHaveBeenCalledTimes(2);
+  });
+
+  it("admin writes that fail twice sign out before the identity is removed, so the next Google sign-in repeats the repair", async () => {
+    const { stranger, g, user } = await strangerThenGoogle();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const admin = vi.spyOn(g.auth, "resetUserMetadata").mockRejectedValue(new AuthProviderError("unavailable"));
+    const removal = vi.spyOn(g.directory, "repairAfterGoogle");
+    expect(await repairGoogleAccount(g.deps, user)).toEqual({ ok: false, formError: AUTH_MESSAGES.googleFailed });
+    expect(removal).not.toHaveBeenCalled();
+    expect(await g.directory.hasPendingEmailIdentity(user.id)).toBe(true);
+    // The stranger's password died at the scramble anyway.
+    expect(await stranger.auth.signInWithPassword({ email: GOOGLE_EMAIL, password: STRANGER_PW })).toEqual({
+      ok: false,
+      reason: "invalid_credentials",
+    });
+
+    admin.mockRestore();
+    const { url } = await g.auth.startGoogleSignIn({ redirectTo: `${SITE}/auth/callback` });
+    await g.auth.completeOAuth(new URL(url, SITE).searchParams.get("code")!);
+    expect(await repairGoogleAccount(g.deps, (await g.auth.getUser())!)).toEqual({ ok: true, data: { redirectTo: "/" } });
+    expect(await g.directory.hasPendingEmailIdentity(user.id)).toBe(false);
+    expect(await g.auth.getUser()).toMatchObject({ displayName: "Google User", termsVersion: TERMS_VERSION });
+    warn.mockRestore();
+  });
+});
+
+describe("a Google account the provider already repaired (final review I3)", () => {
+  it("with no email identity and no terms, the Google name is written, so the profile row follows", async () => {
+    const store = createFakeAuthStore();
+    const stranger = setup({ ip: "10.9.9.9" }, store);
+    const { pendingUserId } = await signUpInBrowser(stranger, GOOGLE_EMAIL, STRANGER_PW, "Stranger Name");
+    // As GoTrue may do when Google links onto an unconfirmed sign-up: the password and the email
+    // identity are gone and the claims replaced, but the stranger's typed name is still the
+    // display name the app (and the profile row, through the trigger) would keep.
+    const u = store.users.get(pendingUserId)!;
+    u.password = null;
+    u.identities = [{ provider: "google", verified: true }];
+    u.termsVersion = null;
+    u.confirmed = true;
+    const g = setup({}, store);
+    const { url } = await g.auth.startGoogleSignIn({ redirectTo: `${SITE}/auth/callback` });
+    await g.auth.completeOAuth(new URL(url, SITE).searchParams.get("code")!);
+    const user = (await g.auth.getUser())!;
+    expect(user.displayName).toBe("Stranger Name");
+
+    const rename = vi.spyOn(g.auth, "updateDisplayName");
+    expect(await repairGoogleAccount(g.deps, user)).toEqual({ ok: true, data: { redirectTo: "/" } });
+    expect(rename).toHaveBeenCalledWith("Google User");
+    expect(await g.auth.getUser()).toMatchObject({ displayName: "Google User", termsVersion: TERMS_VERSION });
+  });
+
+  it("an account with an email identity keeps its name (a password account, or one a foreign code took over)", async () => {
+    const ctx = setup();
+    await signUpInBrowser(ctx, GOOGLE_EMAIL, PW, "Owner Name");
+    ctx.deps.pending = null;
+    await verifySignUpCode(ctx.deps, { email: GOOGLE_EMAIL, code: codeFor(ctx.auth, GOOGLE_EMAIL) }, "/");
+    await ctx.auth.updateDisplayName("Owner Name");
+    await ctx.auth.signOut();
+    const { url } = await ctx.auth.startGoogleSignIn({ redirectTo: `${SITE}/auth/callback` });
+    await ctx.auth.completeOAuth(new URL(url, SITE).searchParams.get("code")!);
+    const user = (await ctx.auth.getUser())!;
+    expect(user.termsVersion).toBeNull();
+    const rename = vi.spyOn(ctx.auth, "updateDisplayName");
+    expect((await repairGoogleAccount(ctx.deps, user)).ok).toBe(true);
+    expect(rename).not.toHaveBeenCalled();
+    expect((await ctx.auth.getUser())?.displayName).toBe("Owner Name");
   });
 });

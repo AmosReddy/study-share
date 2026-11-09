@@ -420,6 +420,32 @@ test.describe("sign-up with an emailed code", () => {
     await expect(page.getByLabel("Password", { exact: true })).toHaveValue(PASSWORD);
   });
 
+  test("sending the sign-up form again for the same address within the minute goes back to its code screen", async ({ page }) => {
+    const email = uniqueEmail("again");
+    await startSignUp(page, email, { path: "/signup?next=/privacy" });
+    const code = await lastEmailedCode(page.request, email);
+    // Back to the form (the back button, or a second tab), the same details sent again at once.
+    await page.goto("/signup?next=/privacy");
+    await submitSignUp(page, { name: "Asha Rao", email });
+    await expect(page.getByRole("main")).toContainText(email);
+    await expect(page.getByText(AUTH_MESSAGES.justSent)).toHaveCount(0);
+    // Nothing new was sent, and the code already in the inbox still works.
+    expect((await latestEmail(page.request, email)).code).toBe(code);
+    await enterCode(page, code);
+    await expect(page).toHaveURL("/privacy");
+  });
+
+  test("the form offers I already have a code, a full-size link to the code screen that keeps next", async ({ page }) => {
+    await page.goto("/signup?next=/privacy");
+    const link = page.getByRole("link", { name: "I already have a code" });
+    await expect(link).toBeVisible();
+    expect((await link.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    expect(await sidewaysOverflow(page)).toBeLessThanOrEqual(0);
+    await link.click();
+    await expect(page).toHaveURL("/signup/verify?next=%2Fprivacy");
+    await expect(codeHeading(page)).toBeVisible();
+  });
+
   test("the consent box reads as one sentence about age, Terms and Privacy Notice", async ({ page }) => {
     await page.goto("/signup");
     await expect(termsBox(page)).toHaveAccessibleName("I am 18 or older and accept the Terms and Privacy Notice");

@@ -243,12 +243,18 @@ export function createSupabaseAuthProvider(
       await updateMetadata({ terms_version: null, terms_accepted_at: null, age_confirmed_at: null });
     },
 
-    async resetUserMetadata(userId, { displayName }) {
+    async resetUserMetadata(userId, { displayName, acceptedTermsVersion }) {
       const adminApi = getAdmin().auth.admin;
-      // user_metadata is merged, so the terms keys are set to null rather than left out.
+      // user_metadata is merged, so cleared terms keys are set to null rather than left out.
+      const now = acceptedTermsVersion ? new Date().toISOString() : null;
       const { error } = await call(() =>
         adminApi.updateUserById(userId, {
-          user_metadata: { display_name: displayName, terms_version: null, terms_accepted_at: null, age_confirmed_at: null },
+          user_metadata: {
+            display_name: displayName,
+            terms_version: acceptedTermsVersion ?? null,
+            terms_accepted_at: now,
+            age_confirmed_at: now,
+          },
         }),
       );
       if (error) throw toProviderError(error);

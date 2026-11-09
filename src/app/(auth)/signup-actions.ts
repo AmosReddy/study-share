@@ -37,8 +37,16 @@ export async function signUpAction(_state: FormState, form: FormData): Promise<F
     acceptTerms: values.acceptTerms === "on",
   };
   const next = safeNextPath(text(form, "next"));
-  const result = await signUp(await requestDeps(), raw, next);
-  if (!result.ok) return failed(result, values);
+  const result = await signUp(await requestDeps(), raw);
+  if (!result.ok) {
+    // The same address sent again within the minute (back button, a second tab): this browser's
+    // own pending sign-up for it is waiting for its code, so go back to that code screen.
+    if (result.formError === AUTH_MESSAGES.justSent) {
+      const pending = await readPendingSignupCookie();
+      if (pending && pending.email === values.email.trim().toLowerCase()) redirect(withNext("/signup/verify", next));
+    }
+    return failed(result, values);
+  }
   await writePendingSignupCookie({ userId: result.data.pendingUserId, email: result.data.email });
   redirect(withNext("/signup/verify", next));
 }
