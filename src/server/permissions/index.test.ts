@@ -1,27 +1,74 @@
 import { describe, expect, test } from "vitest";
+import type { GroupRole as SharedGroupRole, MemberStatus as SharedMemberStatus } from "@/shared/groups";
 import { can, type Action, type MemberStatus, type Role } from "./index";
 
 const user = { id: "u1" };
 const member = (status: MemberStatus, role: Role = "member") => ({ membership: { role, status } });
 
-describe("can(group.view)", () => {
-  test.each(["owner", "admin", "member"] as const)("active %s can view", (role) => {
-    expect(can(user, "group.view", member("active", role))).toBe(true);
+const everyRole = ["owner", "admin", "member"] as const satisfies readonly Role[];
+
+/** Each group action and exactly the roles that may do it. */
+const groupActions = {
+  "group.view": ["owner", "admin", "member"],
+  "group.members.view": ["owner", "admin", "member"],
+  "group.leave": ["member"],
+  "group.edit": ["owner"],
+  "group.join.change": ["owner"],
+  "group.invite.view": ["owner"],
+  "group.invite.reset": ["owner"],
+} as const satisfies Record<Action, readonly Role[]>;
+
+describe("can(group actions)", () => {
+  describe.each(Object.keys(groupActions) as Action[])("%s", (action) => {
+    const allowed: readonly Role[] = groupActions[action];
+
+    test.each(everyRole)("active %s is decided by the role list", (role) => {
+      expect(can(user, action, member("active", role))).toBe(allowed.includes(role));
+    });
+
+    test("signed-out visitor is denied", () => {
+      expect(can(null, action, member("active", "owner"))).toBe(false);
+    });
+
+    test("non-member is denied", () => {
+      expect(can(user, action, { membership: null })).toBe(false);
+    });
+
+    test.each(["pending", "removed"] as const)("%s member is denied for every role", (status) => {
+      for (const role of everyRole) {
+        expect(can(user, action, member(status, role))).toBe(false);
+      }
+    });
   });
 
-  test("signed-out visitor is denied", () => {
-    expect(can(null, "group.view", member("active"))).toBe(false);
+  test("the owner cannot leave their own group", () => {
+    expect(can(user, "group.leave", member("active", "owner"))).toBe(false);
   });
 
-  test("non-member is denied", () => {
-    expect(can(user, "group.view", { membership: null })).toBe(false);
-  });
-
-  test.each(["pending", "removed"] as const)("%s member is denied", (status) => {
-    expect(can(user, "group.view", member(status))).toBe(false);
+  test("the table above lists every action the module knows", () => {
+    // If an action is added to permissions without a row here, this line stops compiling.
+    const listed: Record<Action, readonly Role[]> = groupActions;
+    expect(Object.keys(listed)).toHaveLength(7);
   });
 
   test("unknown action is denied", () => {
     expect(can(user, "group.nuke" as Action, member("active", "owner"))).toBe(false);
+  });
+
+  test("inherited object keys are not actions", () => {
+    expect(can(user, "toString" as Action, member("active", "owner"))).toBe(false);
+    expect(can(user, "__proto__" as Action, member("active", "owner"))).toBe(false);
+  });
+});
+
+describe("shared group types", () => {
+  type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+  test("GroupRole and MemberStatus in src/shared/groups.ts match the ones in permissions", () => {
+    // `true` only type-checks while the two declarations are identical, so `npm run typecheck`
+    // fails if either one drifts.
+    const sameRole: Equal<SharedGroupRole, Role> = true;
+    const sameStatus: Equal<SharedMemberStatus, MemberStatus> = true;
+    expect(sameRole && sameStatus).toBe(true);
   });
 });
