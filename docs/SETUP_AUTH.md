@@ -82,6 +82,8 @@ Everything in this part is new. You do each step in the **dev** project first an
 | **Email OTP Expiration** | Authentication, Sign In / Providers, Email | **600** seconds | [ ] | [ ] |
 | **Rate limit for token verifications** | Authentication, Rate Limits | **100** (recommendation, see step 0.4) | [ ] | [ ] |
 | Require current password when updating | Authentication, Sign In / Providers, Email | Check that it matches dev (step 0.5) | [ ] | [ ] |
+| **Magic link** email template | Authentication, Emails, Templates | The neutral, link-free template in step 0.2b | [ ] | [ ] |
+| Access token (JWT) expiry | Project Settings (JWT or Auth settings) | **900** seconds (recommendation, see step 0.7) | [ ] | [ ] |
 
 Settings that stay exactly as you already have them (just look at them in step 0.6): Confirm email ON, minimum password length 8, Gmail SMTP, the raised sign-up, sign-in and token-refresh limits, and the redirect URLs.
 
@@ -127,7 +129,24 @@ Settings that stay exactly as you already have them (just look at them in step 0
   - **You should see:** the same kind of result as step 0.1.5, for this template.
   - **If it looks different:** the same hints as step 0.1.5.
 
-Leave the other templates (Magic link, Invite user, Change email address, Reauthentication) as they are: the app does not use them.
+### 0.2b Make the Magic link template link-free
+
+**[DEV]** then **[PROD]**. The app never sends "magic link" emails, but anyone who knows the project's public Supabase address can ask Supabase directly to send one to any address that has an account, from your Gmail. Such an email must not contain a link (the site promises codes only), and it should tell the reader plainly that they can ignore it.
+
+- [ ] **0.2b.1** In Authentication, Emails, Templates, open **Magic link**.
+- [ ] **0.2b.2** Set the **Subject** to: `study-share: you can ignore this email`
+- [ ] **0.2b.3** Replace the whole **body** with:
+
+```html
+<p>Someone asked for a sign-in email for this address on study-share.</p>
+<p>study-share does not sign people in by email. To log in, use your password or Continue with Google on the site. If you did not ask for this, you can ignore this email.</p>
+```
+
+- [ ] **0.2b.4** If there is a plain text box, put the same two sentences in it. Save.
+  - **You should see:** the template saved, with no `{{ .ConfirmationURL }}` or any other address in it.
+  - **If it looks different:** if you cannot find a Magic link template, skip this step and tell the developer.
+
+Leave the remaining templates (Invite user, Change email address, Reauthentication) as they are: the app does not use them.
 
 ### 0.3 Email OTP length and expiration
 
@@ -146,7 +165,7 @@ Leave the other templates (Magic link, Invite user, Change email address, Reauth
 
 - [ ] **0.4.1** Go to Authentication, then **Rate Limits**.
 - [ ] **0.4.2** Find **Rate limit for token verifications** (it may be worded "OTP and magic link verifications"; it is counted per IP address over a short window, shown on the page). If you raised it to 500 in the first version of this guide, lower it now. Set it to **100**.
-- [ ] **0.4.3** Leave the others as they are: emails per hour (60), sign-ups and sign-ins (500), token refreshes (500). Save.
+- [ ] **0.4.3** Leave the others as they are: emails per hour (60, raise it for a class session: see step 2.4.2), sign-ups and sign-ins (500), token refreshes (500). Save.
   - **You should see:** the new number saved, and the other numbers unchanged after a reload.
   - **If it looks different:** the exact wording and the time window are the dashboard's, so treat 100 as a starting recommendation, not a magic number. Why not lower? Every check made through the app comes from Vercel's servers, so Supabase counts everyone who confirms a code at the same moment as one visitor. 100 leaves room for a whole class registering within a few minutes. If people see "Too many attempts" while many register at once, raise it (for example to 200) and tell the developer. Never put it back to 500.
 
@@ -170,7 +189,16 @@ Leave the other templates (Magic link, Invite user, Change email address, Reauth
   - **You should see:** nothing changed from before.
   - **If it looks different:** if the dev Site URL is `http://localhost:3000` or the production Site URL is the dev alias, fix it as in Part 2.3 or Part 4.3.
 
-### 0.7 What else is open
+### 0.7 A shorter sign-in pass (a recommendation)
+
+**[DEV]** then **[PROD]**. A signed-in browser carries a pass (the "access token" or "JWT") that stays valid until it runs out, one hour by default. After a password change, a reset or the app's account clean-ups, other devices are refused a new pass at once, but an old pass still works until it runs out. Making it shorter shrinks that window from up to an hour to up to 15 minutes. The cost is small: signed-in browsers renew their pass more often (four times an hour instead of once), which Supabase counts under token refreshes (raised to 500 in step 2.4.3).
+
+- [ ] **0.7.1** Find the setting called something like **Access token (JWT) expiry** or **JWT expiry limit** (in Project Settings, under JWT Keys or Auth settings; the place varies between dashboard versions).
+- [ ] **0.7.2** Set it to **900** (seconds, which is 15 minutes). Save.
+  - **You should see:** 900 saved after a reload. Nothing else changes for people using the site.
+  - **If it looks different:** if you cannot find it, skip it and tell me (the developer). Everything works without it; only the "up to an hour" waits in this guide stay an hour.
+
+### 0.8 What else is open
 
 - [ ] **Part 6: Vercel.** Still open: `NEXT_PUBLIC_SITE_URL` for **Production only**, then redeploy. See Part 6 below.
 - [ ] **Part 7: the checks.** Run both on dev, the services check on production. See Part 7 below.
@@ -239,7 +267,7 @@ Site URL is **one value per Supabase project**. Emails no longer contain any lin
 Every sign-up and log-in reaches Supabase from Vercel's servers, not from the person's phone. Supabase may therefore count the whole class as one visitor and block them together. Raise the per-IP limits so the class fits, but keep the code-check limit modest (reason in Part 0, step 0.4).
 
 - [ ] **2.4.1** Go to Authentication, then Rate Limits.
-- [ ] **2.4.2** Set **Rate limit for sending emails** (per hour) to a value that Gmail can sustain but that still fits the class on launch day. A starting point is **60**. A normal Gmail account sends roughly 500 emails a day, so do not go much higher than the class really needs.
+- [ ] **2.4.2** Set **Rate limit for sending emails** (per hour) to a value that Gmail can sustain but that still fits the class on launch day. A starting point is **60**. **Before a whole class registers together** (for example in a lecture), raise it for that session: each person needs at least one email, often two with a resend, so for 40 to 60 people set about **150**, and put it back afterwards. A free Gmail account sends roughly **500 emails a day** (an approximate figure from Google, not a promise), so do not go much higher than the class really needs.
 - [ ] **2.4.3** Raise the per-IP limits, for example to **500** each: **sign-ups and sign-ins** and **token refreshes**. Set **token verifications** to **100** (not 500: see Part 0, step 0.4). Save.
   - **You should see:** the new numbers saved.
   - **If it looks different:** if the email limit field is greyed out, custom SMTP (step 2.1) is not on yet.
@@ -428,7 +456,10 @@ npx tsx --conditions=react-server --env-file="<production env file>" scripts/che
 
 Test on the dev preview first (`<dev alias>`), then on the live site after the merge. Use a **real phone** and a **desktop browser**, and addresses you own and can read in a real inbox (Gmail is fine; an Outlook address is a good extra). Do not use made-up addresses.
 
-**Before you begin:** Part 0 is done in the dev project (templates, OTP length 6, expiration 600), Part 6 is done and the latest Preview deployment is redeployed, and Part 7 passed. For tests 1 to 8 you need: one address that has no account yet (a fresh `you+test1@gmail.com`-style address works with Gmail, and each plus-address counts as its own address), a Google account that has never been used on the site, and a second inbox for test 6 if you have one.
+**Before you begin:** Part 0 is done in the dev project (templates, OTP length 6, expiration 600), Part 6 is done and the latest Preview deployment is redeployed, and Part 7 passed. For tests 1 to 8 you need:
+- **Google account A**, whose own address has no account on the site yet. **Test 1 must use that real address** (not a plus-address), because test 5.3 signs in with Google to the same address, and Google only ever signs in with an account's own address.
+- **Google account B**, a second Google account that has never been used on the site, for tests 5.1, 5.2 and 6.
+- Fresh addresses for the other tests (2, 3 and 8): a `you+test2@gmail.com`-style address works with Gmail, and each plus-address counts as its own address.
 
 **What the screens are called.** You will meet these, in this order for a new sign-up: **Create your account** (`/signup`), **Enter the code** (`/signup/verify`), and, only when you enter the code on a different device from the one you signed up on, **Create your password** and then **One last step** (the Terms). Forgot password: **Reset your password**, **Enter the code**, **Create a new password**.
 
@@ -438,7 +469,7 @@ Waiting rules to keep in mind: you can only get one email per address about once
 
 ### 8.1 Sign up by email and enter the code (test 1)
 
-- [ ] **8.1.1** On the **phone**, open `<dev alias>/signup`. Enter a name, a new email address you own, and a password of at least 8 characters. Tick the box (18 or older, Terms and Privacy Notice). Tap **Create account**.
+- [ ] **8.1.1** On the **phone**, open `<dev alias>/signup`. Enter a name, the **real address of Google account A** (see "Before you begin"), and a password of at least 8 characters. Tick the box (18 or older, Terms and Privacy Notice). Tap **Create account**.
   - **You should see:** a page **Enter the code** with a large box for the code, a **Verify** button, a **Resend code in 0:xx** countdown and **Change email**.
   - **If it looks different:** an error about the address, see test 4. "We couldn't send the email right now" means the email settings (Part 0, step 0.6) or a limit (Troubleshooting).
 - [ ] **8.1.2** Open the email on the same phone. Look at it.
@@ -489,18 +520,18 @@ Use a new address and start a sign-up so you are on **Enter the code**.
 ### 8.5 Continue with Google (test 5)
 
 - [ ] **8.5.1** On the **phone**, log out, open `/signup` (or `/login`) and tap **Continue with Google**. Under the buttons you should see "By continuing you confirm you are 18 or older and accept the Terms and Privacy Notice".
-  - **You should see:** Google shows an **account chooser** ("Choose an account"), even if the phone is signed in to only one Google account. Choose the Google account that has never used the site and confirm.
+  - **You should see:** Google shows an **account chooser** ("Choose an account"), even if the phone is signed in to only one Google account. Choose **Google account B** (the one that has never used the site) and confirm.
   - **If it looks different:** "Access blocked" or an error page from Google: see Troubleshooting. If Google signs you in without showing the chooser, tell the developer.
 - [ ] **8.5.2** After Google.
   - **You should see:** the home page, signed in, with no **One last step** page (the sentence under the button counts as accepting the Terms).
-- [ ] **8.5.3** Log out. **Continue with Google** again with the Google account whose address matches the **confirmed password account from test 1**.
+- [ ] **8.5.3** Log out. **Continue with Google** again and choose **Google account A**, whose address is the **confirmed password account from test 1**.
   - **You should see:** you land in that same account (same name), not a second one.
 - [ ] **8.5.4** If you can, open the site's address inside an **Instagram or Facebook in-app browser** (send it to yourself in a message and tap it there).
   - **You should see:** an **"Open in your browser"** notice with a copy-link button, instead of a Google error.
 
 ### 8.6 An email registered through Google (test 6)
 
-- [ ] **8.6.1** Log out. Open `/signup` and sign up **by email** with the address of the Google account from step 8.5.1 (the one that has no password).
+- [ ] **8.6.1** Log out. Open `/signup` and sign up **by email** with the address of **Google account B** from step 8.5.1 (the one that has no password).
   - **You should see:** **"This email is registered with Google. Continue with Google, or reset your password to add one."** No email is sent.
 - [ ] **8.6.2** Open `/login`.
   - **You should see:** the hint "Signed up with Google? Use Continue with Google."
@@ -516,7 +547,7 @@ Use a new address and start a sign-up so you are on **Enter the code**.
 - [ ] **8.7.4** Try the **old** password on the log-in page, then the new one.
   - **You should see:** the old one fails with "That email and password do not match", the new one works.
 - [ ] **8.7.5** On the **desktop**, which was signed in before, reload a page.
-  - **You should see:** the desktop is signed out (you land on the log-in page or the pitch). **It can take up to an hour to show**, because a signed-in browser carries a pass that stays valid for up to an hour; the server has already refused to renew it. If the desktop still looks signed in, come back after an hour and reload: it must be signed out then. Tell the developer if it is not.
+  - **You should see:** the desktop is signed out (you land on the log-in page or the pitch). **It can take up to an hour to show** (up to 15 minutes if you did step 0.7), because a signed-in browser carries a pass that stays valid until it runs out; the server has already refused to renew it. If the desktop still looks signed in, come back after that time and reload: it must be signed out then. Tell the developer if it is not.
 - [ ] **8.7.6** Check that a used code is dead: open `/forgot-password` again in a private tab, enter the address, and when the code page appears type the **previous** (already used) code.
   - **You should see:** "That code is wrong or has expired. Request a new one." Then close the tab without finishing.
 
@@ -543,7 +574,7 @@ This is the test that proves a stranger cannot pre-register your address and kee
 - [ ] **8.8.C.2** In browser 2, open `/forgot-password`, enter address B, get the code from the email, type it, and **stop** when you reach **Create a new password**. Do not choose a password. Close the tab.
 - [ ] **8.8.C.3** In browser 1 (or any), try to log in with address B and password **P1**.
   - **You should see:** "That email and password do not match." The stranger's password does **not** work.
-- [ ] **8.8.C.4** Go back and use Forgot password again for address B, finish with a new password.
+- [ ] **8.8.C.4** **Wait a minute first** (the step before counts as a code sent to address B, and only one is allowed a minute; if you go straight on, the code screen says a code was sent but none comes: tap **Resend code** once its countdown ends). Then use Forgot password again for address B and finish with a new password.
   - **You should see:** the home page, signed in, with the name set to the part of the address before the @ (not "Stranger"), possibly after the **One last step** page to accept the Terms.
 
 ### 8.9 The rest of the account
@@ -562,7 +593,7 @@ These cannot be seen from the site, so the developer or controller does them and
 | | What is checked | Why |
 |---|---|---|
 | (a) | That the "nulls" the app writes to clear the Terms acceptance in Supabase's user metadata really remove those keys (read the user back in the dashboard or by a script) | The app clears a stranger's Terms acceptance when a code confirms an account from another device. It is only unit-tested so far |
-| (b) | What real Google sign-in does to a pre-registered, still unconfirmed email sign-up: whether Supabase marks the email identity verified or confirms the user when Google links | The Google repair (removing a stranger's password and name) assumes the pending email identity stays unconfirmed when Google links. If Supabase marks it verified, the repair never triggers. This needs a real Google account |
+| (b) | What real Google sign-in does to a pre-registered, still unconfirmed email sign-up: whether Supabase marks the email identity verified, removes it, or confirms the user when Google links. Afterwards read the user's `auth.users.raw_user_meta_data` (name and terms keys) and the `public.profiles` row (`display_name` and the terms fields) | The app's repair (removing a stranger's password and name) runs when the pending email identity is still there. Supabase may instead clean up by itself and replace the metadata with Google's; the app then writes the Google name for an account without an email identity, so the profile row follows. Both outcomes must end with the Google person's name and terms in both places and the stranger's password gone. This needs a real Google account |
 | (c) | That the app's database role (the `DATABASE_URL` login) can update `profiles` under row-level security, as the migration role can | The app records Terms acceptance in the `profiles` row. It was tested with the migration role |
 | (d) | How the email provider's per-address interval behaves on a real phone, for example a Resend at exactly 60 seconds, and Forgot password shortly after a sign-up from another device | Supabase refuses a second email to one address within about a minute; the app's own countdown is meant to decide first |
 
@@ -577,7 +608,7 @@ These cannot be seen from the site, so the developer or controller does them and
 
 The first merge to `main` happens only when **all** of these are true:
 
-- [ ] **Both** Supabase projects (dev and production) have the new **Confirm signup** and **Reset password** code templates (Part 0, steps 0.1 and 0.2).
+- [ ] **Both** Supabase projects (dev and production) have the new **Confirm signup** and **Reset password** code templates and the link-free **Magic link** template (Part 0, steps 0.1, 0.2 and 0.2b).
 - [ ] **Both** projects have **Email OTP Length 6** and **Email OTP Expiration 600** (step 0.3).
 - [ ] **Both** projects have Confirm email ON, minimum password length 8 and Gmail SMTP working (steps 0.6, 2.1, 2.2, 4.1, 4.2).
 - [ ] **Both** projects have the raised rate limits **and** the lowered token-verification limit (steps 0.4, 2.4, 4.4), and "require current password when updating" matches dev (step 0.5).
@@ -588,6 +619,8 @@ The first merge to `main` happens only when **all** of these are true:
 - [ ] The checks in Part 7 passed: `npm run check:services` and `npm run check:auth-behaviour` on dev, and the `check-services.ts` command on production.
 - [ ] The controller's live verifications (Part 8.10) are reported.
 - [ ] The live acceptance in Part 8 (tests 1 to 8) passed on the **preview**, then (8.11) on **production**, on a real phone and a desktop.
+- [ ] CI is green on the pull request, including the integration (database) job.
+- [ ] Recommended, not required: the access token (JWT) expiry is 900 seconds in both projects (step 0.7). If it could not be found, it is noted.
 - [ ] **You have said clearly that you approve the merge.**
 
 Then the developer opens the pull request, CI runs, and you approve the merge. After the merge, do 8.11.
@@ -616,7 +649,8 @@ where email_confirmed_at is null and created_at < now() - interval '7 days';
 
   Do this in the production project (and dev if you like). It is a manual task during the pilot; automating it is not part of this work.
 - [ ] **Watch the logs for the email-limit line.** In Vercel open the project, then Logs, and search for `Auth provider refused to send an email (rate limited)`. If it appears, people were told "We couldn't send the email right now." Raise the email-per-hour limit (step 2.4.2), or wait for the hourly window to pass. If it appears often, tell the developer.
-- [ ] **Watch Gmail's daily limit.** A normal Gmail account sends roughly 500 emails a day. Every sign-up, resend and reset is one email.
+- [ ] **Watch Gmail's daily limit.** A free Gmail account sends roughly 500 emails a day (approximate). Every sign-up, resend and reset is one email.
+- [ ] **Before a whole class registers at once.** Raise the emails-per-hour limit for the session (step 2.4.2) and put it back afterwards. The app's own per-network limits allow a whole class on one Wi-Fi (300 sign-ups, 300 code checks and 300 log-ins an hour from one network address); the per-address limits stay strict.
 
 ---
 
@@ -631,8 +665,10 @@ In plain words, these are the things that are not fully closed and that you have
 5. **Google and an earlier stranger's sign-up.** If a stranger signed up with someone's address and a password, and the real owner then uses Continue with Google, the app removes the stranger's password and name and replaces the Terms record with the Google person's own, so nothing of the stranger's survives. This relies on a guess about how Supabase handles Google sign-in onto an unconfirmed address; it has not been confirmed with a real Google account yet (the controller's check (b) in Part 8.10). Until it is confirmed, treat this case as not fully proven.
 6. **Someone can lock a known address out of entering codes.** The wrong-code limit is per address, so someone typing wrong codes for your address can stop you entering codes for 15 minutes. Google sign-in still works and the lock ends by itself.
 7. **Unconfirmed accounts older than 7 days are cleaned up by hand** (Part 10), not automatically.
-8. **Other devices can look signed in for up to an hour after a password change or reset.** The server refuses to renew them straight away, but the browser carries a pass that stays valid until it runs out (up to an hour).
+8. **Other devices can look signed in for up to an hour after a password change or reset** (up to 15 minutes with step 0.7). The server refuses to renew them straight away, but the browser carries a pass that stays valid until it runs out.
 9. **Timing and "couldn't send" hints.** The response-time difference on Forgot password and the "We couldn't send the email" message can hint that an address exists. These were accepted in the first design (see the Phase 1 design's known risks).
+10. **Anyone can make Supabase send a "magic link" email to an address that has an account.** It uses your Gmail and counts against the email limits. Step 0.2b makes that email link-free and harmless, and the emails-per-hour limit caps how many can go out.
+11. **A whole class registering together can reach the email limits.** The emails-per-hour limit and Gmail's daily limit (about 500) are shared by everyone. Raise the hourly limit for the session (Part 10).
 
 ---
 
@@ -669,4 +705,4 @@ In plain words, these are the things that are not fully closed and that you have
 | Locally, you sign in and are sent back to the login page again and again | An `https` `NEXT_PUBLIC_SITE_URL` while running over `http://localhost`: the cookies are marked secure and the browser drops them | Never set an `https` `NEXT_PUBLIC_SITE_URL` for a local `http` run. Remove it from `.env.local` and restart `npm run dev` |
 | `check:auth-behaviour` refuses to run | Your settings are, or point at, production | Point `.env.local` at the dev project. This script runs on dev only |
 | `check:auth-behaviour` shows `(i) ... 8 characters, digits only` | The dev project still issues 8-digit codes | Part 0, step 0.3, then run it again |
-| Another device still looks signed in after a password reset | The browser's pass is valid for up to an hour; the server has already refused to renew it | Wait up to an hour. It must be signed out after that |
+| Another device still looks signed in after a password reset | The browser's pass is valid until it runs out (up to an hour, or 15 minutes with step 0.7); the server has already refused to renew it | Wait that long. It must be signed out after that |
