@@ -33,7 +33,7 @@ async function withStore(run: (ctx: Ctx) => Promise<void>): Promise<void> {
     const meta = name === undefined ? {} : { display_name: name };
     await client`
       insert into auth.users (id, email, raw_user_meta_data)
-      values (${id}, ${`group-${id}@example.invalid`}, ${client.json(meta)})`;
+      values (${id}, ${`group-${id}@example.invalid`}, ${JSON.stringify(meta)}::jsonb)`;
     userIds.push(id);
     return id;
   };
@@ -52,16 +52,25 @@ async function withStore(run: (ctx: Ctx) => Promise<void>): Promise<void> {
   try {
     await run({ store, newUser, newUsers, client });
   } finally {
-    try {
-      if (userIds.length > 0) {
-        await client`
-          delete from public.groups where id in (
-            select group_id from public.group_members where role = 'owner' and user_id in ${client(userIds)})`;
-        await client`delete from auth.users where id in ${client(userIds)}`;
+    // Each clean-up step is tried even when an earlier one fails; the first failure is rethrown.
+    const errors: unknown[] = [];
+    const attempt = async (step: () => PromiseLike<unknown>) => {
+      try {
+        await step();
+      } catch (error) {
+        errors.push(error);
       }
-    } finally {
-      await client.end();
+    };
+    if (userIds.length > 0) {
+      await attempt(
+        () => client`
+          delete from public.groups where id in (
+            select group_id from public.group_members where role = 'owner' and user_id in ${client(userIds)})`,
+      );
+      await attempt(() => client`delete from auth.users where id in ${client(userIds)}`);
     }
+    await attempt(() => client.end());
+    if (errors.length > 0) throw errors[0];
   }
 }
 

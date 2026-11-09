@@ -61,8 +61,12 @@ function isUniqueViolation(error: unknown): boolean {
   person's (addMember); createGroup takes only the person's. So no transaction ever holds a
   person lock while waiting for a group lock, and two transactions cannot wait on each other.
 */
-const groupLockKey = (groupId: string) => `group-members:${groupId}`;
-const personLockKey = (userId: string) => `group-person:${userId}`;
+/** The lock-then-count steps rely on READ COMMITTED (each statement sees what committed before
+ * it started), so it is stated rather than left to the server's default. */
+const LOCKING_TX = { isolationLevel: "read committed" } as const;
+
+const groupLockKey = (groupId: string) => `group-members:${groupId.toLowerCase()}`;
+const personLockKey = (userId: string) => `group-person:${userId.toLowerCase()}`;
 
 /**
  * The SQL GroupStore, on public.groups and public.group_members (RLS on, no policies; the app
@@ -104,7 +108,7 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
           select ${GROUP_COLUMNS} from g`);
         if (rows.length === 0) return { ok: false, reason: "invite_taken" } as const;
         return { ok: true, group: toRecord(rows[0]) } as const;
-      });
+      }, LOCKING_TX);
     },
 
     async findByInvite(key) {
@@ -169,9 +173,10 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
           insert into public.group_members (group_id, user_id, role, status)
           values (${groupId}, ${userId}, 'member', 'active')
           on conflict (group_id, user_id) do update
-            set role = 'member', status = 'active', joined_at = now()`);
+            set role = 'member', status = 'active', joined_at = now()
+            where group_members.status <> 'removed'`);
         return "joined";
-      });
+      }, LOCKING_TX);
     },
 
     async leave(groupId, userId) {
