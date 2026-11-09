@@ -4,7 +4,9 @@ import { AUTH_MESSAGES } from "@/shared/auth-messages";
 
 /*
   Helpers shared by the use-cases (auth, groups): the result shape, form parsing and the rate
-  limit checks. Wording that differs per feature is passed in; nothing here knows about a feature.
+  limit checks. Wording that differs per feature is passed in (a check's `message`, the default
+  message of overLimit, the form-error wording of parse); the only default kept here is the auth
+  wording for an unreadable form, so auth callers pass nothing.
 */
 
 export type ActionResult<T = void> =
@@ -19,7 +21,11 @@ export type Limit = { limit: number; windowSeconds: number };
 /** One limit to count. `message` replaces the usual "too many attempts" when this one refuses. */
 export type Check = { key: string; limit: Limit; message?: string };
 
-export function parse<S extends z.ZodType>(schema: S, raw: unknown): { data: z.output<S> } | { failure: Failure } {
+export function parse<S extends z.ZodType>(
+  schema: S,
+  raw: unknown,
+  badForm: string = AUTH_MESSAGES.badForm,
+): { data: z.output<S> } | { failure: Failure } {
   const result = schema.safeParse(raw);
   if (result.success) return { data: result.data };
   const fieldErrors: Record<string, string> = {};
@@ -27,7 +33,7 @@ export function parse<S extends z.ZodType>(schema: S, raw: unknown): { data: z.o
   for (const issue of result.error.issues) {
     const field = issue.path[0];
     if (typeof field === "string") fieldErrors[field] ??= issue.message;
-    else formError ??= AUTH_MESSAGES.badForm;
+    else formError ??= badForm;
   }
   return {
     failure: {

@@ -12,8 +12,9 @@ export const GROUP_MESSAGES = {
   locked: "Too many wrong passwords. Try again in 15 minutes.",
   tooManyGroups: `You are in ${GROUP_LIMITS.maxGroupsPerPerson} groups, the most one account can be in. Leave one to join another.`,
   tooMany: "Too many attempts. Please try again later.",
-  ownerCannotLeave: "You own this group, so you can't leave it. Hand it over to someone else first.",
+  ownerCannotLeave: "You own this group, so you can't leave it yet.",
   /** A code that matches no group looks exactly like a dead invite link. */
   codeNotFound: "This invite link isn't valid any more. Ask the group owner for a new one.",
+  badForm: "Check the form and try again.",
   couldNotSave: "We couldn't save that right now. Please try again.",
 } as const;

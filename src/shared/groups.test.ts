@@ -165,7 +165,9 @@ describe("GROUP_MESSAGES", () => {
     expect(GROUP_MESSAGES.tooManyGroups).toBe(
       "You are in 20 groups, the most one account can be in. Leave one to join another.",
     );
-    for (const key of ["tooMany", "ownerCannotLeave", "couldNotSave"] as const) {
+    expect(GROUP_MESSAGES.ownerCannotLeave).toBe("You own this group, so you can't leave it yet.");
+    expect(GROUP_MESSAGES.badForm).toBe("Check the form and try again.");
+    for (const key of ["tooMany", "couldNotSave"] as const) {
       expect(GROUP_MESSAGES[key].length).toBeGreaterThan(0);
     }
   });
