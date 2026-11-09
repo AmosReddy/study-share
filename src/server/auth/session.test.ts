@@ -1,7 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TERMS_VERSION } from "@/shared/legal";
 import type { AuthUser } from "@/server/ports/auth-provider";
-import { authRedirectTarget, withDisplayName } from "./session";
+import { authRedirectTarget, getCurrentUser, withDisplayName } from "./session";
+
+const { calls, getUser } = vi.hoisted(() => ({ calls: [] as string[], getUser: vi.fn() }));
+vi.mock("next/server", () => ({ connection: async () => void calls.push("connection") }));
+vi.mock("@/server/services", () => ({
+  getAuthProvider: async () => {
+    calls.push("getAuthProvider");
+    return { getUser };
+  },
+}));
 
 const user = (over: Partial<AuthUser> = {}): AuthUser => ({
   id: "u1",
@@ -50,5 +59,19 @@ describe("withDisplayName", () => {
 
   it("keeps a display name that is set", () => {
     expect(withDisplayName(user()).displayName).toBe("Asha");
+  });
+});
+
+describe("getCurrentUser", () => {
+  it("waits for a real request (connection) before the provider reads the person, because that reads the clock", async () => {
+    // Next.js refuses Date.now() while prerendering a page, and a link's prefetch prerenders it with
+    // the session cookies: "unstable value Date.now() while prerendering". Cookies still come first.
+    getUser.mockImplementation(async () => {
+      calls.push("getUser");
+      return { id: "u1", email: "asha@x.com", displayName: "", termsVersion: null };
+    });
+    const found = await getCurrentUser();
+    expect(calls).toEqual(["getAuthProvider", "connection", "getUser"]);
+    expect(found?.displayName).toBe("asha");
   });
 });
