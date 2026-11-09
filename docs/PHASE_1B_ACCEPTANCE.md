@@ -19,7 +19,7 @@ You need **two devices**: a **phone** and a **desktop browser** (or two phones).
 
 You can also play both people yourself with two accounts. Use real addresses you can read in an inbox, as in Part 8 of `SETUP_AUTH.md`. A plus-address such as `you+friend@gmail.com` counts as its own account.
 
-Test on the **dev preview** first (`<dev alias>`, the address the developer gives you for the Phase 1b preview), then repeat the main tests on `<live address>` after the merge.
+Test on the **dev preview** first (`<dev alias>`, the address the developer gives you for the Phase 1b preview), then repeat the main tests on `<live address>` after the merge. **The developer fills in `<dev alias>` and `<live address>` before you start.** If you still see those words in angle brackets, stop and ask the developer for the preview address.
 
 After most steps you will see **You should see** (what a correct result looks like). If something looks different, write down what you saw and what you tapped, and tell the developer. Do not guess.
 
@@ -52,6 +52,7 @@ After most steps you will see **You should see** (what a correct result looks li
   - **You should see:** an **empty** Create a group form. The password is **not** shown any more, anywhere. (This is on purpose: the app keeps only a scrambled version and cannot show it again.)
 - [ ] **1.4** Open the home page and the groups list (on the phone, the small button at the top that opens the list of your groups; on the desktop it is the column on the left).
   - **You should see:** **Maths Circle** in the list. Tap it to see the group page.
+- [ ] **1.5** If you lose the password, open the group, go to **Settings**, and set a new one (see Test 9.2). The old password cannot be shown again.
 
 ## Test 2: Create a link-only group
 
@@ -68,7 +69,7 @@ Do this on the **Group created** page of a new group, or in the group's **Settin
   - **You should see:** WhatsApp opens (or WhatsApp Web, on a desktop) with a ready message. For a password group it reads "Join Maths Circle on study-share: <link>. Ask <your name> for the group password." For a link-only group it is "Join Open Chemistry on study-share: <link>". **The password is never in the message.**
   - **If it looks different:** if nothing opens on the phone, WhatsApp may not be installed. Try on the desktop, which opens WhatsApp Web.
 - [ ] **3.2** Back on the page, tap **Copy link**, then **Copy code**, and, on a password group's created page, **Copy password**.
-  - **You should see:** each button says **Copied** for a moment. Paste into a note to check that each one copied what it should.
+  - **You should see:** the button's name does not change; a small **Copied** appears beside the button for a few seconds. Paste into a note to check that each one copied what it should.
 
 ## Test 4: A friend opens the link, signs up by email code and joins
 
@@ -107,7 +108,7 @@ Use a friend who is **not yet a member** of the password group, signed in, on th
 - [ ] **7.1** Type a wrong password and tap **Join**. Repeat four more times (five wrong tries in all).
   - **You should see:** each time, under the box: **"That password is not right."**
 - [ ] **7.2** Now type the **right** password and tap **Join**.
-  - **You should see:** a red notice **"Too many wrong passwords. Try again in 15 minutes."** with a hint such as "You can try again in about 15 minutes." Even the right password is refused.
+  - **You should see:** a red notice **"Too many wrong passwords."** with the hint "You can try again in about 15 minutes." (the number of minutes may be smaller). Even the right password is refused.
 - [ ] **7.3** Wait the 15 minutes and try the right password again. (You can carry on with other tests in the meantime, using other accounts and groups.)
   - **You should see:** you join the group.
 
@@ -135,7 +136,7 @@ On **Phone A**, open **Maths Circle** and tap the **Settings** tab.
   - **You should see:** the new password shown **once**, with **Copy password** and **Done**. Open **Members** and return to **Settings**: the password is gone. A friend who is not in the group must now use the new password, and the old one is refused.
 - [ ] **9.3** **Link only, and back.** Choose **Link only** and tap **Save join settings**.
   - **You should see:** "Saved. Anyone with the link or the code can join." The password box disappears, and the WhatsApp message no longer asks for a password. Switch back to **Link and password** with a new password to finish.
-- [ ] **9.4** **Reset the link.** Note the current link and code. Tap **Reset link**, read the question (**Reset the invite link?**, "The old link and code stop working immediately.") and confirm.
+- [ ] **9.4** **Reset the link.** Note the current link and code. Tap **Reset link**, read the question (**Reset the invite link?**, "The old link and code stop working immediately.") and tap **Reset link** again inside the question to confirm. (The button that opens the question and the button that confirms have the same name; **Cancel** closes the question without changing anything.)
   - **You should see:** a **new** link and a **new** code.
 - [ ] **9.5** On a signed-out or signed-in browser that is not in the group, open the **old** link, then type the **old** code on **Join a group**.
   - **You should see:** "This invite link isn't valid any more. Ask the group owner for a new one." for both. The new link works.
@@ -151,13 +152,13 @@ On **Phone A**, open **Maths Circle** and tap the **Settings** tab.
 Do these on the **phone**, with a few groups made on purpose.
 
 - [ ] **11.1** Create three groups whose names are: **తెలుగు సాహిత్యం అధ్యయన బృందం 📚** (Telugu with an emoji), **हिंदी व्याकरण समूह ✍️** (Hindi with an emoji), and one of exactly **60 characters**, for example the word `Thermodynamics` repeated until it is 60 characters long.
-  - **You should see:** each name displays correctly, and the page does **not** move sideways when you swipe. A very long name is cut off with "…" in the heading and in the groups list rather than breaking the layout.
+  - **You should see:** each name displays correctly, and the page does **not** move sideways when you swipe. A very long name is cut off with "…" in the group heading, in the sidebar and in the groups drawer rather than breaking the layout. In the **Your groups** list on the home page, a long name wraps onto more lines instead.
 - [ ] **11.2** Open one of these groups and look at the bottom of the screen.
-  - **You should see:** the tab bar (**Library**, **Members**, and **Settings** if you are the owner) fixed at the bottom, **not covered** by the browser's bottom bar or the keyboard, with tabs big enough to tap easily. Scroll down: the last item on the page is **not hidden** behind the tab bar.
+  - **You should see:** the tab bar (**Library**, **Members**, and **Settings** if you are the owner) fixed at the bottom, **not covered** by the browser's bottom bar, with tabs big enough to tap easily. On some phones the tab bar can sit above the keyboard while you type; that is fine. Scroll down: the last item on the page is **not hidden** behind the tab bar.
 - [ ] **11.3** Open the **Create a group** page and tap the name box.
   - **You should see:** the page does not zoom in when the keyboard opens.
 - [ ] **11.4** Add the site to the home screen (browser menu, "Add to Home screen" or "Install"). Open it from the new icon.
-  - **You should see:** it opens as its own app window and you are still signed in. Open a group from there.
+  - **You should see:** it opens as its own app window. On an iPhone you may need to log in once, because a home-screen app does not share the browser's sign-in. Open a group from there.
 
 ---
 
