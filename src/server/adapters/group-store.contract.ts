@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { GROUP_LIMITS } from "@/shared/groups";
+import { GROUP_CODE_ALPHABET, GROUP_LIMITS } from "@/shared/groups";
 import type { GroupStore } from "../ports/group-store";
 
 export type GroupStoreContext = {
@@ -18,11 +18,15 @@ type WithStore = (run: (ctx: GroupStoreContext) => Promise<void>) => Promise<voi
  * Calling this registers tests, so call it only from a test file.
  */
 export function runGroupStoreContract(withStore: WithStore): void {
-  let counter = 0;
-  /** Invite keys no other group has, so tests never collide by accident. */
+  /**
+   * Fresh random invite keys: a valid code (codeLength characters of the alphabet) and a token.
+   * Random rather than counted, so a rerun or another test worker on the same database (whose
+   * groups may still hold earlier keys) does not collide; 31^8 codes make a clash negligible.
+   */
   function keys() {
-    counter += 1;
-    return { inviteToken: `token-${counter}-${crypto.randomUUID()}`, inviteCode: `CODE${String(counter).padStart(4, "0")}` };
+    const bytes = crypto.getRandomValues(new Uint8Array(GROUP_LIMITS.codeLength));
+    const inviteCode = Array.from(bytes, (b) => GROUP_CODE_ALPHABET[b % GROUP_CODE_ALPHABET.length]).join("");
+    return { inviteToken: `token-${crypto.randomUUID()}`, inviteCode };
   }
 
   function groupInput(ownerId: string, over: Partial<Parameters<GroupStore["createGroup"]>[0]> = {}) {

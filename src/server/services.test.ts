@@ -20,12 +20,14 @@ const { getDb, createAccountDirectory } = vi.hoisted(() => ({
   createAccountDirectory: vi.fn(() => ({ sql: true })),
 }));
 const { createProfileStore } = vi.hoisted(() => ({ createProfileStore: vi.fn(() => ({ sqlProfiles: true })) }));
+const { createGroupStore } = vi.hoisted(() => ({ createGroupStore: vi.fn(() => ({ sqlGroups: true })) }));
 
 vi.mock("next/headers", () => ({ cookies }));
 vi.mock("@/server/env", () => ({ getServerEnv }));
 vi.mock("@/server/db/client", () => ({ getDb }));
 vi.mock("@/server/db/account-directory", () => ({ createAccountDirectory }));
 vi.mock("@/server/db/profile-store", () => ({ createProfileStore }));
+vi.mock("@/server/db/group-store", () => ({ createGroupStore }));
 
 import { getFakeAuthStore, resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
 import { resetFakeGroupStore } from "@/server/adapters/fake-group-store";
@@ -55,6 +57,7 @@ describe("getProfileStore", () => {
 describe("getGroupStore", () => {
   beforeEach(() => {
     getDb.mockClear();
+    createGroupStore.mockClear();
   });
 
   it("in fake mode is the fake store over the shared fake auth store, and never opens the database", async () => {
@@ -86,6 +89,7 @@ describe("getGroupStore", () => {
       const group = await getGroupStore().findByInvite({ code: "ABCDEFGH" });
       expect((await getGroupStore().listMembers(group!.id)).map((m) => m.displayName)).toEqual(["Ada"]);
       expect(getDb).not.toHaveBeenCalled();
+      expect(createGroupStore).not.toHaveBeenCalled();
     } finally {
       resetFakeGroupStore();
       resetFakeAuthStore();
@@ -96,10 +100,19 @@ describe("getGroupStore", () => {
     }
   });
 
-  it("otherwise says plainly that it is not available yet (the SQL store arrives in the next task)", () => {
-    getServerEnv.mockReturnValueOnce({ SERVICES_MODE: "real" } as never);
-    expect(() => getGroupStore()).toThrow("The group store is not available yet.");
-    expect(getDb).not.toHaveBeenCalled();
+  it("otherwise (every real deployment) is the SQL store over the database, made once", () => {
+    getServerEnv.mockReturnValue({ SERVICES_MODE: "real" } as never);
+    try {
+      expect(getGroupStore()).toEqual({ sqlGroups: true });
+      expect(getGroupStore()).toBe(getGroupStore());
+      expect(createGroupStore).toHaveBeenCalledTimes(1);
+      expect(createGroupStore).toHaveBeenCalledWith(getDb.mock.results[0].value);
+    } finally {
+      getServerEnv.mockReset();
+      getServerEnv.mockImplementation(() => {
+        throw new Error("settings were read before the request-reading call");
+      });
+    }
   });
 });
 

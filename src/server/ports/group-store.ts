@@ -37,11 +37,22 @@ export interface GroupStore {
   getMembership(groupId: string, userId: string): Promise<Membership | null>;
   /** Active memberships in groups that are not deleted, ordered by name then id. */
   listGroupsFor(userId: string): Promise<GroupSummary[]>;
+  /**
+   * Adds the person as an active member. The first answer that applies, in this order:
+   * "group_gone" (no such group, or it is deleted); "removed" (they were removed, which a join
+   * never clears) or "already_member" (they are active already); "full" (the group has
+   * GROUP_LIMITS.maxMembers active members); "too_many_groups" (they are active in
+   * GROUP_LIMITS.maxGroupsPerPerson groups that are not deleted); otherwise "joined".
+   */
   addMember(
     groupId: string,
     userId: string,
   ): Promise<"joined" | "already_member" | "removed" | "full" | "too_many_groups" | "group_gone">;
-  /** Deletes the membership row, so a person who left can join again. */
+  /**
+   * Deletes the membership row, so a person who left can join again. "owner" for the owner (the
+   * row stays). "not_member" when there is no row, and also for a removed person, whose row is
+   * kept as it is: leaving never clears a removal.
+   */
   leave(groupId: string, userId: string): Promise<"left" | "owner" | "not_member">;
   /** Sets the status to removed (which blocks a later join). False for the owner and for a non-member. */
   removeMember(groupId: string, userId: string): Promise<boolean>;

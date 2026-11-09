@@ -11,6 +11,7 @@ import { createS3FileStorage } from "@/server/adapters/s3-file-storage";
 import { createSupabaseAuthProvider } from "@/server/adapters/supabase-auth-provider";
 import { createAccountDirectory } from "@/server/db/account-directory";
 import { getDb } from "@/server/db/client";
+import { createGroupStore } from "@/server/db/group-store";
 import { createPostgresRateLimiter } from "@/server/db/postgres-rate-limiter";
 import { createProfileStore } from "@/server/db/profile-store";
 import { getServerEnv } from "@/server/env";
@@ -109,6 +110,7 @@ const MEMORY_LIMITER_KEY = "__studyShareMemoryRateLimiter";
 let postgresLimiter: RateLimiter | undefined;
 let accountDirectory: AccountDirectory | undefined;
 let profileStore: ProfileStore | undefined;
+let groupStore: GroupStore | undefined;
 
 /** Test mode's one limiter. On globalThis, like the fake auth store, because Next.js can bundle
  * server actions and route handlers separately and each would get its own copy. */
@@ -145,13 +147,14 @@ export function getProfileStore(): ProfileStore {
 }
 
 /**
- * Groups and their members. In SERVICES_MODE=fake it is the in-memory fake over the fake auth
- * store (its state is kept on globalThis, so each call can make a fresh wrapper). The SQL store
- * is not wired yet; until it is, any other mode refuses clearly.
+ * Groups and their members: SQL on public.groups and public.group_members over the database
+ * connection. In SERVICES_MODE=fake it is the in-memory fake over the fake auth store (its state
+ * is kept on globalThis, so each call can make a fresh wrapper).
  */
 export function getGroupStore(): GroupStore {
   if (getServerEnv().SERVICES_MODE === "fake") return createFakeGroupStore(getFakeAuthStore());
-  throw new Error("The group store is not available yet.");
+  groupStore ??= createGroupStore(getDb());
+  return groupStore;
 }
 
 /**
