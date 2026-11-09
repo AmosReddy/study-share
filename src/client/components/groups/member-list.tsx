@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useRef, useState } from "react";
+import { useActionState, useId, useRef, useState } from "react";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { SubmitButton } from "@/client/components/auth/submit-button";
 import { Button } from "@/client/components/ui/button";
@@ -13,6 +13,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/client/components/ui/sheet";
+import { guardAction } from "@/client/components/auth/guard-action";
 import { IDLE, type FormAction } from "@/shared/form-state";
 
 /** One row of the list. No ids or emails: only what the screen shows. */
@@ -32,10 +33,12 @@ const badgeClass = "shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium
 
 /** The Members tab: everyone in the group, the owner first, then leaving. */
 export function MemberList({ groupId, groupName, members, leave, ownerCannotLeave, leaveAction }: MemberListProps) {
+  // Unique in the document: Next keeps pages the person left, so another copy can be in the DOM.
+  const headingId = useId();
   return (
     <div className="flex flex-col gap-8">
-      <section aria-labelledby="members-heading" className="flex flex-col gap-3">
-        <h2 id="members-heading" className="text-xl font-semibold">
+      <section aria-labelledby={headingId} className="flex flex-col gap-3">
+        <h2 id={headingId} className="text-xl font-semibold">
           Members <span className="text-base font-normal text-muted-foreground">({members.length})</span>
         </h2>
         <ul aria-label="Members" className="flex flex-col divide-y rounded-xl border">
@@ -63,7 +66,7 @@ export function MemberList({ groupId, groupName, members, leave, ownerCannotLeav
 /** Leave group, with a confirm sheet. A success goes home (the action redirects). */
 function LeaveGroup({ groupId, groupName, action }: { groupId: string; groupName: string; action: FormAction }) {
   const [open, setOpen] = useState(false);
-  const [state, formAction, pending] = useActionState(action, IDLE);
+  const [state, formAction, pending] = useActionState(guardAction(action), IDLE);
   const openerRef = useRef<HTMLButtonElement>(null);
 
   return (

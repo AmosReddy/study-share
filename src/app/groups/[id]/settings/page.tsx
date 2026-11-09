@@ -8,7 +8,7 @@ import { loadGroupPage } from "../load-group";
 
 export default function SettingsPage({ params }: PageProps<"/groups/[id]/settings">) {
   return (
-    <Suspense fallback={<Skeleton className="h-96 w-full" />}>
+    <Suspense fallback={<Skeleton aria-busy="true" className="h-96 w-full" />}>
       <Settings params={params} />
     </Suspense>
   );

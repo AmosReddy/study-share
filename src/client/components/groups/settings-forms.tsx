@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useActionState, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ErrorAnnouncer } from "@/client/components/auth/error-announcer";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { SubmitButton } from "@/client/components/auth/submit-button";
@@ -16,6 +16,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/client/components/ui/sheet";
+import { guardAction } from "@/client/components/auth/guard-action";
 import { IDLE, type FormAction, type FormState } from "@/shared/form-state";
 import { GROUP_LIMITS, type JoinMode } from "@/shared/groups";
 import { CopyButton } from "./copy-button";
@@ -39,17 +40,21 @@ const sectionHeading = "text-xl font-semibold";
  * come later).
  */
 export function GroupSettings({ group, invite, ownerName, detailsAction, joinAction, resetAction }: GroupSettingsProps) {
+  // Unique in the document: Next keeps pages the person left, so another copy can be in the DOM.
+  const uid = useId();
+  const detailsHeading = `${uid}-details-heading`;
+  const joinHeading = `${uid}-join-heading`;
   return (
     <div className="flex flex-col gap-10">
-      <section aria-labelledby="details-heading" className="flex flex-col gap-4">
-        <h2 id="details-heading" className={sectionHeading}>
+      <section aria-labelledby={detailsHeading} className="flex flex-col gap-4">
+        <h2 id={detailsHeading} className={sectionHeading}>
           Group details
         </h2>
         <DetailsForm groupId={group.id} name={group.name} description={group.description} action={detailsAction} />
       </section>
 
-      <section aria-labelledby="join-heading" className="flex flex-col gap-4">
-        <h2 id="join-heading" className={sectionHeading}>
+      <section aria-labelledby={joinHeading} className="flex flex-col gap-4">
+        <h2 id={joinHeading} className={sectionHeading}>
           Join settings
         </h2>
         <JoinSettings groupId={group.id} joinMode={group.joinMode} action={joinAction} />
@@ -72,6 +77,7 @@ function DetailsForm({ groupId, name, description, action }: { groupId: string; 
   const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const values = state.values ?? {};
   const errors = state.fieldErrors ?? {};
+  const uid = useId();
 
   return (
     <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
@@ -82,13 +88,13 @@ function DetailsForm({ groupId, name, description, action }: { groupId: string; 
       <TextField
         label="Group name"
         name="name"
-        id="settings-name"
+        id={`${uid}-name`}
         autoComplete="off"
         defaultValue={values.name ?? name}
         error={errors.name}
         hint={`${GROUP_LIMITS.nameMin} to ${GROUP_LIMITS.nameMax} characters.`}
       />
-      <DescriptionField id="settings-description" defaultValue={values.description ?? description} error={errors.description} />
+      <DescriptionField id={`${uid}-description`} defaultValue={values.description ?? description} error={errors.description} />
       <SubmitButton pending={pending} pendingLabel="Saving…" className="sm:w-auto sm:self-start sm:px-5">
         Save details
       </SubmitButton>
@@ -117,6 +123,18 @@ function JoinSettings({ groupId, joinMode, action }: JoinSettingsProps) {
     [],
   );
 
+  // A page restored from the browser's back-forward cache keeps its state and never runs the
+  // effect above: clear the revealed password when the page goes into the cache.
+  useEffect(() => {
+    function onPageHide(event: PageTransitionEvent) {
+      if (!event.persisted || !revealed.current) return;
+      revealed.current = false;
+      setRound((value) => value + 1);
+    }
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, []);
+
   return (
     <JoinSettingsForm
       key={round}
@@ -143,6 +161,7 @@ function JoinSettingsForm({
 }: JoinSettingsProps & { onRevealed: () => void; onDone: () => void }) {
   const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const [mode, setMode] = useState<JoinMode>(joinMode);
+  const uid = useId();
   const password = state.status === "done" ? state.reveal?.password : undefined;
 
   useLayoutEffect(() => {
@@ -160,17 +179,20 @@ function JoinSettingsForm({
       {state.status === "done" && state.values?.joinMode === "link" ? (
         <FormMessage tone="success" title="Saved. Anyone with the link or the code can join." />
       ) : null}
-      <JoinModeChoice idPrefix="settings-joinMode" mode={mode} onChange={setMode} error={errors.joinMode} />
+      <JoinModeChoice idPrefix={`${uid}-joinMode`} mode={mode} onChange={setMode} error={errors.joinMode} />
       {mode === "password" ? (
         <TextField
           label="New group password"
           name="password"
-          id="settings-password"
+          id={`${uid}-password`}
           type="text"
           autoComplete="off"
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}
+          data-1p-ignore
+          data-lpignore="true"
+          data-bwignore
           hint={`People who already joined stay in. ${GROUP_LIMITS.passwordMin} to ${GROUP_LIMITS.passwordMax} characters.`}
           error={errors.password}
         />
@@ -214,15 +236,16 @@ function NewPassword({ password, onDone }: { password: string; onDone: () => voi
 function ResetInvite({ groupId, action }: { groupId: string; action: FormAction }) {
   const [open, setOpen] = useState(false);
   const openerRef = useRef<HTMLButtonElement>(null);
+  const headingId = useId();
   const [state, formAction, pending] = useActionState(async (previous: FormState, form: FormData) => {
-    const next = await action(previous, form);
+    const next = await guardAction(action)(previous, form);
     if (next.status === "done") setOpen(false);
     return next;
   }, IDLE);
 
   return (
-    <section aria-labelledby="reset-heading" className="flex flex-col gap-3">
-      <h2 id="reset-heading" className={sectionHeading}>
+    <section aria-labelledby={headingId} className="flex flex-col gap-3">
+      <h2 id={headingId} className={sectionHeading}>
         Reset the invite link
       </h2>
       <p className="text-muted-foreground">

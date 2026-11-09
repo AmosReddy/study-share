@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { AuthCard } from "@/client/components/auth/auth-card";
 import { ErrorAnnouncer } from "@/client/components/auth/error-announcer";
 import { FormMessage } from "@/client/components/auth/form-message";
@@ -28,6 +28,7 @@ type CreateGroupScreenProps = { action: FormAction };
 export function CreateGroupScreen({ action }: CreateGroupScreenProps) {
   const [round, setRound] = useState(0);
   const created = useRef(false);
+  const focusName = useRef(false);
 
   useLayoutEffect(
     () => () => {
@@ -38,6 +39,18 @@ export function CreateGroupScreen({ action }: CreateGroupScreenProps) {
     [],
   );
 
+  // A page restored from the browser's back-forward cache keeps its state and never runs the
+  // effect above: clear the revealed password when the page goes into the cache.
+  useEffect(() => {
+    function onPageHide(event: PageTransitionEvent) {
+      if (!event.persisted || !created.current) return;
+      created.current = false;
+      setRound((value) => value + 1);
+    }
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, []);
+
   return (
     <CreateGroupForm
       key={round}
@@ -47,7 +60,13 @@ export function CreateGroupScreen({ action }: CreateGroupScreenProps) {
       }}
       onStartOver={() => {
         created.current = false;
+        focusName.current = true;
         setRound((value) => value + 1);
+      }}
+      takeFocusRequest={() => {
+        const requested = focusName.current;
+        focusName.current = false;
+        return requested;
       }}
     />
   );
@@ -57,10 +76,20 @@ type CreateGroupFormProps = {
   action: FormAction;
   onCreated: () => void;
   onStartOver: () => void;
+  /** True once after "Create another group": the fresh form then puts the cursor in the name box. */
+  takeFocusRequest: () => boolean;
 };
 
-function CreateGroupForm({ action, onCreated, onStartOver }: CreateGroupFormProps) {
+function CreateGroupForm({ action, onCreated, onStartOver, takeFocusRequest }: CreateGroupFormProps) {
   const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
+  // Unique in the document: Next keeps pages the person left, so another copy of a form can be in the DOM.
+  const uid = useId();
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (takeFocusRequest()) nameRef.current?.focus();
+  }, [takeFocusRequest]);
+
   const [mode, setMode] = useState<JoinMode>(state.values?.joinMode === "link" ? "link" : "password");
   const done = state.status === "done" && state.values?.groupId;
 
@@ -81,22 +110,28 @@ function CreateGroupForm({ action, onCreated, onStartOver }: CreateGroupFormProp
         <TextField
           label="Group name"
           name="name"
+          id={`${uid}-name`}
+          ref={nameRef}
           autoComplete="off"
           hint="For example, CSE 2nd Year or Maths Circle."
           defaultValue={values.name}
           error={errors.name}
         />
-        <DescriptionField defaultValue={values.description} error={errors.description} />
-        <JoinModeChoice mode={mode} onChange={setMode} error={errors.joinMode} />
+        <DescriptionField id={`${uid}-description`} defaultValue={values.description} error={errors.description} />
+        <JoinModeChoice idPrefix={`${uid}-joinMode`} mode={mode} onChange={setMode} error={errors.joinMode} />
         {mode === "password" ? (
           <TextField
             label="Group password"
             name="password"
+            id={`${uid}-password`}
             type="text"
             autoComplete="off"
             autoCapitalize="none"
             autoCorrect="off"
             spellCheck={false}
+            data-1p-ignore
+            data-lpignore="true"
+            data-bwignore
             hint={`Send it separately from the link. ${GROUP_LIMITS.passwordMin} to ${GROUP_LIMITS.passwordMax} characters.`}
             error={errors.password}
           />
@@ -113,7 +148,9 @@ function CreateGroupForm({ action, onCreated, onStartOver }: CreateGroupFormProp
  * The optional description. `id` must be unique in the document: Next keeps pages the person
  * left (Activity), so another page's form with the same ids can still be in the DOM.
  */
-export function DescriptionField({ id = "description", defaultValue, error }: { id?: string; defaultValue?: string; error?: string }) {
+export function DescriptionField({ id: givenId, defaultValue, error }: { id?: string; defaultValue?: string; error?: string }) {
+  const generatedId = useId();
+  const id = givenId ?? generatedId;
   const hint = `What the group is for. Up to ${GROUP_LIMITS.descriptionMax} characters.`;
   return (
     <div className="flex flex-col gap-1.5">
@@ -149,14 +186,16 @@ export function JoinModeChoice({
   mode,
   onChange,
   error,
-  idPrefix = "joinMode",
+  idPrefix: givenPrefix,
 }: {
   mode: JoinMode;
   onChange: (mode: JoinMode) => void;
   error?: string;
-  /** Unique in the document (see DescriptionField). */
+  /** Unique in the document (see DescriptionField); made with useId when not given. */
   idPrefix?: string;
 }) {
+  const generatedPrefix = useId();
+  const idPrefix = givenPrefix ?? generatedPrefix;
   return (
     <fieldset className="flex min-w-0 flex-col gap-2" aria-describedby={error ? `${idPrefix}-error` : undefined}>
       <legend className="mb-1.5 text-sm font-medium">How people join</legend>

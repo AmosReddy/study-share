@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useState } from "react";
+import { useId, useLayoutEffect, useState } from "react";
 import { ErrorAnnouncer } from "@/client/components/auth/error-announcer";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { PasswordField } from "@/client/components/auth/password-field";
@@ -43,6 +43,8 @@ export function JoinGroupForm(props: JoinGroupFormProps) {
 function JoinGroupFields({ action, inviteKey, joinMode, ownerName }: JoinGroupFormProps) {
   const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const errors = state.fieldErrors ?? {};
+  // Unique in the document: Next keeps pages the person left, so another copy of this form can be in the DOM.
+  const uid = useId();
 
   return (
     <form ref={formRef} action={formAction} onSubmit={onSubmit} noValidate className="flex flex-col gap-5">
@@ -53,8 +55,12 @@ function JoinGroupFields({ action, inviteKey, joinMode, ownerName }: JoinGroupFo
         <PasswordField
           label="Group password"
           name="password"
-          autoComplete="off"
+          id={`${uid}-password`}
+          autoComplete="new-password"
           autoCorrect="off"
+          data-1p-ignore
+          data-lpignore="true"
+          data-bwignore
           hint={ownerName ? `Ask ${ownerName} for the group password.` : "Ask the group owner for the group password."}
           error={errors.password}
         />

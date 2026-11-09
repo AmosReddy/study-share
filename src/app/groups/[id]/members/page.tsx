@@ -10,7 +10,7 @@ import { loadGroupPage } from "../load-group";
 
 export default function MembersPage({ params }: PageProps<"/groups/[id]/members">) {
   return (
-    <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+    <Suspense fallback={<Skeleton aria-busy="true" className="h-40 w-full" />}>
       <Members params={params} />
     </Suspense>
   );

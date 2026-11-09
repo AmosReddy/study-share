@@ -1,7 +1,7 @@
 "use client";
 
 import { Share2 } from "lucide-react";
-import { useSyncExternalStore } from "react";
+import { useId, useSyncExternalStore } from "react";
 import { Button } from "@/client/components/ui/button";
 import type { JoinMode } from "@/shared/groups";
 import { CopyButton } from "./copy-button";
@@ -41,6 +41,8 @@ export function InviteCard(props: InviteCardProps) {
   const { inviteUrl, inviteCode } = props;
   const canShare = useCanShare();
   const message = inviteMessage(props);
+  // Unique in the document: Next keeps pages the person left, so another copy can be in the DOM.
+  const headingId = useId();
 
   async function share() {
     try {
@@ -51,8 +53,8 @@ export function InviteCard(props: InviteCardProps) {
   }
 
   return (
-    <section aria-labelledby="invite-heading" className="flex flex-col gap-5">
-      <h2 id="invite-heading" className="text-xl font-semibold">
+    <section aria-labelledby={headingId} className="flex flex-col gap-5">
+      <h2 id={headingId} className="text-xl font-semibold">
         Invite people
       </h2>
 
