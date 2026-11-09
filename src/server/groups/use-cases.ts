@@ -56,7 +56,7 @@ export type VisibleGroup = Omit<GroupRecord, "passwordHash" | "inviteToken" | "i
 };
 
 /** How many fresh invite keys createGroup tries before it gives up (a clash is very unlikely). */
-const MAX_INVITE_ATTEMPTS = 5;
+export const MAX_INVITE_ATTEMPTS = 5;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -229,7 +229,7 @@ export async function joinGroup(deps: GroupDeps, raw: unknown): Promise<ActionRe
 }
 
 /** The group and the caller's membership, or null for an unknown or malformed id. */
-async function memberContext(
+export async function memberContext(
   deps: GroupDeps,
   groupId: string,
 ): Promise<{ group: GroupRecord; membership: Membership | null } | null> {

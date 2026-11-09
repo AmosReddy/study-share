@@ -25,3 +25,9 @@ export const JOIN_IP_LIMIT: Limit = { limit: 300, windowSeconds: HOUR };
 export const WRONG_PASSWORD_LIMIT: Limit = { limit: 5, windowSeconds: FIFTEEN_MINUTES };
 
 export const wrongPasswordKey = (groupId: string, userId: string) => `join-wrong:${groupId}:${userId}`;
+
+/** Editing a group's name, description or join settings: 60 an hour per person, so a script cannot hammer the database. */
+export const GROUP_EDIT_USER_LIMIT: Limit = { limit: 60, windowSeconds: HOUR };
+
+/** Resetting an invite link: 20 an hour per person. */
+export const RESET_INVITE_USER_LIMIT: Limit = { limit: 20, windowSeconds: HOUR };
