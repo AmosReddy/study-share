@@ -6,9 +6,9 @@ import { isolateRateLimits, sidewaysOverflow, signUpAndConfirm } from "./helpers
 /*
   Groups: the home list, the Create a group page and its invite card, and the group page
   (/groups/<id>) with its Library, Members and Settings tabs. Every test signs up a fresh person
-  through the real flow (fake services mode). /join and the invite page arrive in a later task;
-  until then a second person joins through the test-only /api/test/join-group route, which runs
-  the same join use-case those pages will use.
+  through the real flow (fake services mode). The invite page and /join have their own spec
+  (invite.spec.ts); here a second person is usually put in a group through the test-only
+  /api/test/join-group route, which runs the same join use-case as the invite page.
 */
 
 const OWNER = "Asha Rao";
@@ -511,11 +511,18 @@ test("reset link: the old link says no longer valid for a new visitor and the ne
   const newLink = (await page.getByTestId("invite-link").textContent())?.trim() ?? "";
   expect(newLink).toMatch(/^http:\/\/localhost:\d+\/invite\/\S+$/);
 
+  // A new visitor opening the old link or the old code on the invite page: the standard message,
+  // and no way to join from it.
   const visitor = await newPerson(browser, info, page, "Meera Iyer");
-  expect(await joinWith(visitor, group.token)).toEqual({ ok: false, formError: GROUP_MESSAGES.invalidInvite });
-  expect(await joinWith(visitor, group.code)).toEqual({ ok: false, formError: GROUP_MESSAGES.invalidInvite });
-  expect(await joinWith(visitor, newLink.split("/invite/")[1] ?? "")).toEqual({ ok: true, groupId: group.id });
-  await visitor.goto(`/groups/${group.id}`);
+  for (const key of [group.token, group.code]) {
+    await visitor.goto(`/invite/${key}`);
+    await expect(visitor.getByText(GROUP_MESSAGES.invalidInvite)).toBeVisible();
+    await expect(visitor.getByRole("button", { name: "Join", exact: true })).toHaveCount(0);
+    await expect(visitor.getByText("Reset Group")).toHaveCount(0);
+  }
+  await visitor.goto(new URL(newLink).pathname);
+  await visitor.getByRole("button", { name: "Join", exact: true }).click();
+  await expect(visitor).toHaveURL(`/groups/${group.id}`);
   await expect(visitor.getByRole("heading", { level: 1, name: "Reset Group" })).toBeVisible();
 });
 

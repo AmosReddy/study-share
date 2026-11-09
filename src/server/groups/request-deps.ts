@@ -1,5 +1,6 @@
 import "server-only";
 import { headers } from "next/headers";
+import { connection } from "next/server";
 import { getCurrentUser, requireAcceptedTerms } from "@/server/auth/session";
 import { clientIp } from "@/server/request-ip";
 import { getGroupStore, getRateLimiter } from "@/server/services";
@@ -29,6 +30,10 @@ export async function requireGroupDeps(next: string): Promise<GroupDeps> {
  */
 export async function previewDeps(): Promise<PreviewDeps> {
   const [user, requestHeaders] = await Promise.all([getCurrentUser(), headers()]);
+  // A preview counts against the rate limits (and reads the clock), so it only ever runs for a
+  // real request: never while Next prerenders the page's shell with the session, as it does for
+  // a prefetch.
+  await connection();
   return {
     groups: getGroupStore(),
     limiter: getRateLimiter(),

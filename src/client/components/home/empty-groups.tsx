@@ -9,10 +9,7 @@ export function GroupActions() {
         <Link href="/groups/new">Create a group</Link>
       </Button>
       <Button asChild variant="outline" className="h-11 px-5 text-base">
-        {/* TODO(Task 11): prefetch again once /join exists; until then it answers 404. */}
-        <Link href="/join" prefetch={false}>
-          Join with a code
-        </Link>
+        <Link href="/join">Join with a code</Link>
       </Button>
     </div>
   );

@@ -51,8 +51,7 @@ export function GroupSidebar({ groups, activeGroupId, onNavigate }: GroupSidebar
         <Link href="/groups/new" onNavigate={onNavigate} className={actionClass}>
           New group
         </Link>
-        {/* TODO(Task 11): prefetch again once /join exists; until then it answers 404. */}
-        <Link href="/join" prefetch={false} onNavigate={onNavigate} className={actionClass}>
+        <Link href="/join" onNavigate={onNavigate} className={actionClass}>
           Join a group
         </Link>
       </div>

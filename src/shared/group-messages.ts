@@ -18,3 +18,9 @@ export const GROUP_MESSAGES = {
   badForm: "Check the form and try again.",
   couldNotSave: "We couldn't save that right now. Please try again.",
 } as const;
+
+/** When a refused try may be made again, in whole minutes (at least one): "You can try again in about 15 minutes." */
+export function retryHint(retryAfterSeconds: number): string {
+  const minutes = Math.max(1, Math.ceil(retryAfterSeconds / 60));
+  return `You can try again in about ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
+}

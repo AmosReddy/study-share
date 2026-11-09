@@ -11,7 +11,8 @@ type PasswordFieldProps = Omit<ComponentProps<"input">, "id" | "name" | "type"> 
   id?: string;
   hint?: ReactNode;
   error?: string;
-  autoComplete: "new-password" | "current-password";
+  /** "off" for a password that is not the person's own (a group password). */
+  autoComplete: "new-password" | "current-password" | "off";
 };
 
 /** A password input with a show/hide button. Without JavaScript it is a plain password field. */
