@@ -59,7 +59,16 @@ export type FakeUser = {
 type FakeCode = { userId: string; kind: CodeKind; code: string; expired: boolean };
 
 /** How a session was made. GoTrue refuses a password change from a password sign-in session (probe l). */
-export type FakeSession = { userId: string; via: "password" | "code" | "oauth" };
+export type FakeSession = { userId: string; via: "password" | "code" | "oauth"; expiresAt: number };
+
+/**
+ * How long a fake session lasts. getUser checks it against the clock, as the real adapter's
+ * getClaims checks the token's expiry: so in test mode too, reading the signed-in person is a
+ * clock read, and a page that does it while Next.js prerenders (a link's prefetch) fails the way
+ * it would on a real deployment. e2e/server-log-reporter.ts fails the browser run when the
+ * server logs that.
+ */
+export const FAKE_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** GoTrue's per-address interval between two emails of one kind (probe n: a second within 3 s gets 429). */
 export const EMAIL_INTERVAL_MS = 60_000;
@@ -239,7 +248,7 @@ export function createFakeAuthProvider(deps: {
     const old = cookies.get(SESSION_COOKIE);
     if (old) store.sessions.delete(old);
     const sid = crypto.randomUUID();
-    store.sessions.set(sid, { userId: u.id, via });
+    store.sessions.set(sid, { userId: u.id, via, expiresAt: Date.now() + FAKE_SESSION_MS });
     cookies.set(SESSION_COOKIE, sid);
   };
 
@@ -283,7 +292,10 @@ export function createFakeAuthProvider(deps: {
     outbox: store.outbox,
 
     async getUser() {
-      const u = currentUser();
+      const sid = currentSession();
+      const session = sid ? store.sessions.get(sid) : undefined;
+      if (!session || session.expiresAt <= Date.now()) return null;
+      const u = store.users.get(session.userId);
       return u ? toAuthUser(u) : null;
     },
 

@@ -3,6 +3,7 @@ import { CODE_LENGTH } from "@/shared/auth-schemas";
 import { createFakeAccountDirectory } from "./fake-account-directory";
 import {
   EMAIL_INTERVAL_MS,
+  FAKE_SESSION_MS,
   createFakeAuthProvider,
   createFakeAuthStore,
   expireAllCodes,
@@ -304,5 +305,21 @@ describe("failNextSignOut (test mode only)", () => {
     store.failNextSignOut = true;
     resetFakeAuthStore();
     expect(store.failNextSignOut).toBe(false);
+  });
+});
+
+describe("session lifetime", () => {
+  test("getUser checks the session's expiry against the clock, as the real token check does", async () => {
+    vi.useFakeTimers();
+    try {
+      const p = createFakeAuthProvider({ store: createFakeAuthStore(), cookies: jar() });
+      await p.signUpWithPassword({ ...input, email: "expiry@example.com" });
+      await confirmByCode(p, "expiry@example.com");
+      expect((await p.getUser())?.email).toBe("expiry@example.com");
+      vi.advanceTimersByTime(FAKE_SESSION_MS + 1);
+      expect(await p.getUser()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
