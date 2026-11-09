@@ -18,9 +18,9 @@ export const JOIN_LOOKUP_USER_LIMIT: Limit = { limit: 60, windowSeconds: FIFTEEN
 export const JOIN_IP_LIMIT: Limit = { limit: 300, windowSeconds: HOUR };
 
 /**
- * Wrong group passwords: 5 per person per group per 15 minutes. Read with `peek` before the
- * password is checked and counted with `hit` only after a wrong one, so a person who is locked out
- * is refused even with the right password.
+ * Password tries: 5 per person per group per 15 minutes. A try is counted (`hit`) BEFORE the password
+ * is checked, so parallel guesses cannot all slip through, and a person who has used the 5 is
+ * refused even with the right password. The right password uses a try too.
  */
 export const WRONG_PASSWORD_LIMIT: Limit = { limit: 5, windowSeconds: FIFTEEN_MINUTES };
 

@@ -42,27 +42,32 @@ export type GroupView = {
 
 export type InvitePreview =
   | { state: "invalid" }
+  | { state: "limited"; retryAfterSeconds: number }
   | { state: "removed" }
   | { state: "member"; groupId: string }
   | { state: "open"; groupId: string; name: string; joinMode: JoinMode; ownerName: string };
 
-/** The group as the pages may see it: everything stored except the password hash. */
-export type VisibleGroup = Omit<GroupRecord, "passwordHash">;
+/**
+ * The group as the pages may see it: no password hash, and no invite token or code. `invite` is
+ * present only for those allowed to see it (the owner).
+ */
+export type VisibleGroup = Omit<GroupRecord, "passwordHash" | "inviteToken" | "inviteCode"> & {
+  invite?: { url: string; code: string };
+};
 
 /** How many fresh invite keys createGroup tries before it gives up (a clash is very unlikely). */
 const MAX_INVITE_ATTEMPTS = 5;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function visible(group: GroupRecord): VisibleGroup {
+function visible(group: GroupRecord, invite: { url: string; code: string } | null): VisibleGroup {
   return {
     id: group.id,
     name: group.name,
     description: group.description,
     joinMode: group.joinMode,
-    inviteToken: group.inviteToken,
-    inviteCode: group.inviteCode,
     createdAt: group.createdAt,
+    ...(invite ? { invite } : {}),
   };
 }
 
@@ -95,15 +100,22 @@ export async function createGroup(
   const passwordHash = joinMode === "password" && password !== undefined ? await hashGroupPassword(password) : null;
 
   for (let attempt = 0; attempt < MAX_INVITE_ATTEMPTS; attempt++) {
-    const result = await deps.groups.createGroup({
-      ownerId: deps.user.id,
-      name,
-      description,
-      joinMode,
-      passwordHash,
-      inviteToken: newInviteToken(),
-      inviteCode: newGroupCode(),
-    });
+    let result: Awaited<ReturnType<GroupStore["createGroup"]>>;
+    try {
+      result = await deps.groups.createGroup({
+        ownerId: deps.user.id,
+        name,
+        description,
+        joinMode,
+        passwordHash,
+        inviteToken: newInviteToken(),
+        inviteCode: newGroupCode(),
+      });
+    } catch {
+      // The error may carry the query's values (the password hash): log a fixed line only.
+      console.error("Could not save a new group.");
+      return { ok: false, formError: GROUP_MESSAGES.couldNotSave };
+    }
     if (result.ok) {
       return {
         ok: true,
@@ -137,11 +149,12 @@ function lookupChecks(deps: PreviewDeps): Check[] {
 
 /**
  * What an invite link or code leads to. A key that matches nothing, a reset key and a deleted group
- * all give the same "invalid". A lookup over its limit also gives "invalid", so it cannot be used to
- * confirm a guess.
+ * all give the same "invalid". A lookup over its limit gives "limited" before anything is looked up,
+ * so it says nothing about the key.
  */
 export async function previewInvite(deps: PreviewDeps, key: string): Promise<InvitePreview> {
-  if ((await overLimit(deps.limiter, lookupChecks(deps), GROUP_MESSAGES.tooMany)) !== null) return { state: "invalid" };
+  const refused = await overLimit(deps.limiter, lookupChecks(deps), GROUP_MESSAGES.tooMany);
+  if (refused) return { state: "limited", retryAfterSeconds: refused.retryAfterSeconds ?? 1 };
 
   const group = await lookupGroup(deps.groups, key);
   if (!group) return { state: "invalid" };
@@ -155,28 +168,22 @@ export async function previewInvite(deps: PreviewDeps, key: string): Promise<Inv
   return { state: "open", groupId: group.id, name: group.name, joinMode: group.joinMode, ownerName: owner?.displayName ?? "" };
 }
 
-const WRONG_PASSWORD_INPUT = (deps: GroupDeps, groupId: string) => ({
-  key: wrongPasswordKey(groupId, deps.user.id),
-  limit: WRONG_PASSWORD_LIMIT.limit,
-  windowSeconds: WRONG_PASSWORD_LIMIT.windowSeconds,
-});
-
-/** Set when the person has used up their wrong-password tries for this group. Fails open if the limiter is down. */
-async function lockedOut(deps: GroupDeps, groupId: string): Promise<{ retryAfterSeconds: number } | null> {
+/**
+ * Takes one of the person's wrong-password slots for this group BEFORE the password is checked, so
+ * parallel guesses cannot all get through (the count is the limiter's, atomic). Returns the wait
+ * when the slots are used up; the right password uses a slot too. Fails open if the limiter is down.
+ */
+async function takePasswordSlot(deps: GroupDeps, groupId: string): Promise<{ retryAfterSeconds: number } | null> {
   try {
-    const answer = await hitWithTimeout(deps.limiter, WRONG_PASSWORD_INPUT(deps, groupId), "peek");
+    const answer = await hitWithTimeout(deps.limiter, {
+      key: wrongPasswordKey(groupId, deps.user.id),
+      limit: WRONG_PASSWORD_LIMIT.limit,
+      windowSeconds: WRONG_PASSWORD_LIMIT.windowSeconds,
+    });
     return answer.allowed ? null : { retryAfterSeconds: Math.max(1, answer.retryAfterSeconds) };
   } catch {
     console.warn("Rate limit store unavailable; allowing the request.");
     return null;
-  }
-}
-
-async function countWrongPassword(deps: GroupDeps, groupId: string): Promise<void> {
-  try {
-    await hitWithTimeout(deps.limiter, WRONG_PASSWORD_INPUT(deps, groupId));
-  } catch {
-    console.warn("Rate limit store unavailable; allowing the request.");
   }
 }
 
@@ -198,11 +205,10 @@ export async function joinGroup(deps: GroupDeps, raw: unknown): Promise<ActionRe
   if (membership?.status === "removed") return { ok: false, formError: GROUP_MESSAGES.cannotJoin };
 
   if (group.joinMode === "password") {
-    const locked = await lockedOut(deps, group.id);
+    const locked = await takePasswordSlot(deps, group.id);
     if (locked) return { ok: false, formError: GROUP_MESSAGES.locked, retryAfterSeconds: locked.retryAfterSeconds };
     const right = group.passwordHash !== null && (await verifyGroupPassword(password ?? "", group.passwordHash));
     if (!right) {
-      await countWrongPassword(deps, group.id);
       return { ok: false, fieldErrors: { password: GROUP_MESSAGES.wrongPassword } };
     }
   }
@@ -240,7 +246,10 @@ export async function viewGroup(
 ): Promise<{ group: VisibleGroup; membership: Membership } | null> {
   const context = await memberContext(deps, groupId);
   if (!context?.membership || !can(deps.user, "group.view", { membership: context.membership })) return null;
-  return { group: visible(context.group), membership: context.membership };
+  const invite = can(deps.user, "group.invite.view", { membership: context.membership })
+    ? { url: `${deps.siteUrl}/invite/${context.group.inviteToken}`, code: context.group.inviteCode }
+    : null;
+  return { group: visible(context.group, invite), membership: context.membership };
 }
 
 export async function listGroupMembers(deps: GroupDeps, groupId: string): Promise<MemberRow[] | null> {

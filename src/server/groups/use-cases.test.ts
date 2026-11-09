@@ -5,7 +5,7 @@ import { createMemoryRateLimiter } from "@/server/adapters/memory-rate-limiter";
 import type { GroupStore } from "@/server/ports/group-store";
 import { GROUP_MESSAGES } from "@/shared/group-messages";
 import { GROUP_LIMITS } from "@/shared/groups";
-import { newGroupCode, newInviteToken } from "./secrets";
+import { newGroupCode, newInviteToken, verifyGroupPassword } from "./secrets";
 import {
   createGroup,
   joinGroup,
@@ -17,6 +17,11 @@ import {
   type GroupDeps,
   type PreviewDeps,
 } from "./use-cases";
+
+vi.mock("./secrets", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./secrets")>();
+  return { ...original, verifyGroupPassword: vi.fn(original.verifyGroupPassword) };
+});
 
 const SITE = "https://app.test";
 const PASSWORD = "correct horse";
@@ -222,16 +227,20 @@ describe("previewInvite", () => {
     expect(await previewInvite(carol, group.inviteCode)).toEqual({ state: "removed" });
   });
 
-  it("previewInvite limits lookups per person and per network, answering invalid when over", async () => {
+  it("previewInvite limits lookups per person and per network, answering limited when over", async () => {
     const { as, signedOut } = setup();
     const bob = as(person("Bob"), "10.0.0.5");
     for (let i = 0; i < 60; i++) await previewInvite(bob, newInviteToken());
     const { group } = await make(as(person("Asha"), "10.0.0.9"));
-    expect(await previewInvite(bob, group.inviteCode)).toEqual({ state: "invalid" });
+    expect(await previewInvite(bob, group.inviteCode)).toEqual({ state: "limited", retryAfterSeconds: expect.any(Number) });
+    const limited = await previewInvite(bob, group.inviteCode);
+    expect(limited.state === "limited" && limited.retryAfterSeconds).toBeGreaterThan(0);
     // Another person on another address is unaffected, and signed-out lookups still count per address.
     expect(await previewInvite(signedOut("10.0.0.7"), group.inviteCode)).toMatchObject({ state: "open" });
     for (let i = 0; i < 300; i++) await previewInvite(signedOut("10.0.0.8"), newInviteToken());
-    expect(await previewInvite(signedOut("10.0.0.8"), group.inviteCode)).toEqual({ state: "invalid" });
+    expect(await previewInvite(signedOut("10.0.0.8"), group.inviteCode)).toEqual({ state: "limited", retryAfterSeconds: expect.any(Number) });
+    // A signed-in person on the busy address is held by the address limit too.
+    expect(await previewInvite(as(person("Dan"), "10.0.0.8"), group.inviteCode)).toMatchObject({ state: "limited" });
   });
 });
 
@@ -275,7 +284,9 @@ describe("joinGroup", () => {
         fieldErrors: { password: GROUP_MESSAGES.wrongPassword },
       });
     }
+    vi.mocked(verifyGroupPassword).mockClear();
     const locked = await joinGroup(bob, { key: group.inviteCode, password: PASSWORD });
+    expect(vi.mocked(verifyGroupPassword)).not.toHaveBeenCalled();
     expect(locked).toMatchObject({ ok: false, formError: GROUP_MESSAGES.locked });
     expect(locked.ok === false && locked.retryAfterSeconds).toBeGreaterThan(0);
     expect(await listMyGroups(bob)).toEqual([]);
@@ -283,6 +294,30 @@ describe("joinGroup", () => {
     // A refused attempt during the lockout does not extend it: after the window the right password works.
     advance(15 * 60 + 1);
     expect(await joinGroup(bob, { key: group.inviteCode, password: PASSWORD })).toMatchObject({ ok: true });
+  });
+
+  it("the fifth try can still join with the right password, after four wrong ones", async () => {
+    const { as } = setup();
+    const { group } = await make(as(person("Asha")), passwordGroup);
+    const bob = as(person("Bob"));
+    for (let i = 0; i < 4; i++) await joinGroup(bob, { key: group.inviteCode, password: `wrong ${i}!` });
+    expect(await joinGroup(bob, { key: group.inviteCode, password: PASSWORD })).toEqual({ ok: true, data: { groupId: group.id } });
+  });
+
+  it("parallel wrong guesses cannot get past the limit, and locked ones do not run scrypt", async () => {
+    const { as } = setup();
+    const { group } = await make(as(person("Asha")), passwordGroup);
+    const bob = as(person("Bob"));
+    vi.mocked(verifyGroupPassword).mockClear();
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => joinGroup(bob, { key: group.inviteCode, password: `wrong ${i}!` })),
+    );
+    const wrong = results.filter((r) => !r.ok && r.fieldErrors?.password === GROUP_MESSAGES.wrongPassword);
+    const locked = results.filter((r) => !r.ok && r.formError === GROUP_MESSAGES.locked);
+    expect(wrong.length).toBeLessThanOrEqual(5);
+    expect(wrong.length + locked.length).toBe(10);
+    expect(vi.mocked(verifyGroupPassword)).toHaveBeenCalledTimes(wrong.length);
   });
 
   it("a lockout is per person and per group (another person, another group are unaffected)", async () => {
@@ -395,6 +430,25 @@ describe("viewGroup, listGroupMembers and leaveGroup", () => {
     expect(await viewGroup(owner, crypto.randomUUID())).toBeNull();
   });
 
+  it("viewGroup shows the invite to the owner only, and a member's result holds neither the token nor the code", async () => {
+    const { as, groups } = setup();
+    const owner = as(person("Asha"));
+    const { group } = await make(owner);
+    const stored = (await groups.findById(group.id))!;
+    const bob = as(person("Bob"));
+    await joinGroup(bob, { key: group.inviteCode });
+
+    const asOwner = await viewGroup(owner, group.id);
+    expect(asOwner?.group.invite).toEqual({ url: `${SITE}/invite/${stored.inviteToken}`, code: stored.inviteCode });
+
+    const asMember = await viewGroup(bob, group.id);
+    expect(asMember).not.toBeNull();
+    expect(asMember?.group.invite).toBeUndefined();
+    const text = JSON.stringify(asMember);
+    expect(text).not.toContain(stored.inviteToken);
+    expect(text).not.toContain(stored.inviteCode);
+  });
+
   it("listGroupMembers returns null for a non-member", async () => {
     const { as, groups } = setup();
     const owner = as(person("Asha"));
@@ -470,6 +524,18 @@ describe("secrets stay secret", () => {
     // A limiter that throws makes the use-case log its warning; that line must be clean too.
     const broken = { ...as(person("Dan")), limiter: { hit: async () => Promise.reject(new Error(`boom ${secret}`)), peek: async () => Promise.reject(new Error("boom")) } };
     outputs.push(await joinGroup(broken, { key: created.group.inviteCode, password: `${secret}-y` }));
+
+    // A store whose createGroup fails with an error that carries the hash and the password (as a
+    // database driver printing its query values would).
+    const leaky: GroupStore = {
+      ...groups,
+      createGroup: async (input) => {
+        throw new Error(`insert failed: params ${input.passwordHash}, ${secret}`);
+      },
+    };
+    const failed = await createGroup({ ...as(person("Eve")), groups: leaky }, { ...passwordGroup, password: secret });
+    expect(failed).toEqual({ ok: false, formError: GROUP_MESSAGES.couldNotSave });
+    outputs.push(failed);
 
     for (const text of [JSON.stringify(outputs), JSON.stringify(logged)]) {
       expect(text).not.toContain(secret);
