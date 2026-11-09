@@ -109,8 +109,11 @@ function CreateGroupForm({ action, onCreated, onStartOver }: CreateGroupFormProp
   );
 }
 
-function DescriptionField({ defaultValue, error }: { defaultValue?: string; error?: string }) {
-  const id = "description";
+/**
+ * The optional description. `id` must be unique in the document: Next keeps pages the person
+ * left (Activity), so another page's form with the same ids can still be in the DOM.
+ */
+export function DescriptionField({ id = "description", defaultValue, error }: { id?: string; defaultValue?: string; error?: string }) {
   const hint = `What the group is for. Up to ${GROUP_LIMITS.descriptionMax} characters.`;
   return (
     <div className="flex flex-col gap-1.5">
@@ -142,12 +145,23 @@ const MODES: { value: JoinMode; title: string; description: string }[] = [
 ];
 
 /** Two radio cards. The whole card is the tap target; the radio keeps a visible focus ring. */
-function JoinModeChoice({ mode, onChange, error }: { mode: JoinMode; onChange: (mode: JoinMode) => void; error?: string }) {
+export function JoinModeChoice({
+  mode,
+  onChange,
+  error,
+  idPrefix = "joinMode",
+}: {
+  mode: JoinMode;
+  onChange: (mode: JoinMode) => void;
+  error?: string;
+  /** Unique in the document (see DescriptionField). */
+  idPrefix?: string;
+}) {
   return (
-    <fieldset className="flex min-w-0 flex-col gap-2" aria-describedby={error ? "joinMode-error" : undefined}>
+    <fieldset className="flex min-w-0 flex-col gap-2" aria-describedby={error ? `${idPrefix}-error` : undefined}>
       <legend className="mb-1.5 text-sm font-medium">How people join</legend>
       {MODES.map((option) => {
-        const id = `joinMode-${option.value}`;
+        const id = `${idPrefix}-${option.value}`;
         return (
           <label
             key={option.value}
@@ -176,7 +190,7 @@ function JoinModeChoice({ mode, onChange, error }: { mode: JoinMode; onChange: (
           </label>
         );
       })}
-      {error ? <FieldError id="joinMode-error">{error}</FieldError> : null}
+      {error ? <FieldError id={`${idPrefix}-error`}>{error}</FieldError> : null}
     </fieldset>
   );
 }
@@ -223,8 +237,7 @@ function CreatedScreen({ state, onStartOver }: { state: FormState; onStartOver: 
 
       <div className="mt-8 flex flex-col gap-3 border-t pt-6 sm:flex-row">
         <Button asChild className="h-11 px-5 text-base">
-          {/* TODO(Task 10): prefetch again once the group page exists; until then it answers 404. */}
-          <Link href={`/groups/${values.groupId}`} prefetch={false}>
+          <Link href={`/groups/${values.groupId}`}>
             Open the group
           </Link>
         </Button>

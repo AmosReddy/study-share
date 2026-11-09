@@ -15,8 +15,6 @@ export function GroupList({ groups }: { groups: SidebarGroup[] }) {
           <li key={group.id} className="min-w-0">
             <Link
               href={`/groups/${group.id}`}
-              // TODO(Task 10): prefetch again once the group page exists; until then it answers 404.
-              prefetch={false}
               className="flex min-h-11 min-w-0 items-center gap-3 rounded-lg border bg-card px-4 py-3 text-base font-medium hover:bg-muted"
             >
               <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{group.name}</span>

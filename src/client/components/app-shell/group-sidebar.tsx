@@ -31,8 +31,6 @@ export function GroupSidebar({ groups, activeGroupId, onNavigate }: GroupSidebar
               <li key={group.id} className="min-w-0">
                 <Link
                   href={`/groups/${group.id}`}
-                  // TODO(Task 10): prefetch again once the group page exists; until then it answers 404.
-                  prefetch={false}
                   title={group.name}
                   aria-current={active ? "page" : undefined}
                   onNavigate={onNavigate}

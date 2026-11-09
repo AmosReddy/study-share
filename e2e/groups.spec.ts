@@ -1,20 +1,33 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
+import { GROUP_MESSAGES } from "../src/shared/group-messages";
 import { auditPage } from "./audit";
 import { isolateRateLimits, sidewaysOverflow, signUpAndConfirm } from "./helpers";
 
 /*
-  Groups, step 1: the home list, the Create a group page and the invite card that follows it.
-  Every test signs up a fresh person through the real flow (fake services mode). The group page
-  itself (/groups/<id>) and /join arrive in later tasks, so nothing here opens them.
+  Groups: the home list, the Create a group page and its invite card, and the group page
+  (/groups/<id>) with its Library, Members and Settings tabs. Every test signs up a fresh person
+  through the real flow (fake services mode). /join and the invite page arrive in a later task;
+  until then a second person joins through the test-only /api/test/join-group route, which runs
+  the same join use-case those pages will use.
 */
 
 const OWNER = "Asha Rao";
+const MEMBER = "Ravi Kumar";
 const GROUP_PASSWORD = "maths-key-42";
+const NOT_FOUND_TEXT = "This page could not be found.";
+
+/** Other people's browsers, opened by a test; closed after it. */
+let extraContexts: BrowserContext[] = [];
 
 test.beforeEach(async ({ page, context }) => {
+  extraContexts = [];
   await isolateRateLimits(page);
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await signUpAndConfirm(page, { name: OWNER });
+});
+
+test.afterEach(async () => {
+  for (const context of extraContexts) await context.close();
 });
 
 const isPhone = (name: string) => name.startsWith("phone");
@@ -219,4 +232,333 @@ test("password under 6 characters shows the error on the field", async ({ page }
   await expect(page.getByRole("heading", { level: 1, name: "Group created" })).toHaveCount(0);
   await page.goto("/");
   await expect(main(page).getByRole("link", { name: "Short Password Group" })).toHaveCount(0);
+});
+
+/* ---------- The group page: tabs, Library, Members, Settings ---------- */
+
+const NEW_PASSWORD = "physics-key-77";
+const UUID_PATH = /^\/groups\/([0-9a-f-]{36})$/;
+
+/** A second person in their own browser, signed up and on `/`, sized like this project's device. */
+async function newPerson(browser: Browser, info: TestInfo, ownerPage: Page, name: string): Promise<Page> {
+  const { viewport, userAgent, deviceScaleFactor, isMobile, hasTouch } = info.project.use;
+  const context = await browser.newContext({
+    baseURL: new URL(ownerPage.url()).origin,
+    viewport,
+    userAgent,
+    deviceScaleFactor,
+    isMobile,
+    hasTouch,
+  });
+  extraContexts.push(context);
+  const page = await context.newPage();
+  await isolateRateLimits(page);
+  await signUpAndConfirm(page, { name });
+  return page;
+}
+
+type NewGroup = { id: string; link: string; token: string; code: string };
+
+/** Creates a group, opens it from the created screen and returns its id and invite. */
+async function createAndOpen(
+  page: Page,
+  options: { name: string; mode: "password" | "link"; password?: string },
+): Promise<NewGroup> {
+  await createGroup(page, options);
+  const link = await shownInviteLink(page);
+  const code = (await page.getByTestId("invite-code").textContent())?.trim() ?? "";
+  const href = (await page.getByRole("link", { name: "Open the group" }).getAttribute("href")) ?? "";
+  const id = UUID_PATH.exec(href)?.[1] ?? "";
+  expect(id).not.toBe("");
+  await page.getByRole("link", { name: "Open the group" }).click();
+  await expect(page).toHaveURL(`/groups/${id}`);
+  await expect(page.getByRole("heading", { level: 1, name: options.name })).toBeVisible();
+  return { id, link, token: link.split("/invite/")[1] ?? "", code };
+}
+
+type JoinAnswer = { ok: boolean; groupId?: string; formError?: string; fieldErrors?: Record<string, string> };
+
+/** Joins as the person signed in on `page`, with an invite token or a code (test-only route). */
+async function joinWith(page: Page, key: string, password?: string): Promise<JoinAnswer> {
+  return page.evaluate(
+    async (body) => {
+      const response = await fetch("/api/test/join-group", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return (await response.json()) as JoinAnswer;
+    },
+    { key, password },
+  );
+}
+
+const tabs = (page: Page) => page.getByRole("navigation", { name: "Group sections" });
+const memberList = (page: Page) => page.getByRole("list", { name: "Members" });
+
+test("owner sees Library, Members, Settings; a member sees Library and Members only", async ({ page, browser }, info) => {
+  const group = await createAndOpen(page, { name: "Tabs Group", mode: "link" });
+
+  const ownerTabs = tabs(page);
+  await expect(ownerTabs.getByRole("link")).toHaveText(["Library", "Members", "Settings"]);
+  await expect(ownerTabs.getByRole("link", { name: "Library" })).toHaveAttribute("aria-current", "page");
+
+  await ownerTabs.getByRole("link", { name: "Members" }).click();
+  await expect(page).toHaveURL(`/groups/${group.id}/members`);
+  await expect(ownerTabs.getByRole("link", { name: "Members" })).toHaveAttribute("aria-current", "page");
+  await expect(ownerTabs.getByRole("link", { name: "Library" })).not.toHaveAttribute("aria-current", "page");
+
+  await ownerTabs.getByRole("link", { name: "Settings" }).click();
+  await expect(page).toHaveURL(`/groups/${group.id}/settings`);
+  await expect(ownerTabs.getByRole("link", { name: "Settings" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByTestId("invite-link")).toHaveText(group.link);
+
+  const member = await newPerson(browser, info, page, MEMBER);
+  expect((await joinWith(member, group.code)).ok).toBe(true);
+  await member.goto(`/groups/${group.id}`);
+  await expect(member.getByRole("heading", { level: 1, name: "Tabs Group" })).toBeVisible();
+  await expect(tabs(member).getByRole("link")).toHaveText(["Library", "Members"]);
+
+  // Typing the Settings address is a plain not-found, with no invite or owner controls.
+  await member.goto(`/groups/${group.id}/settings`);
+  await expect(member.getByText(NOT_FOUND_TEXT)).toBeVisible();
+  await expect(member.getByTestId("invite-link")).toHaveCount(0);
+  await expect(member.getByRole("button", { name: "Reset link" })).toHaveCount(0);
+});
+
+test("Library shows an honest empty state, not fake files", async ({ page }) => {
+  await createAndOpen(page, { name: "Empty Library", mode: "link" });
+  const library = page.getByRole("region", { name: "Library" });
+  await expect(library.getByRole("heading", { name: "No files here yet" })).toBeVisible();
+  await expect(library.getByRole("listitem")).toHaveCount(0);
+  await expect(library.getByRole("link")).toHaveCount(0);
+  await expect(library.getByRole("button")).toHaveCount(0);
+  await expect(library).not.toContainText(/\.pdf|\.docx|MB|KB/);
+});
+
+test('Members lists names, marks the owner and "You"', async ({ page, browser }, info) => {
+  const group = await createAndOpen(page, { name: "Members Group", mode: "link" });
+  const member = await newPerson(browser, info, page, MEMBER);
+  expect((await joinWith(member, group.token)).ok).toBe(true);
+
+  await tabs(page).getByRole("link", { name: "Members" }).click();
+  await expect(page).toHaveURL(`/groups/${group.id}/members`);
+  const ownerView = memberList(page).getByRole("listitem");
+  await expect(ownerView).toHaveCount(2);
+  await expect(ownerView.nth(0)).toContainText(OWNER);
+  await expect(ownerView.nth(0)).toContainText("Owner");
+  await expect(ownerView.nth(0)).toContainText("You");
+  await expect(ownerView.nth(1)).toContainText(MEMBER);
+  await expect(ownerView.nth(1)).not.toContainText("Owner");
+  await expect(ownerView.nth(1)).not.toContainText("You");
+
+  await member.goto(`/groups/${group.id}/members`);
+  const memberView = memberList(member).getByRole("listitem");
+  await expect(memberView).toHaveCount(2);
+  await expect(memberView.nth(0)).toContainText(OWNER);
+  await expect(memberView.nth(0)).toContainText("Owner");
+  await expect(memberView.nth(0)).not.toContainText("You");
+  await expect(memberView.nth(1)).toContainText(MEMBER);
+  await expect(memberView.nth(1)).toContainText("You");
+});
+
+test("a member can leave after a confirm and the group vanishes from their list", async ({ page, browser }, info) => {
+  const group = await createAndOpen(page, { name: "Leaving Group", mode: "link" });
+  const member = await newPerson(browser, info, page, MEMBER);
+  expect((await joinWith(member, group.code)).ok).toBe(true);
+  await member.goto(`/groups/${group.id}/members`);
+
+  // The first tap only asks; Cancel keeps everything as it was.
+  await member.getByRole("button", { name: "Leave group" }).click();
+  const confirm = member.getByRole("dialog", { name: "Leave Leaving Group?" });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toBeHidden();
+  await expect(member).toHaveURL(`/groups/${group.id}/members`);
+
+  await member.getByRole("button", { name: "Leave group" }).click();
+  await member.getByRole("dialog", { name: "Leave Leaving Group?" }).getByRole("button", { name: "Leave group" }).click();
+  await expect(member).toHaveURL("/");
+  await expect(member.getByRole("main").getByRole("link", { name: "Leaving Group" })).toHaveCount(0);
+  if (isPhone(info.project.name)) await member.getByRole("button", { name: "Open group list" }).click();
+  const panel = isPhone(info.project.name) ? member.getByRole("dialog", { name: "Your groups" }) : member.locator("aside");
+  await expect(panel.getByRole("navigation", { name: "Groups" })).toBeVisible();
+  await expect(panel.getByRole("navigation", { name: "Groups" }).getByRole("link", { name: "Leaving Group" })).toHaveCount(0);
+
+  // The group is gone for them, and the owner's list no longer has them.
+  await member.goto(`/groups/${group.id}`);
+  await expect(member.getByText(NOT_FOUND_TEXT)).toBeVisible();
+  await page.goto(`/groups/${group.id}/members`);
+  await expect(memberList(page).getByRole("listitem")).toHaveCount(1);
+  await expect(memberList(page)).not.toContainText(MEMBER);
+});
+
+test("the owner has no Leave button and is told why", async ({ page }) => {
+  const group = await createAndOpen(page, { name: "Owner Stays", mode: "link" });
+  await page.goto(`/groups/${group.id}/members`);
+  await expect(memberList(page).getByRole("listitem")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Leave group" })).toHaveCount(0);
+  await expect(page.getByText(GROUP_MESSAGES.ownerCannotLeave)).toBeVisible();
+});
+
+test("a non-member opening /groups/<id> sees the same not-found page as a made-up id", async ({ page, browser }, info) => {
+  const group = await createAndOpen(page, { name: "Secret Circle", mode: "link" });
+  const stranger = await newPerson(browser, info, page, "Meera Iyer");
+
+  async function visit(path: string) {
+    const response = await stranger.goto(path);
+    await expect(stranger.getByText(NOT_FOUND_TEXT)).toBeVisible();
+    return { status: response?.status(), text: await stranger.locator("body").innerText() };
+  }
+
+  const real = await visit(`/groups/${group.id}`);
+  const madeUp = await visit("/groups/6f1c2b9e-3d4a-4f5b-8c7d-9e0a1b2c3d4e");
+  const malformed = await visit("/groups/not-a-group");
+  expect(real).toEqual(madeUp);
+  expect(real).toEqual(malformed);
+  for (const path of [`/groups/${group.id}/members`, `/groups/${group.id}/settings`]) {
+    expect(await visit(path)).toEqual(madeUp);
+  }
+  expect(real.text).not.toContain("Secret Circle");
+  expect(real.text).not.toContain(OWNER);
+});
+
+test("owner edits name and description and sees them in the header after a reload", async ({ page }, info) => {
+  const group = await createAndOpen(page, { name: "Old Name", mode: "link" });
+  await tabs(page).getByRole("link", { name: "Settings" }).click();
+  await expect(page).toHaveURL(`/groups/${group.id}/settings`);
+
+  // By role, so only visible fields match: the Create page left earlier can still be in the DOM, hidden.
+  await page.getByRole("textbox", { name: "Group name", exact: true }).fill("Maths Circle 2026");
+  await page.getByRole("textbox", { name: "Description (optional)" }).fill("Notes and papers for the 2026 batch.");
+  await page.getByRole("button", { name: "Save details" }).click();
+  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
+
+  await page.reload();
+  const header = page.getByTestId("group-header");
+  await expect(header.getByRole("heading", { level: 1 })).toHaveText("Maths Circle 2026");
+  await expect(header).toContainText("Notes and papers for the 2026 batch.");
+  if (isPhone(info.project.name)) {
+    await expect(page.getByRole("banner")).toContainText("Maths Circle 2026");
+  } else {
+    await expect(page.locator("aside").getByRole("link", { name: "Maths Circle 2026" })).toHaveAttribute("aria-current", "page");
+  }
+  await expect(page.getByText("Old Name", { exact: true })).toHaveCount(0);
+});
+
+test("owner switches to link mode and back, new password shown once", async ({ page, browser }, info) => {
+  const group = await createAndOpen(page, { name: "Physics Lab", mode: "password" });
+  await page.goto(`/groups/${group.id}/settings`);
+  await expect(page.getByRole("radio", { name: /Link and password/ })).toBeChecked();
+
+  // To link only: saved, no password anywhere, and the share text no longer asks for one.
+  await page.getByRole("radio", { name: /Link only/ }).check();
+  await expect(page.getByLabel("New group password", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Save join settings" }).click();
+  await expect(page.getByText("Saved. Anyone with the link or the code can join.")).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("radio", { name: /Link only/ })).toBeChecked();
+  await expect(page.getByRole("link", { name: /WhatsApp/ })).toHaveAttribute(
+    "href",
+    `https://wa.me/?text=${encodeURIComponent(`Join Physics Lab on study-share: ${group.link}`)}`,
+  );
+
+  // Back to a password: the new one is shown once, with a Copy button.
+  await page.getByRole("radio", { name: /Link and password/ }).check();
+  await page.getByLabel("New group password", { exact: true }).fill(NEW_PASSWORD);
+  await page.getByRole("button", { name: "Save join settings" }).click();
+  await expect(page.getByTestId("revealed-password")).toHaveText(NEW_PASSWORD);
+  await expect(page.getByRole("button", { name: "Copy password" })).toBeVisible();
+  await expect(page.getByText("Send the password separately from the link.")).toBeVisible();
+
+  // Never in an address, a link or a cookie.
+  expect(page.url()).not.toContain(NEW_PASSWORD);
+  const hrefs = await page.locator("a[href]").evaluateAll((links) => links.map((a) => a.getAttribute("href") ?? ""));
+  for (const href of hrefs) expect(decodeURIComponent(href)).not.toContain(NEW_PASSWORD);
+  for (const cookie of await page.context().cookies()) expect(decodeURIComponent(cookie.value)).not.toContain(NEW_PASSWORD);
+
+  // Away to another tab and back, then a reload: gone.
+  await tabs(page).getByRole("link", { name: "Members" }).click();
+  await expect(page).toHaveURL(`/groups/${group.id}/members`);
+  await tabs(page).getByRole("link", { name: "Settings" }).click();
+  await expect(page).toHaveURL(`/groups/${group.id}/settings`);
+  await expect(page.getByRole("button", { name: "Save join settings" })).toBeVisible();
+  await expect(page.getByText(NEW_PASSWORD)).toHaveCount(0);
+  await expect(page.getByLabel("New group password", { exact: true })).toHaveValue("");
+  await page.reload();
+  await expect(page.getByRole("radio", { name: /Link and password/ })).toBeChecked();
+  await expect(page.getByText(NEW_PASSWORD)).toHaveCount(0);
+
+  // The new password is the one that lets people in.
+  const friend = await newPerson(browser, info, page, MEMBER);
+  expect((await joinWith(friend, group.code, GROUP_PASSWORD)).fieldErrors?.password).toBe(GROUP_MESSAGES.wrongPassword);
+  expect((await joinWith(friend, group.code, NEW_PASSWORD)).ok).toBe(true);
+});
+
+test("reset link: the old link says no longer valid for a new visitor and the new one works", async ({ page, browser }, info) => {
+  const group = await createAndOpen(page, { name: "Reset Group", mode: "link" });
+  await tabs(page).getByRole("link", { name: "Settings" }).click();
+  await expect(page.getByTestId("invite-link")).toHaveText(group.link);
+  await expect(page.getByTestId("invite-code")).toHaveText(group.code);
+
+  await page.getByRole("button", { name: "Reset link" }).click();
+  const confirm = page.getByRole("dialog", { name: "Reset the invite link?" });
+  await expect(confirm).toContainText("The old link and code stop working immediately.");
+  await confirm.getByRole("button", { name: "Reset link" }).click();
+  await expect(confirm).toBeHidden();
+  await expect(page.getByTestId("invite-link")).not.toHaveText(group.link);
+  await expect(page.getByTestId("invite-code")).not.toHaveText(group.code);
+  const newLink = (await page.getByTestId("invite-link").textContent())?.trim() ?? "";
+  expect(newLink).toMatch(/^http:\/\/localhost:\d+\/invite\/\S+$/);
+
+  const visitor = await newPerson(browser, info, page, "Meera Iyer");
+  expect(await joinWith(visitor, group.token)).toEqual({ ok: false, formError: GROUP_MESSAGES.invalidInvite });
+  expect(await joinWith(visitor, group.code)).toEqual({ ok: false, formError: GROUP_MESSAGES.invalidInvite });
+  expect(await joinWith(visitor, newLink.split("/invite/")[1] ?? "")).toEqual({ ok: true, groupId: group.id });
+  await visitor.goto(`/groups/${group.id}`);
+  await expect(visitor.getByRole("heading", { level: 1, name: "Reset Group" })).toBeVisible();
+});
+
+test("bottom tabs are fixed at 360px, not covered by the keyboard-safe area, and no sideways scroll", async ({ page }, info) => {
+  const name = "తెలుగు సాహిత్యం అధ్యయన బృందం 📚 Thermodynamics";
+  const group = await createAndOpen(page, { name, mode: "link" });
+  const nav = tabs(page);
+
+  for (const path of ["", "/members", "/settings"]) {
+    await page.goto(`/groups/${group.id}${path}`);
+    await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+    expect(await sidewaysOverflow(page)).toBeLessThanOrEqual(0);
+    for (const link of await nav.getByRole("link").all()) {
+      const box = (await link.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.width).toBeGreaterThanOrEqual(44);
+    }
+
+    if (isPhone(info.project.name)) {
+      // Fixed to the bottom edge, padded by the safe area, and nothing in the page ends up under it.
+      expect(await nav.evaluate((el) => getComputedStyle(el).position)).toBe("fixed");
+      expect(await nav.evaluate((el) => el.style.paddingBottom)).toContain("safe-area-inset-bottom");
+      const viewport = page.viewportSize()!;
+      const navBox = (await nav.boundingBox())!;
+      expect(Math.round(navBox.y + navBox.height)).toBe(viewport.height);
+      expect(Math.round(navBox.width)).toBe(viewport.width);
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      const lastBottom = await page.getByTestId("group-content").evaluate((el) => {
+        const items = Array.from(el.querySelectorAll("*")).filter((node) => node.getBoundingClientRect().height > 0);
+        return Math.max(...items.map((node) => node.getBoundingClientRect().bottom));
+      });
+      expect(lastBottom).toBeLessThanOrEqual(navBox.y);
+    } else {
+      // Desktop: a tab row at the top of the group, not fixed.
+      expect(await nav.evaluate((el) => getComputedStyle(el).position)).toBe("static");
+      const navBox = (await nav.boundingBox())!;
+      const contentBox = (await page.getByTestId("group-content").boundingBox())!;
+      expect(navBox.y).toBeLessThan(contentBox.y);
+    }
+
+    // The long name is cut off in the heading rather than pushing the page wide.
+    const heading = page.getByRole("heading", { level: 1, name });
+    expect(await heading.evaluate((el) => getComputedStyle(el).textOverflow)).toBe("ellipsis");
+    await auditPage(page);
+  }
 });
