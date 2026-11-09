@@ -1,7 +1,17 @@
 import { expect, test, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
+import { AUTH_MESSAGES } from "../src/shared/auth-messages";
 import { GROUP_MESSAGES } from "../src/shared/group-messages";
 import { auditPage } from "./audit";
-import { isolateRateLimits, sidewaysOverflow, signUpAndConfirm } from "./helpers";
+import {
+  createGroupThroughForm,
+  DEFAULT_GROUP_PASSWORD,
+  fillCreateGroupForm,
+  isolateRateLimits,
+  logIn,
+  PASSWORD,
+  sidewaysOverflow,
+  signUpAndConfirm,
+} from "./helpers";
 
 /*
   Groups: the home list, the Create a group page and its invite card, and the group page
@@ -13,17 +23,18 @@ import { isolateRateLimits, sidewaysOverflow, signUpAndConfirm } from "./helpers
 
 const OWNER = "Asha Rao";
 const MEMBER = "Ravi Kumar";
-const GROUP_PASSWORD = "maths-key-42";
+const GROUP_PASSWORD = DEFAULT_GROUP_PASSWORD;
 const NOT_FOUND_TEXT = "This page could not be found.";
 
 /** Other people's browsers, opened by a test; closed after it. */
 let extraContexts: BrowserContext[] = [];
+let ownerEmail = "";
 
 test.beforeEach(async ({ page, context }) => {
   extraContexts = [];
   await isolateRateLimits(page);
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  await signUpAndConfirm(page, { name: OWNER });
+  ownerEmail = await signUpAndConfirm(page, { name: OWNER });
 });
 
 test.afterEach(async () => {
@@ -34,27 +45,12 @@ const isPhone = (name: string) => name.startsWith("phone");
 const main = (page: Page) => page.getByRole("main");
 
 /** Opens the create page from the home link and fills it in. Leaves the form unsent. */
-async function fillCreateForm(
-  page: Page,
-  { name, mode, password }: { name: string; mode: "password" | "link"; password?: string },
-) {
-  await page.goto("/");
-  await main(page).getByRole("link", { name: "Create a group" }).click();
-  await expect(page).toHaveURL("/groups/new");
-  await expect(page.getByRole("heading", { level: 1, name: "Create a group" })).toBeVisible();
-  await page.getByLabel("Group name", { exact: true }).fill(name);
-  if (mode === "link") {
-    await page.getByRole("radio", { name: /Link only/ }).check();
-  } else {
-    await expect(page.getByRole("radio", { name: /Link and password/ })).toBeChecked();
-    await page.getByLabel("Group password", { exact: true }).fill(password ?? GROUP_PASSWORD);
-  }
-}
+const fillCreateForm = (page: Page, options: { name: string; mode: "password" | "link"; password?: string }) =>
+  fillCreateGroupForm(page, { ...options, fromHome: true });
 
+/** Creates a group from the home link and stays on the "Group created" screen. */
 async function createGroup(page: Page, options: { name: string; mode: "password" | "link"; password?: string }) {
-  await fillCreateForm(page, options);
-  await page.getByRole("button", { name: "Create group" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "Group created" })).toBeVisible();
+  await createGroupThroughForm(page, { ...options, fromHome: true, open: false });
 }
 
 /** The invite link, as shown on the created screen. */
@@ -112,7 +108,18 @@ test("creating a group in password mode shows the link, the code and the passwor
   const whatsApp = page.getByRole("link", { name: /WhatsApp/ });
   await expect(whatsApp).toHaveAttribute("href", `https://wa.me/?text=${encodeURIComponent(message)}`);
 
-  // The password is in no link, no address and no cookie.
+  // The password is in no attribute of the page (data-*, value, href, ...), no link, no address and no cookie.
+  const attributesWithPassword = await page.evaluate((secret) => {
+    const found: string[] = [];
+    for (const element of document.body.querySelectorAll("*")) {
+      for (const attribute of Array.from(element.attributes)) {
+        if (attribute.value.includes(secret)) found.push(`${element.tagName.toLowerCase()}[${attribute.name}]`);
+      }
+      if (element instanceof HTMLInputElement && element.value.includes(secret)) found.push(`${element.tagName.toLowerCase()}.value`);
+    }
+    return found;
+  }, GROUP_PASSWORD);
+  expect(attributesWithPassword).toEqual([]);
   const hrefs = await page.locator("a[href]").evaluateAll((links) => links.map((a) => a.getAttribute("href") ?? ""));
   for (const href of hrefs) {
     expect(href).not.toContain(GROUP_PASSWORD);
@@ -137,15 +144,41 @@ test("leaving the created screen and coming back never shows the password again"
   await page.getByRole("menuitem", { name: "Account" }).click();
   await expect(page).toHaveURL("/account");
   await page.goBack();
+  // Read at once, before anything waits: the password must not be on the page even for a moment.
+  const right = await page.evaluate(() => ({ text: document.body.innerText, html: document.body.outerHTML }));
+  expect(right.text).not.toContain(GROUP_PASSWORD);
+  expect(right.html).not.toContain(GROUP_PASSWORD);
   await expect(page).toHaveURL("/groups/new");
   await expect(page.getByRole("heading", { level: 1, name: "Create a group" })).toBeVisible();
   await expect(page.getByText(GROUP_PASSWORD)).toHaveCount(0);
   await expect(page.getByLabel("Group password", { exact: true })).toHaveValue("");
+  expect(await page.evaluate(() => document.body.outerHTML)).not.toContain(GROUP_PASSWORD);
 
   // And opened afresh.
   await page.goto("/groups/new");
   await expect(page.getByRole("heading", { level: 1, name: "Create a group" })).toBeVisible();
   await expect(page.getByText(GROUP_PASSWORD)).toHaveCount(0);
+});
+
+test("after logging in without a reload, tapping the Group password label focuses its own input", async ({ page }) => {
+  // The log-in page stays in the browser's memory after a soft navigation (it has a password box
+  // too), so ids must not repeat between pages: a label must point at the input beside it.
+  await page.context().clearCookies();
+  await page.goto("/login");
+  await logIn(page, ownerEmail, PASSWORD);
+  await expect(main(page).getByRole("link", { name: "Create a group" })).toBeVisible();
+  await main(page).getByRole("link", { name: "Create a group" }).click();
+  await expect(page).toHaveURL("/groups/new");
+
+  await page.locator("label").filter({ hasText: /^Group password$/ }).click();
+  await expect(page.getByLabel("Group password", { exact: true })).toBeFocused();
+  // Every id on the page is used once.
+  const repeated = await page.evaluate(() => {
+    const seen = new Map<string, number>();
+    for (const element of document.querySelectorAll("[id]")) seen.set(element.id, (seen.get(element.id) ?? 0) + 1);
+    return [...seen].filter(([, count]) => count > 1).map(([id]) => id);
+  });
+  expect(repeated).toEqual([]);
 });
 
 test("link-only mode shows no password", async ({ page }) => {
@@ -234,10 +267,54 @@ test("password under 6 characters shows the error on the field", async ({ page }
   await expect(main(page).getByRole("link", { name: "Short Password Group" })).toHaveCount(0);
 });
 
+/** Lets the next action requests (POSTs with a Next-Action header) fail like a dropped connection, until `allow()`. */
+async function breakActionRequests(page: Page) {
+  let broken = true;
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    if (broken && request.method() === "POST" && request.headers()["next-action"]) return route.abort("failed");
+    return route.continue();
+  });
+  return { allow: () => void (broken = false) };
+}
+
+test("a request that fails shows an error on the Create form, keeps what was typed, and the form still works", async ({ page }) => {
+  await fillCreateForm(page, { name: "Flaky Network Group", mode: "link" });
+  const network = await breakActionRequests(page);
+  await page.getByRole("button", { name: "Create group" }).click();
+
+  const alert = page.getByRole("alert").filter({ hasText: AUTH_MESSAGES.actionFailed });
+  await expect(alert).toBeVisible();
+  await expect(page.getByLabel("Group name", { exact: true })).toHaveValue("Flaky Network Group");
+  await expect(page.getByRole("button", { name: "Create group" })).toBeEnabled();
+  await expect(page.getByRole("heading", { level: 1, name: "Group created" })).toHaveCount(0);
+
+  network.allow();
+  await page.getByRole("button", { name: "Create group" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Group created" })).toBeVisible();
+});
+
+test("a request that fails shows an error in the Reset link confirm, which can be tried again", async ({ page }) => {
+  const group = await createAndOpen(page, { name: "Reset Network Group", mode: "link" });
+  await page.goto(`/groups/${group.id}/settings`);
+  await expect(page.getByRole("region", { name: "Group details" })).toBeVisible();
+  const network = await breakActionRequests(page);
+
+  await page.getByRole("button", { name: "Reset link" }).click();
+  const sheet = page.getByRole("dialog", { name: "Reset the invite link?" });
+  await sheet.getByRole("button", { name: "Reset link" }).click();
+  await expect(sheet.getByRole("alert").filter({ hasText: AUTH_MESSAGES.actionFailed })).toBeVisible();
+  await expect(sheet.getByRole("button", { name: "Reset link" })).toBeEnabled();
+
+  network.allow();
+  await sheet.getByRole("button", { name: "Reset link" }).click();
+  await expect(page.getByText("New link and code made.")).toBeVisible();
+  await expect(sheet).toBeHidden();
+});
+
 /* ---------- The group page: tabs, Library, Members, Settings ---------- */
 
 const NEW_PASSWORD = "physics-key-77";
-const UUID_PATH = /^\/groups\/([0-9a-f-]{36})$/;
 
 /** A second person in their own browser, signed up and on `/`, sized like this project's device. */
 async function newPerson(browser: Browser, info: TestInfo, ownerPage: Page, name: string): Promise<Page> {
@@ -264,16 +341,8 @@ async function createAndOpen(
   page: Page,
   options: { name: string; mode: "password" | "link"; password?: string },
 ): Promise<NewGroup> {
-  await createGroup(page, options);
-  const link = await shownInviteLink(page);
-  const code = (await page.getByTestId("invite-code").textContent())?.trim() ?? "";
-  const href = (await page.getByRole("link", { name: "Open the group" }).getAttribute("href")) ?? "";
-  const id = UUID_PATH.exec(href)?.[1] ?? "";
-  expect(id).not.toBe("");
-  await page.getByRole("link", { name: "Open the group" }).click();
-  await expect(page).toHaveURL(`/groups/${id}`);
-  await expect(page.getByRole("heading", { level: 1, name: options.name })).toBeVisible();
-  return { id, link, token: link.split("/invite/")[1] ?? "", code };
+  const group = await createGroupThroughForm(page, { ...options, fromHome: true });
+  return { id: group.id, link: group.link, token: group.token, code: group.code };
 }
 
 type JoinAnswer = { ok: boolean; groupId?: string; formError?: string; fieldErrors?: Record<string, string> };
@@ -324,6 +393,28 @@ test("owner sees Library, Members, Settings; a member sees Library and Members o
   await expect(member.getByText(NOT_FOUND_TEXT)).toBeVisible();
   await expect(member.getByTestId("invite-link")).toHaveCount(0);
   await expect(member.getByRole("button", { name: "Reset link" })).toHaveCount(0);
+});
+
+test("a plain member's pages never contain the invite link token or the group code", async ({ page, browser }, info) => {
+  const group = await createAndOpen(page, { name: "Secret Invite Group", mode: "link" });
+  const member = await newPerson(browser, info, page, MEMBER);
+  expect((await joinWith(member, group.code)).ok).toBe(true);
+
+  for (const path of ["", "/members"]) {
+    await member.goto(`/groups/${group.id}${path}`);
+    await expect(member.getByRole("heading", { level: 1, name: "Secret Invite Group" })).toBeVisible();
+    // What the page shows, and the whole HTML (with the data Next sends for the page) as fetched.
+    const shown = await member.content();
+    const fetched = await (await member.request.get(`/groups/${group.id}${path}`)).text();
+    for (const html of [shown, fetched]) {
+      expect(html).toContain("Secret Invite Group");
+      expect(html).not.toContain(group.token);
+      expect(html).not.toContain(group.code);
+    }
+  }
+  // The owner does get them, on Settings (the check above is not vacuous).
+  await page.goto(`/groups/${group.id}/settings`);
+  await expect(page.getByTestId("invite-code")).toHaveText(group.code);
 });
 
 test("Library shows an honest empty state, not fake files", async ({ page }) => {
@@ -526,7 +617,7 @@ test("reset link: the old link says no longer valid for a new visitor and the ne
   await expect(visitor.getByRole("heading", { level: 1, name: "Reset Group" })).toBeVisible();
 });
 
-test("bottom tabs are fixed at 360px, not covered by the keyboard-safe area, and no sideways scroll", async ({ page }, info) => {
+test("the group tabs are a fixed bottom bar with safe-area padding on phones (nothing sits under it) and a plain top row on desktop, with no sideways scroll", async ({ page }, info) => {
   const name = "తెలుగు సాహిత్యం అధ్యయన బృందం 📚 Thermodynamics";
   const group = await createAndOpen(page, { name, mode: "link" });
   const nav = tabs(page);

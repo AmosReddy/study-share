@@ -239,10 +239,15 @@ test.describe("signed in", () => {
   test("an owner's group: Library, Members and Settings", async ({ page }) => {
     await signUpAndConfirm(page, { name: NAME });
     const group = await createGroupThroughForm(page, { name: "Maths Circle", mode: "password" });
-    const title = groupHeading("Maths Circle");
-    await auditInBothThemes(page, { path: group.path, url: group.path, landmark: title });
-    await auditInBothThemes(page, { path: `${group.path}/members`, url: `${group.path}/members`, landmark: title });
-    await auditInBothThemes(page, { path: `${group.path}/settings`, url: `${group.path}/settings`, landmark: title });
+    // Landmarks that exist only in each tab's own content (the group's title is in the layout, which
+    // is there while the tab is still loading).
+    const library = (p: Page) => p.getByRole("heading", { level: 3, name: "No files here yet", exact: true });
+    const memberList = (p: Page) => p.getByRole("list", { name: "Members", exact: true });
+    const groupDetails = (p: Page) => p.getByRole("region", { name: "Group details", exact: true });
+    await auditInBothThemes(page, { path: group.path, url: group.path, landmark: library });
+    await auditInBothThemes(page, { path: `${group.path}/members`, url: `${group.path}/members`, landmark: memberList });
+    await auditInBothThemes(page, { path: `${group.path}/settings`, url: `${group.path}/settings`, landmark: groupDetails });
+    await expect(groupHeading("Maths Circle")(page)).toBeVisible();
 
     // The Reset link confirm, open over the Settings page.
     await page.getByRole("button", { name: "Reset link" }).click();

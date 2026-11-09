@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
+  createGroupThroughForm,
+  DEFAULT_GROUP_PASSWORD,
   enterCode,
   isolateRateLimits,
   lastEmailedCode,
@@ -18,7 +20,7 @@ import {
 const OWNER = "Asha Rao";
 const FRIEND = "Ravi Kumar";
 const GROUP = "Maths Circle";
-const GROUP_PASSWORD = "maths-key-42";
+const GROUP_PASSWORD = DEFAULT_GROUP_PASSWORD;
 
 const joinButton = (page: Page) => page.getByRole("button", { name: "Join", exact: true });
 const passwordBox = (page: Page) => page.getByLabel("Group password", { exact: true });
@@ -35,22 +37,18 @@ test("owner creates a password group, shares, friend joins from the invite, both
 }, info) => {
   // 1. The owner signs up and creates a group with a password; the password is shown once.
   await signUpAndConfirm(owner, { name: OWNER });
-  await owner.goto("/groups/new");
-  await owner.getByLabel("Group name", { exact: true }).fill(GROUP);
-  await owner.getByLabel("Group password", { exact: true }).fill(GROUP_PASSWORD);
-  await owner.getByRole("button", { name: "Create group" }).click();
-  await expect(owner.getByRole("heading", { level: 1, name: "Group created" })).toBeVisible();
+  const { link, code, invitePath } = await createGroupThroughForm(owner, {
+    name: GROUP,
+    mode: "password",
+    password: GROUP_PASSWORD,
+    open: false,
+  });
   await expect(owner.getByText(GROUP_PASSWORD, { exact: true })).toBeVisible();
 
   // 2. The owner shares: the link and code on screen, and a WhatsApp message with the link and no password.
-  const link = (await owner.getByTestId("invite-link").textContent())?.trim() ?? "";
-  const code = (await owner.getByTestId("invite-code").textContent())?.trim() ?? "";
-  expect(link).toMatch(/^http:\/\/localhost:\d+\/invite\/\S+$/);
-  expect(code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/);
   const whatsApp = (await owner.getByRole("link", { name: /WhatsApp/ }).getAttribute("href")) ?? "";
   expect(whatsApp).toContain(encodeURIComponent(link));
   expect(decodeURIComponent(whatsApp)).not.toContain(GROUP_PASSWORD);
-  const invitePath = new URL(link).pathname;
   const groupHref = (await owner.getByRole("link", { name: "Open the group" }).getAttribute("href")) ?? "";
   expect(groupHref).toMatch(/^\/groups\/[0-9a-f-]{36}$/);
   await owner.getByRole("link", { name: "Open the group" }).click();

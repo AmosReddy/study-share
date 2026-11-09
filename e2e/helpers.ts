@@ -143,21 +143,63 @@ export async function saveNewPassword(page: Page, password: string): Promise<voi
 }
 
 /** A group made through the Create a group form, with what its invite and address look like. */
-export type CreatedGroup = { id: string; path: string; invitePath: string; token: string; code: string };
+export type CreatedGroup = {
+  id: string;
+  /** The group's own page, /groups/<id>. */
+  path: string;
+  /** The invite as shown: the full link, its path (/invite/<token>) and the token alone. */
+  link: string;
+  invitePath: string;
+  token: string;
+  code: string;
+};
+
+export const DEFAULT_GROUP_PASSWORD = "maths-key-42";
+
+type CreateGroupOptions = {
+  name: string;
+  mode: "password" | "link";
+  /** Typed in "password" mode; the default is DEFAULT_GROUP_PASSWORD. Never returned: callers know it. */
+  password?: string;
+  description?: string;
+  /** Reach the form from the home page's "Create a group" link instead of the address. */
+  fromHome?: boolean;
+};
+
+/** Opens the Create a group form and fills it in. Leaves the form unsent. */
+export async function fillCreateGroupForm(
+  page: Page,
+  { name, mode, password = DEFAULT_GROUP_PASSWORD, description = "", fromHome = false }: CreateGroupOptions,
+): Promise<void> {
+  if (fromHome) {
+    await page.goto("/");
+    await page.getByRole("main").getByRole("link", { name: "Create a group" }).click();
+    await expect(page).toHaveURL("/groups/new");
+    await expect(page.getByRole("heading", { level: 1, name: "Create a group" })).toBeVisible();
+  } else {
+    await page.goto("/groups/new");
+  }
+  await page.getByLabel("Group name", { exact: true }).fill(name);
+  if (description) await page.getByRole("textbox", { name: "Description (optional)" }).fill(description);
+  if (mode === "link") {
+    await page.getByRole("radio", { name: /Link only/ }).check();
+  } else {
+    await expect(page.getByRole("radio", { name: /Link and password/ })).toBeChecked();
+    await page.getByLabel("Group password", { exact: true }).fill(password);
+  }
+}
 
 /**
- * Creates a group through the real /groups/new form as the person signed in on `page`, and
- * leaves the page on the group's Library. The password (for "password" mode) is typed in and
- * never returned: callers already know it.
+ * Creates a group through the real /groups/new form as the person signed in on `page` and reads its
+ * invite from the "Group created" screen. By default it then opens the group (the page ends on its
+ * Library); with `open: false` it stays on the created screen.
  */
 export async function createGroupThroughForm(
   page: Page,
-  { name, mode, password = "maths-key-42" }: { name: string; mode: "password" | "link"; password?: string },
+  options: CreateGroupOptions & { open?: boolean },
 ): Promise<CreatedGroup> {
-  await page.goto("/groups/new");
-  await page.getByLabel("Group name", { exact: true }).fill(name);
-  if (mode === "link") await page.getByRole("radio", { name: /Link only/ }).check();
-  else await page.getByLabel("Group password", { exact: true }).fill(password);
+  const { name, open = true } = options;
+  await fillCreateGroupForm(page, options);
   await page.getByRole("button", { name: "Create group" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Group created" })).toBeVisible();
 
@@ -166,12 +208,16 @@ export async function createGroupThroughForm(
   const href = (await page.getByRole("link", { name: "Open the group" }).getAttribute("href")) ?? "";
   const id = /^\/groups\/([0-9a-f-]{36})$/.exec(href)?.[1] ?? "";
   expect(id).not.toBe("");
+  expect(link).toMatch(/^http:\/\/localhost:\d+\/invite\/\S+$/);
   const invitePath = new URL(link).pathname;
   expect(invitePath).toMatch(/^\/invite\/[A-Za-z0-9_-]{43}$/);
   expect(code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/);
+  const group = { id, path: `/groups/${id}`, link, invitePath, token: invitePath.split("/invite/")[1] ?? "", code };
 
-  await page.getByRole("link", { name: "Open the group" }).click();
-  await expect(page).toHaveURL(`/groups/${id}`);
-  await expect(page.getByRole("heading", { level: 1, name, exact: true })).toBeVisible();
-  return { id, path: `/groups/${id}`, invitePath, token: invitePath.split("/invite/")[1] ?? "", code };
+  if (open) {
+    await page.getByRole("link", { name: "Open the group" }).click();
+    await expect(page).toHaveURL(group.path);
+    await expect(page.getByRole("heading", { level: 1, name, exact: true })).toBeVisible();
+  }
+  return group;
 }

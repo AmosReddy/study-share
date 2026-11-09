@@ -4,6 +4,8 @@ import { GROUP_MESSAGES } from "../src/shared/group-messages";
 import { auditPage } from "./audit";
 import {
   acceptTermsOnWelcome,
+  createGroupThroughForm,
+  DEFAULT_GROUP_PASSWORD,
   enterCode,
   isolateRateLimits,
   lastEmailedCode,
@@ -25,7 +27,7 @@ import {
 
 const OWNER = "Asha Rao";
 const FRIEND = "Ravi Kumar";
-const GROUP_PASSWORD = "maths-key-42";
+const GROUP_PASSWORD = DEFAULT_GROUP_PASSWORD;
 const DESCRIPTION = "Notes and papers for the 2026 batch.";
 
 /** Other people's browsers, opened by a test; closed after it. */
@@ -44,28 +46,16 @@ test.afterEach(async () => {
 
 type NewGroup = { id: string; link: string; path: string; token: string; code: string };
 
-/** Creates a group on /groups/new as the person signed in on `page`, and reads its invite. */
+/**
+ * Creates a group on /groups/new as the person signed in on `page` and reads its invite, staying
+ * on the "Group created" screen. Here `path` is the INVITE's path (/invite/<token>).
+ */
 async function createGroup(
   page: Page,
   { name, mode, description = "" }: { name: string; mode: "password" | "link"; description?: string },
 ): Promise<NewGroup> {
-  await page.goto("/groups/new");
-  await page.getByLabel("Group name", { exact: true }).fill(name);
-  if (description) await page.getByRole("textbox", { name: "Description (optional)" }).fill(description);
-  if (mode === "link") await page.getByRole("radio", { name: /Link only/ }).check();
-  else await page.getByLabel("Group password", { exact: true }).fill(GROUP_PASSWORD);
-  await page.getByRole("button", { name: "Create group" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "Group created" })).toBeVisible();
-
-  const link = (await page.getByTestId("invite-link").textContent())?.trim() ?? "";
-  const code = (await page.getByTestId("invite-code").textContent())?.trim() ?? "";
-  const href = (await page.getByRole("link", { name: "Open the group" }).getAttribute("href")) ?? "";
-  const id = /^\/groups\/([0-9a-f-]{36})$/.exec(href)?.[1] ?? "";
-  expect(id).not.toBe("");
-  expect(code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/);
-  const path = new URL(link).pathname;
-  expect(path).toMatch(/^\/invite\/[A-Za-z0-9_-]{43}$/);
-  return { id, link, path, token: path.split("/invite/")[1] ?? "", code };
+  const group = await createGroupThroughForm(page, { name, mode, description, open: false });
+  return { id: group.id, link: group.link, path: group.invitePath, token: group.token, code: group.code };
 }
 
 /** A new, signed-out browser for a friend, sized like this project's device. */
@@ -163,9 +153,13 @@ test("friend signs up by email code from the invite and lands back on the same i
   await expect(friend).toHaveURL(group.path);
   await expect(groupHeading(friend, "Physics Lab")).toBeVisible();
 
-  // Signed in now: the password box, with no autofill of the account's own password.
+  // Signed in now: the password box, which browsers and password managers must not fill with the
+  // account's own password ("off" is ignored on password fields, so it is "new-password").
   await expect(passwordBox(friend)).toHaveAttribute("type", "password");
-  await expect(passwordBox(friend)).toHaveAttribute("autocomplete", "off");
+  await expect(passwordBox(friend)).toHaveAttribute("autocomplete", "new-password");
+  for (const ignore of ["data-1p-ignore", "data-lpignore", "data-bwignore"]) {
+    await expect(passwordBox(friend)).toHaveAttribute(ignore, /.*/);
+  }
   await expect(friend.getByText(`Ask ${OWNER} for the group password.`)).toBeVisible();
   await joinWithPassword(friend, GROUP_PASSWORD);
   await expectInGroup(friend, group, "Physics Lab");
@@ -221,7 +215,7 @@ test("friend logs in (existing account) from the invite and joins a link-only gr
   await expectInGroup(friend, group, "Open Chemistry");
 });
 
-test("friend using fake Google from the invite passes the Terms step and returns to the invite", async ({ page }, info) => {
+test("Google returns to the same invite with the Terms sentence shown", async ({ page }, info) => {
   const group = await createGroup(page, { name: "Google Circle", mode: "link" });
   const friend = await newBrowser(page, info);
   await friend.goto(group.path);
