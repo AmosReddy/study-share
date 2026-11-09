@@ -9,7 +9,8 @@ export const GROUP_MESSAGES = {
   cannotJoin: "You can't join this group.",
   full: "This group is full.",
   wrongPassword: "That password is not right.",
-  locked: "Too many wrong passwords. Try again in 15 minutes.",
+  /** The wait is added by the screen, from retryHint. */
+  locked: "Too many wrong passwords.",
   tooManyGroups: `You are in ${GROUP_LIMITS.maxGroupsPerPerson} groups, the most one account can be in. Leave one to join another.`,
   tooMany: "Too many attempts. Please try again later.",
   ownerCannotLeave: "You own this group, so you can't leave it yet.",

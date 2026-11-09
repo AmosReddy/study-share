@@ -16,7 +16,7 @@ import { SignedInFrame } from "../../_components/signed-in-frame";
 import { joinGroupAction } from "../../groups/actions";
 
 /** One title for every invite, so the tab never says whether the key leads to a group. */
-export const metadata: Metadata = { title: "Invite | study-share" };
+export const metadata: Metadata = { title: "Invite | study-share", robots: { index: false, follow: false } };
 
 export default function InvitePage({ params }: PageProps<"/invite/[key]">) {
   return (
@@ -45,8 +45,6 @@ async function Invite({ params }: Pick<PageProps<"/invite/[key]">, "params">) {
 
   if (!(await getCurrentUser())) {
     const [preview, inApp] = await Promise.all([previewInvite(await previewDeps(), key), inAppBrowser()]);
-    // Never for a signed-out visitor (membership is only looked up for a signed-in one).
-    if (preview.state === "member") redirect(`/groups/${preview.groupId}`);
     return (
       <AuthFrame>
         {preview.state === "open" ? (
@@ -103,7 +101,7 @@ function SignedIn({ user, children }: { user: AuthUser; children: ReactNode }) {
 }
 
 /** Every invite that cannot be used. A dead, reset or made-up key all read the same. */
-function Problem({ preview }: { preview: Exclude<InvitePreview, { state: "open" } | { state: "member" }> }) {
+function Problem({ preview }: { preview: Exclude<InvitePreview, { state: "open" }> }) {
   switch (preview.state) {
     case "limited":
       return (
@@ -113,6 +111,9 @@ function Problem({ preview }: { preview: Exclude<InvitePreview, { state: "open" 
       );
     case "removed":
       return <InviteProblem title="You can't join this group" message={GROUP_MESSAGES.cannotJoin} />;
+    // "member" never reaches here: only a signed-in person has a membership, and the signed-in
+    // branch redirects it. It reads like a dead invite rather than a crash if that ever changed.
+    case "member":
     case "invalid":
       return <InviteProblem title="This invite can't be used" message={GROUP_MESSAGES.invalidInvite} />;
   }

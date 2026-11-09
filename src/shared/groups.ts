@@ -26,10 +26,21 @@ function characterCount(value: string): number {
   return [...value].length;
 }
 
-/** A typed or pasted code: spaces and hyphens dropped, capitals. It may still not be a valid code. */
+/**
+ * A typed or pasted code: spaces and hyphens dropped (also the en dash, em dash, non-breaking
+ * hyphen and minus sign a phone keyboard or a chat app may put in, and the no-break space), capitals.
+ * It may still not be a valid code.
+ */
 export function normalizeGroupCode(raw: string): string {
-  return raw.trim().replace(/[\s-]/g, "").toUpperCase();
+  return raw.trim().replace(/[\s \-‐-―−]/g, "").toUpperCase();
 }
+
+/** Postgres cannot store a NUL character in text; one in a name or key would make it throw. */
+const hasNoNul = (text: string) => !text.includes("\u0000");
+const NO_NUL_MESSAGE = "Remove the unusual character and try again.";
+
+/** No invite token (43 characters) or code (8) is longer than this. */
+export const MAX_KEY_LENGTH = 100;
 
 const CODE_PATTERN = new RegExp(`^[${GROUP_CODE_ALPHABET}]{${GROUP_LIMITS.codeLength}}$`);
 
@@ -41,6 +52,7 @@ export function isGroupCode(key: string): boolean {
 const nameSchema = z
   .string()
   .trim()
+  .refine(hasNoNul, NO_NUL_MESSAGE)
   .transform((name) => name.replace(/\s+/g, " "))
   .refine((name) => characterCount(name) >= GROUP_LIMITS.nameMin, `Use at least ${GROUP_LIMITS.nameMin} characters.`)
   .refine(
@@ -52,6 +64,7 @@ const nameSchema = z
 const descriptionSchema = z
   .string()
   .trim()
+  .refine(hasNoNul, NO_NUL_MESSAGE)
   .refine(
     (text) => characterCount(text) <= GROUP_LIMITS.descriptionMax,
     `Use ${GROUP_LIMITS.descriptionMax} characters or fewer.`,
@@ -113,7 +126,7 @@ export const joinModeSchema = z
 
 /** The key is an invite token or a group code from the address; the password is never trimmed. */
 export const joinGroupSchema = z.object({
-  key: z.string().trim().min(1),
+  key: z.string().trim().min(1).max(MAX_KEY_LENGTH).refine(hasNoNul, NO_NUL_MESSAGE),
   password: z.string().optional(),
 });
 

@@ -8,12 +8,14 @@ const FIFTEEN_MINUTES = 15 * 60;
 /** Making groups: 10 an hour per person. */
 export const CREATE_GROUP_USER_LIMIT: Limit = { limit: 10, windowSeconds: HOUR };
 
-/** Looking up an invite (a link or a typed code), per signed-in person. */
+/** Looking up an invite (a link or a typed code), per signed-in person. Every lookup counts. */
 export const JOIN_LOOKUP_USER_LIMIT: Limit = { limit: 60, windowSeconds: FIFTEEN_MINUTES };
 
 /**
- * Invite lookups per network, signed in or not: this is what slows down code guessing. Generous
- * because a whole class often joins together from one college Wi-Fi address.
+ * Invite lookups that FIND NOTHING, per network, signed in or not: this is what slows down code
+ * guessing. The bucket is checked (`peek`) before every lookup but counted (`hit`) only when the
+ * lookup misses, so a whole class opening a real link from one college Wi-Fi address never uses it
+ * up. Only guesses do: 300 an hour.
  */
 export const JOIN_IP_LIMIT: Limit = { limit: 300, windowSeconds: HOUR };
 

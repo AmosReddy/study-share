@@ -121,6 +121,30 @@ describe("join group form", () => {
     expect(joinGroupSchema.parse({ key: "abc", password: "x y" })).toEqual({ key: "abc", password: "x y" });
     expect(joinGroupSchema.safeParse({ key: "" }).success).toBe(false);
   });
+
+  it("refuses a key over 100 characters and a key with a NUL byte (Postgres cannot store one)", () => {
+    expect(joinGroupSchema.safeParse({ key: "a".repeat(100) }).success).toBe(true);
+    expect(joinGroupSchema.safeParse({ key: "a".repeat(101) }).success).toBe(false);
+    expect(joinGroupSchema.safeParse({ key: "abc\u0000def" }).success).toBe(false);
+    expect(joinGroupSchema.safeParse({ key: "\u0000" }).success).toBe(false);
+  });
+});
+
+describe("NUL bytes in text fields", () => {
+  it("are refused in a group name, on create and on edit", () => {
+    expect(createGroupSchema.safeParse({ ...linkGroup, name: "Data\u0000 Structures" }).success).toBe(false);
+    expect(editGroupSchema.safeParse({ name: "Data\u0000 Structures" }).success).toBe(false);
+  });
+
+  it("are refused in a description, on create and on edit", () => {
+    expect(createGroupSchema.safeParse({ ...linkGroup, description: "notes\u0000" }).success).toBe(false);
+    expect(editGroupSchema.safeParse({ name: "Maths", description: "notes\u0000" }).success).toBe(false);
+  });
+
+  it("report the field they are in", () => {
+    const result = editGroupSchema.safeParse({ name: "Maths\u0000", description: "" });
+    expect(!result.success && result.error.issues[0].path).toEqual(["name"]);
+  });
 });
 
 describe("group codes", () => {
@@ -134,6 +158,18 @@ describe("group codes", () => {
 
   it("normalises spaces, hyphens and case", () => {
     expect(normalizeGroupCode(" ab-cd 234 ")).toBe("ABCD234");
+  });
+
+  it("also drops en dashes, em dashes, non-breaking hyphens, minus signs and no-break spaces", () => {
+    expect(normalizeGroupCode("abcd‐efg2")).toBe("ABCDEFG2");
+    expect(normalizeGroupCode("abcd‑efg2")).toBe("ABCDEFG2");
+    expect(normalizeGroupCode("abcd‒efg2")).toBe("ABCDEFG2");
+    expect(normalizeGroupCode("abcd–efg2")).toBe("ABCDEFG2");
+    expect(normalizeGroupCode("abcd—efg2")).toBe("ABCDEFG2");
+    expect(normalizeGroupCode("abcd―efg2")).toBe("ABCDEFG2");
+    expect(normalizeGroupCode("abcd−efg2")).toBe("ABCDEFG2");
+    expect(normalizeGroupCode("abcd efg2 ")).toBe("ABCDEFG2");
+    expect(isGroupCode("abcd–efg2")).toBe(true);
   });
 
   it("recognises a valid code", () => {
@@ -161,7 +197,7 @@ describe("GROUP_MESSAGES", () => {
     expect(GROUP_MESSAGES.cannotJoin).toBe("You can't join this group.");
     expect(GROUP_MESSAGES.full).toBe("This group is full.");
     expect(GROUP_MESSAGES.wrongPassword).toBe("That password is not right.");
-    expect(GROUP_MESSAGES.locked).toBe("Too many wrong passwords. Try again in 15 minutes.");
+    expect(GROUP_MESSAGES.locked).toBe("Too many wrong passwords.");
     expect(GROUP_MESSAGES.tooManyGroups).toBe(
       "You are in 20 groups, the most one account can be in. Leave one to join another.",
     );

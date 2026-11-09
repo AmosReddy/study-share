@@ -29,10 +29,18 @@ function deriveKey(password: string, salt: Buffer): Promise<Buffer> {
   });
 }
 
+/**
+ * The same text can be typed as different code point sequences (a composed or a decomposed Hindi
+ * or Telugu letter, depending on the keyboard): both hashing and checking use the canonical form.
+ */
+function canonical(password: string): string {
+  return password.normalize("NFC");
+}
+
 /** The string to store for a group password. */
 export async function hashGroupPassword(password: string): Promise<string> {
   const salt = randomBytes(SALT_BYTES);
-  const key = await deriveKey(password, salt);
+  const key = await deriveKey(canonical(password), salt);
   return ["scrypt", SCRYPT_N, SCRYPT_R, SCRYPT_P, salt.toString("base64url"), key.toString("base64url")].join("$");
 }
 
@@ -62,7 +70,7 @@ export async function verifyGroupPassword(password: string, stored: string): Pro
     const expected = decodeExact(hashText, KEY_BYTES);
     if (salt === null || expected === null) return false;
 
-    const actual = await deriveKey(password, salt);
+    const actual = await deriveKey(canonical(password), salt);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   } catch {
     return false;

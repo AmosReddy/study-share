@@ -247,6 +247,43 @@ describe("resetInvite", () => {
     expect(stuck.replaceInvite).toHaveBeenCalledTimes(5);
   });
 
+  it("gives couldNotSave and logs a fixed line when the store throws an error carrying the new key", async () => {
+    const { owner, groups, group } = await groupWithMember();
+    let seenToken = "";
+    let seenCode = "";
+    const leaky: GroupStore = {
+      ...groups,
+      replaceInvite: vi.fn(async (_id, i) => {
+        seenToken = i.inviteToken;
+        seenCode = i.inviteCode;
+        throw new Error(`update failed: params ${i.inviteToken}, ${i.inviteCode}`);
+      }),
+    };
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => {}),
+    );
+    const result = await resetInvite({ ...owner, groups: leaky }, group.id);
+    expect(result).toEqual(COULD_NOT_SAVE);
+    expect(seenToken).not.toBe("");
+    const everything = JSON.stringify([result, ...spies.map((spy) => spy.mock.calls)]);
+    expect(everything).not.toContain(seenToken);
+    expect(everything).not.toContain(seenCode);
+    expect(spies.flatMap((spy) => spy.mock.calls)).toEqual([["Could not reset the invite."]]);
+  });
+
+  it("gives couldNotSave, not a thrown error, when the store fails while checking who is asking", async () => {
+    const { owner, groups, group } = await groupWithMember();
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => {}),
+    );
+    const down: GroupStore = { ...groups, findById: vi.fn(async () => Promise.reject(new Error(`down ${group.id}`))) };
+    const deps = { ...owner, groups: down };
+    expect(await resetInvite(deps, group.id)).toEqual(COULD_NOT_SAVE);
+    expect(await updateGroupDetails(deps, group.id, { name: "Maths" })).toEqual(COULD_NOT_SAVE);
+    expect(await changeJoinSettings(deps, group.id, { joinMode: "link" })).toEqual(COULD_NOT_SAVE);
+    expect(JSON.stringify(spies.map((spy) => spy.mock.calls))).not.toContain(group.id);
+  });
+
   it("gives couldNotSave when the group is gone", async () => {
     const { owner, groups, group } = await groupWithMember();
     const gone: GroupStore = { ...groups, replaceInvite: vi.fn(async () => "group_gone" as const) };

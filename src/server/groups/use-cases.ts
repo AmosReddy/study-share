@@ -131,33 +131,82 @@ export function listMyGroups(deps: GroupDeps): Promise<GroupSummary[]> {
   return deps.groups.listGroupsFor(deps.user.id);
 }
 
-/** Codes are matched case-insensitively and ignoring spaces and hyphens; anything else is a token. */
+/**
+ * Codes are matched case-insensitively and ignoring spaces and hyphens; anything else is a token.
+ * A key no invite can have (a NUL character, or longer than any token) matches nothing and never
+ * reaches the store. A store failure throws; the callers decide what the person sees.
+ */
 function lookupGroup(groups: GroupStore, key: string): Promise<GroupRecord | null> {
   const trimmed = key.trim();
+  if (!joinGroupSchema.shape.key.safeParse(trimmed).success) return Promise.resolve(null);
   return isGroupCode(trimmed)
     ? groups.findByInvite({ code: normalizeGroupCode(trimmed) })
     : groups.findByInvite({ token: trimmed });
 }
 
-/** The limits on looking up invites: per person when signed in, per network always. */
-function lookupChecks(deps: PreviewDeps): Check[] {
-  return [
-    ...(deps.user ? [{ key: `join-lookup:user:${deps.user.id}`, limit: JOIN_LOOKUP_USER_LIMIT }] : []),
-    ...ipCheck("join-lookup", deps.ip, JOIN_IP_LIMIT),
-  ];
+const LIMITER_DOWN = "Rate limit store unavailable; allowing the request.";
+
+/**
+ * The per-network lookup bucket (what slows down code guessing) is only looked at here, never
+ * counted: it is counted by `countMiss`, for lookups that find nothing. So a whole class opening
+ * the same link from one college Wi-Fi address never uses it up. Fails open if the limiter is down.
+ */
+async function networkRefusal(deps: PreviewDeps): Promise<{ retryAfterSeconds: number } | null> {
+  for (const { key, limit } of ipCheck("join-lookup", deps.ip, JOIN_IP_LIMIT)) {
+    try {
+      const answer = await hitWithTimeout(deps.limiter, { key, limit: limit.limit, windowSeconds: limit.windowSeconds }, "peek");
+      if (!answer.allowed) return { retryAfterSeconds: Math.max(1, answer.retryAfterSeconds) };
+    } catch {
+      console.warn(LIMITER_DOWN);
+    }
+  }
+  return null;
+}
+
+/** A lookup that found nothing was a guess: it uses one try of the network's bucket. Fails open. */
+async function countMiss(deps: PreviewDeps): Promise<void> {
+  for (const { key, limit } of ipCheck("join-lookup", deps.ip, JOIN_IP_LIMIT)) {
+    try {
+      await hitWithTimeout(deps.limiter, { key, limit: limit.limit, windowSeconds: limit.windowSeconds });
+    } catch {
+      console.warn(LIMITER_DOWN);
+    }
+  }
+}
+
+/**
+ * The limits on looking up invites, applied before anything is looked up: the network's bucket is
+ * checked (not counted), then every lookup by a signed-in person is counted against theirs.
+ */
+async function lookupRefusal(deps: PreviewDeps): Promise<{ retryAfterSeconds: number } | null> {
+  const network = await networkRefusal(deps);
+  if (network) return network;
+  const checks: Check[] = deps.user ? [{ key: `join-lookup:user:${deps.user.id}`, limit: JOIN_LOOKUP_USER_LIMIT }] : [];
+  const refused = await overLimit(deps.limiter, checks, GROUP_MESSAGES.tooMany);
+  return refused ? { retryAfterSeconds: refused.retryAfterSeconds ?? 1 } : null;
 }
 
 /**
  * What an invite link or code leads to. A key that matches nothing, a reset key and a deleted group
  * all give the same "invalid". A lookup over its limit gives "limited" before anything is looked up,
- * so it says nothing about the key.
+ * so it says nothing about the key. A store failure throws a generic error (the page's error
+ * screen), never a message that holds the key.
  */
 export async function previewInvite(deps: PreviewDeps, key: string): Promise<InvitePreview> {
-  const refused = await overLimit(deps.limiter, lookupChecks(deps), GROUP_MESSAGES.tooMany);
-  if (refused) return { state: "limited", retryAfterSeconds: refused.retryAfterSeconds ?? 1 };
+  const refused = await lookupRefusal(deps);
+  if (refused) return { state: "limited", retryAfterSeconds: refused.retryAfterSeconds };
 
-  const group = await lookupGroup(deps.groups, key);
-  if (!group) return { state: "invalid" };
+  let group: GroupRecord | null;
+  try {
+    group = await lookupGroup(deps.groups, key);
+  } catch {
+    console.error("Could not look up an invite.");
+    throw new Error("Group lookup failed");
+  }
+  if (!group) {
+    await countMiss(deps);
+    return { state: "invalid" };
+  }
 
   if (deps.user) {
     const membership = await deps.groups.getMembership(group.id, deps.user.id);
@@ -168,10 +217,14 @@ export async function previewInvite(deps: PreviewDeps, key: string): Promise<Inv
   return { state: "open", groupId: group.id, name: group.name, joinMode: group.joinMode, ownerName: owner?.displayName ?? "" };
 }
 
+/** The wait the person is told about when the wrong-password counter cannot be used. */
+const COUNTER_DOWN_WAIT_SECONDS = 60;
+
 /**
  * Takes one of the person's wrong-password slots for this group BEFORE the password is checked, so
  * parallel guesses cannot all get through (the count is the limiter's, atomic). Returns the wait
- * when the slots are used up; the right password uses a slot too. Fails open if the limiter is down.
+ * when the slots are used up; the right password uses a slot too. Fails CLOSED if the limiter is
+ * down or too slow: without the counter nobody may guess, so the password is not checked at all.
  */
 async function takePasswordSlot(deps: GroupDeps, groupId: string): Promise<{ retryAfterSeconds: number } | null> {
   try {
@@ -182,8 +235,8 @@ async function takePasswordSlot(deps: GroupDeps, groupId: string): Promise<{ ret
     });
     return answer.allowed ? null : { retryAfterSeconds: Math.max(1, answer.retryAfterSeconds) };
   } catch {
-    console.warn("Rate limit store unavailable; allowing the request.");
-    return null;
+    console.warn("Rate limit store unavailable; refusing the password attempt.");
+    return { retryAfterSeconds: COUNTER_DOWN_WAIT_SECONDS };
   }
 }
 
@@ -192,11 +245,30 @@ export async function joinGroup(deps: GroupDeps, raw: unknown): Promise<ActionRe
   if ("failure" in parsed) return parsed.failure;
   const { key, password } = parsed.data;
 
-  const refused = await overLimit(deps.limiter, lookupChecks(deps), GROUP_MESSAGES.tooMany);
-  if (refused) return refused;
+  const refused = await lookupRefusal(deps);
+  if (refused) {
+    return { ok: false, formError: GROUP_MESSAGES.tooMany, retryAfterSeconds: refused.retryAfterSeconds };
+  }
 
+  try {
+    return await joinFound(deps, key, password);
+  } catch {
+    // A store error may carry the key or ids: log a fixed line only.
+    console.error("Could not join the group.");
+    return { ok: false, formError: GROUP_MESSAGES.couldNotSave };
+  }
+}
+
+async function joinFound(
+  deps: GroupDeps,
+  key: string,
+  password: string | undefined,
+): Promise<ActionResult<{ groupId: string }>> {
   const group = await lookupGroup(deps.groups, key);
-  if (!group) return { ok: false, formError: GROUP_MESSAGES.invalidInvite };
+  if (!group) {
+    await countMiss(deps);
+    return { ok: false, formError: GROUP_MESSAGES.invalidInvite };
+  }
 
   // Already in: success before any password or limit check. Removed: refused, and a removal is
   // never cleared by a join.
@@ -228,7 +300,10 @@ export async function joinGroup(deps: GroupDeps, raw: unknown): Promise<ActionRe
   }
 }
 
-/** The group and the caller's membership, or null for an unknown or malformed id. */
+/**
+ * The group and the caller's membership, or null for an unknown or malformed id. A store failure
+ * throws: a read must never turn an outage into "no such group". Actions use `actionContext`.
+ */
 export async function memberContext(
   deps: GroupDeps,
   groupId: string,
@@ -237,6 +312,23 @@ export async function memberContext(
   const group = await deps.groups.findById(groupId);
   if (!group) return null;
   return { group, membership: await deps.groups.getMembership(group.id, deps.user.id) };
+}
+
+export type ActionContext =
+  | { failed: true }
+  | { failed: false; context: Awaited<ReturnType<typeof memberContext>> };
+
+/**
+ * memberContext for actions: a store failure logs `logLine` (a fixed sentence, no ids, no error
+ * text) and comes back as `failed`, so the action can answer couldNotSave.
+ */
+export async function actionContext(deps: GroupDeps, groupId: string, logLine: string): Promise<ActionContext> {
+  try {
+    return { failed: false, context: await memberContext(deps, groupId) };
+  } catch {
+    console.error(logLine);
+    return { failed: true };
+  }
 }
 
 /** Null for a non-member, a removed member, a deleted or unknown group and a malformed id: all look alike. */
@@ -263,7 +355,9 @@ export async function listGroupMembers(deps: GroupDeps, groupId: string): Promis
  * gets success and nothing changes. Owners cannot leave.
  */
 export async function leaveGroup(deps: GroupDeps, groupId: string): Promise<ActionResult> {
-  const context = await memberContext(deps, groupId);
+  const found = await actionContext(deps, groupId, "Could not leave the group.");
+  if (found.failed) return { ok: false, formError: GROUP_MESSAGES.couldNotSave };
+  const context = found.context;
   if (!context?.membership || context.membership.status !== "active") return { ok: true, data: undefined };
   if (!can(deps.user, "group.leave", { membership: context.membership })) {
     return {
@@ -271,7 +365,13 @@ export async function leaveGroup(deps: GroupDeps, groupId: string): Promise<Acti
       formError: context.membership.role === "owner" ? GROUP_MESSAGES.ownerCannotLeave : GROUP_MESSAGES.couldNotSave,
     };
   }
-  const outcome = await deps.groups.leave(context.group.id, deps.user.id);
+  let outcome: Awaited<ReturnType<GroupStore["leave"]>>;
+  try {
+    outcome = await deps.groups.leave(context.group.id, deps.user.id);
+  } catch {
+    console.error("Could not leave the group.");
+    return { ok: false, formError: GROUP_MESSAGES.couldNotSave };
+  }
   if (outcome === "owner") return { ok: false, formError: GROUP_MESSAGES.ownerCannotLeave };
   return { ok: true, data: undefined };
 }

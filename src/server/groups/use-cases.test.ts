@@ -244,6 +244,49 @@ describe("previewInvite", () => {
   });
 });
 
+describe("per-network invite lookups count only the misses", () => {
+  const ipKey = (ip: string) => `join-lookup:ip:${ip}`;
+
+  it("many successful previews from one address never limit it, and never touch its bucket", async () => {
+    const { as, signedOut, limiter } = setup();
+    const { group } = await make(as(person("Asha"), "10.0.0.9"));
+    const hit = vi.spyOn(limiter, "hit");
+    for (let i = 0; i < 350; i++) {
+      expect(await previewInvite(signedOut("10.0.0.3"), group.inviteCode)).toMatchObject({ state: "open" });
+    }
+    expect(hit.mock.calls.some(([input]) => input.key === ipKey("10.0.0.3"))).toBe(false);
+    expect((await limiter.peek({ key: ipKey("10.0.0.3"), limit: 300, windowSeconds: 3600 })).allowed).toBe(true);
+  });
+
+  it("many successful joins from one address (a class on one Wi-Fi) never limit it", async () => {
+    const { as, limiter } = setup();
+    const { group } = await make(as(person("Asha"), "10.0.0.9"));
+    for (let i = 0; i < 40; i++) {
+      expect(await joinGroup(as(person(`Student ${i}`), "10.0.0.3"), { key: group.inviteCode })).toMatchObject({ ok: true });
+    }
+    expect((await limiter.peek({ key: ipKey("10.0.0.3"), limit: 300, windowSeconds: 3600 })).allowed).toBe(true);
+  });
+
+  it("300 misses are answered and the 301st lookup is limited, for previews and joins alike", async () => {
+    const { as, signedOut } = setup();
+    const { group } = await make(as(person("Asha"), "10.0.0.9"));
+    for (let i = 0; i < 300; i++) expect(await previewInvite(signedOut("10.0.0.4"), newInviteToken())).toEqual({ state: "invalid" });
+    expect(await previewInvite(signedOut("10.0.0.4"), group.inviteCode)).toEqual({ state: "limited", retryAfterSeconds: expect.any(Number) });
+    expect(await joinGroup(as(person("Bob"), "10.0.0.4"), { key: group.inviteCode })).toMatchObject({
+      ok: false,
+      formError: GROUP_MESSAGES.tooMany,
+    });
+  });
+
+  it("a refused lookup is not counted again", async () => {
+    const { signedOut, limiter } = setup();
+    for (let i = 0; i < 300; i++) await previewInvite(signedOut("10.0.0.4"), newInviteToken());
+    const hit = vi.spyOn(limiter, "hit");
+    await previewInvite(signedOut("10.0.0.4"), newInviteToken());
+    expect(hit.mock.calls.some(([input]) => input.key === ipKey("10.0.0.4"))).toBe(false);
+  });
+});
+
 describe("joinGroup", () => {
   it("joinGroup in link mode joins at once", async () => {
     const { as } = setup();
@@ -489,6 +532,127 @@ describe("viewGroup, listGroupMembers and leaveGroup", () => {
     await groups.removeMember(group.id, bob.user.id);
     await leaveGroup(bob, group.id);
     expect(await joinGroup(bob, { key: group.inviteCode })).toEqual({ ok: false, formError: GROUP_MESSAGES.cannotJoin });
+  });
+});
+
+describe("store and limiter failures", () => {
+  const spies = ["log", "info", "warn", "error", "debug"] as const;
+  const SECRET_TEXT = "driver says: key=SECRETKEY123 group=11111111-2222-3333-4444-555555555555";
+  let logged: unknown[][];
+
+  beforeEach(() => {
+    logged = [];
+    for (const method of spies) vi.spyOn(console, method).mockImplementation((...args) => void logged.push(args));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** Every logged argument, Error objects included, as one text. */
+  const loggedText = () =>
+    logged
+      .flat()
+      .map((arg) => (arg instanceof Error ? `${arg.message} ${arg.stack}` : JSON.stringify(arg)))
+      .join("\n");
+  const boom = () => Promise.reject(new Error(SECRET_TEXT));
+
+  it("joinGroup gives couldNotSave when a store call throws, and nothing leaks", async () => {
+    const { as, groups } = setup();
+    const { group } = await make(as(person("Asha")));
+    const bob = as(person("Bob"));
+    const cases: Partial<GroupStore>[] = [{ findByInvite: boom }, { getMembership: boom }, { addMember: boom }];
+    for (const broken of cases) {
+      logged.length = 0;
+      const result = await joinGroup({ ...bob, groups: { ...groups, ...broken } }, { key: group.inviteCode });
+      expect(result).toEqual({ ok: false, formError: GROUP_MESSAGES.couldNotSave });
+      expect(JSON.stringify(result)).not.toContain("SECRETKEY123");
+      expect(loggedText()).not.toContain("SECRETKEY123");
+      expect(loggedText()).not.toContain(group.inviteCode);
+      expect(logged).toEqual([["Could not join the group."]]);
+    }
+  });
+
+  it("leaveGroup gives couldNotSave when the store throws, and nothing leaks", async () => {
+    const { as, groups } = setup();
+    const owner = as(person("Asha"));
+    const { group } = await make(owner);
+    const bob = as(person("Bob"));
+    await joinGroup(bob, { key: group.inviteCode });
+    for (const broken of [{ findById: boom }, { getMembership: boom }, { leave: boom }] as Partial<GroupStore>[]) {
+      logged.length = 0;
+      const result = await leaveGroup({ ...bob, groups: { ...groups, ...broken } }, group.id);
+      expect(result).toEqual({ ok: false, formError: GROUP_MESSAGES.couldNotSave });
+      expect(loggedText()).not.toContain("SECRETKEY123");
+      expect(logged).toEqual([["Could not leave the group."]]);
+    }
+  });
+
+  it("reads keep throwing on a store failure: viewGroup and listGroupMembers never claim there is no such group", async () => {
+    const { as, groups } = setup();
+    const owner = as(person("Asha"));
+    const { group } = await make(owner);
+    const broken = { ...owner, groups: { ...groups, findById: boom } };
+    await expect(viewGroup(broken, group.id)).rejects.toThrow();
+    await expect(listGroupMembers(broken, group.id)).rejects.toThrow();
+  });
+
+  it("previewInvite rethrows a generic error when the key lookup fails, without the key", async () => {
+    const { signedOut, groups } = setup();
+    const key = "SUPPLIEDKEY-abcdefghijklmnopqrstuvwxyz0123456789";
+    const failing = { ...signedOut(), groups: { ...groups, findByInvite: boom } };
+    const error = await previewInvite(failing, key).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Group lookup failed");
+    expect(String((error as Error).stack)).not.toContain("SECRETKEY123");
+    expect(loggedText()).not.toContain("SECRETKEY123");
+    expect(loggedText()).not.toContain(key);
+    expect(logged).toEqual([["Could not look up an invite."]]);
+  });
+
+  it("previewInvite answers invalid at once for a key no invite can have (NUL or over 100 characters)", async () => {
+    const { signedOut, groups } = setup();
+    const findByInvite = vi.fn(groups.findByInvite.bind(groups));
+    const deps = { ...signedOut(), groups: { ...groups, findByInvite } };
+    expect(await previewInvite(deps, "abc\u0000def")).toEqual({ state: "invalid" });
+    expect(await previewInvite(deps, "x".repeat(101))).toEqual({ state: "invalid" });
+    expect(findByInvite).not.toHaveBeenCalled();
+  });
+
+  it("a password group refuses a join with locked, and never checks the password, when the limiter throws", async () => {
+    const { as, groups } = setup();
+    const { group } = await make(as(person("Asha")), passwordGroup);
+    const broken = { ...as(person("Bob")), groups, limiter: { hit: boom, peek: boom } };
+    vi.mocked(verifyGroupPassword).mockClear();
+    const result = await joinGroup(broken, { key: group.inviteCode, password: PASSWORD });
+    expect(result).toEqual({ ok: false, formError: GROUP_MESSAGES.locked, retryAfterSeconds: 60 });
+    expect(vi.mocked(verifyGroupPassword)).not.toHaveBeenCalled();
+    expect(await listMyGroups(broken)).toEqual([]);
+    expect(loggedText()).not.toContain("SECRETKEY123");
+    expect(loggedText()).not.toContain(group.inviteCode);
+  });
+
+  it("a password group refuses a join with locked when the limiter never answers (2 second timeout)", async () => {
+    const { as, groups } = setup();
+    const { group } = await make(as(person("Asha")), passwordGroup);
+    const hanging = { hit: () => new Promise<never>(() => {}), peek: () => new Promise<never>(() => {}) };
+    const bob = { ...as(person("Bob")), groups, limiter: hanging };
+    vi.mocked(verifyGroupPassword).mockClear();
+    vi.useFakeTimers();
+    const pending = joinGroup(bob, { key: group.inviteCode, password: PASSWORD });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await pending).toEqual({ ok: false, formError: GROUP_MESSAGES.locked, retryAfterSeconds: 60 });
+    expect(vi.mocked(verifyGroupPassword)).not.toHaveBeenCalled();
+  });
+
+  it("link groups still join when the limiter is down (lookups fail open)", async () => {
+    const { as, groups } = setup();
+    const { group } = await make(as(person("Asha")));
+    const bob = { ...as(person("Bob")), groups, limiter: { hit: boom, peek: boom } };
+    expect(await joinGroup(bob, { key: group.inviteCode })).toEqual({ ok: true, data: { groupId: group.id } });
   });
 });
 

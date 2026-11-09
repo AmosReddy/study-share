@@ -35,6 +35,28 @@ describe("group password hashing", () => {
     expect(await verifyGroupPassword("पासवर्ड124", stored)).toBe(false);
   });
 
+  it("treats composed and decomposed sequences of the same password as the same password", async () => {
+    const pairs: [string, string][] = [
+      ["क़ताब", "क़ताब"], // Hindi: ka + nukta vs the single qa character
+      ["café-password", "café-password"], // Latin: e-acute vs e + combining acute
+    ];
+    for (const [composed, decomposed] of pairs) {
+      const hashOfComposed = await hashGroupPassword(composed);
+      const hashOfDecomposed = await hashGroupPassword(decomposed);
+      expect(await verifyGroupPassword(decomposed, hashOfComposed)).toBe(true);
+      expect(await verifyGroupPassword(composed, hashOfDecomposed)).toBe(true);
+      expect(await verifyGroupPassword(composed, hashOfComposed)).toBe(true);
+    }
+    // The Telugu vowel sign pair that has a canonical decomposition: U+0C48 = U+0C46 + U+0C56.
+    const teluguComposed = "గైడ్";
+    const teluguDecomposed = "గైడ్";
+    expect(teluguComposed).not.toBe(teluguDecomposed);
+    expect(await verifyGroupPassword(teluguDecomposed, await hashGroupPassword(teluguComposed))).toBe(true);
+    expect(await verifyGroupPassword(teluguComposed, await hashGroupPassword(teluguDecomposed))).toBe(true);
+    // A genuinely different password still fails.
+    expect(await verifyGroupPassword("cafè-password", await hashGroupPassword("café-password"))).toBe(false);
+  });
+
   it("returns false, never throws, for malformed stored values", async () => {
     const good = await hashGroupPassword("abcdef");
     const [, , , , salt, hash] = good.split("$");

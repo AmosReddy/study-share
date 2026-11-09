@@ -1,6 +1,6 @@
 import { can, type Action } from "@/server/permissions";
 import type { GroupDeps } from "./use-cases";
-import { MAX_INVITE_ATTEMPTS, memberContext } from "./use-cases";
+import { MAX_INVITE_ATTEMPTS, actionContext, memberContext } from "./use-cases";
 import { overLimit, parse, type ActionResult } from "@/server/use-case-kit";
 import { GROUP_MESSAGES } from "@/shared/group-messages";
 import { editGroupSchema, joinModeSchema, type JoinMode } from "@/shared/groups";
@@ -25,8 +25,20 @@ async function allowed(deps: GroupDeps, groupId: string, action: Action) {
   return context.group;
 }
 
+/**
+ * Like `allowed`, for the actions: a store failure while checking is logged as a fixed line and
+ * answers like a refusal (couldNotSave) instead of throwing.
+ */
+async function allowedForAction(deps: GroupDeps, groupId: string, action: Action) {
+  const found = await actionContext(deps, groupId, "Could not check the group.");
+  if (found.failed) return null;
+  const context = found.context;
+  if (!context?.membership || !can(deps.user, action, { membership: context.membership })) return null;
+  return context.group;
+}
+
 export async function updateGroupDetails(deps: GroupDeps, groupId: string, raw: unknown): Promise<ActionResult> {
-  const group = await allowed(deps, groupId, "group.edit");
+  const group = await allowedForAction(deps, groupId, "group.edit");
   if (!group) return COULD_NOT_SAVE;
 
   const parsed = parse(editGroupSchema, raw, GROUP_MESSAGES.badForm);
@@ -48,7 +60,7 @@ export async function changeJoinSettings(
   groupId: string,
   raw: unknown,
 ): Promise<ActionResult<{ password: string | null }>> {
-  const group = await allowed(deps, groupId, "group.join.change");
+  const group = await allowedForAction(deps, groupId, "group.join.change");
   if (!group) return COULD_NOT_SAVE;
 
   const parsed = parse(joinModeSchema, raw, GROUP_MESSAGES.badForm);
@@ -80,7 +92,7 @@ export async function resetInvite(
   deps: GroupDeps,
   groupId: string,
 ): Promise<ActionResult<{ inviteUrl: string; inviteCode: string }>> {
-  const group = await allowed(deps, groupId, "group.invite.reset");
+  const group = await allowedForAction(deps, groupId, "group.invite.reset");
   if (!group) return COULD_NOT_SAVE;
 
   const refused = await overLimit(
@@ -93,7 +105,14 @@ export async function resetInvite(
   for (let attempt = 0; attempt < MAX_INVITE_ATTEMPTS; attempt++) {
     const inviteToken = newInviteToken();
     const inviteCode = newGroupCode();
-    const outcome = await deps.groups.replaceInvite(group.id, { inviteToken, inviteCode });
+    let outcome: Awaited<ReturnType<typeof deps.groups.replaceInvite>>;
+    try {
+      outcome = await deps.groups.replaceInvite(group.id, { inviteToken, inviteCode });
+    } catch {
+      // The error may carry the NEW live token and code (the query's values): log a fixed line only.
+      console.error("Could not reset the invite.");
+      return COULD_NOT_SAVE;
+    }
     if (outcome === "ok") return { ok: true, data: { inviteUrl: `${deps.siteUrl}/invite/${inviteToken}`, inviteCode } };
     if (outcome === "group_gone") return COULD_NOT_SAVE;
   }

@@ -19,7 +19,13 @@ type SignedInFrameProps = {
  * menu. It reads the group store, so render it inside the page's Suspense boundary.
  */
 export async function SignedInFrame({ user, activeGroupId, title, children }: SignedInFrameProps) {
-  const groups = await loadShellGroups(user);
+  // A group-store failure must not take the shell, the account menu and Log out down with it: the
+  // list is empty for now. (The home page's own list is read separately and still fails loudly, so
+  // it never claims "no groups" falsely.)
+  const groups = await loadShellGroups(user).catch(() => {
+    console.error("Could not load the groups for the shell.");
+    return [];
+  });
   return (
     <AppShell
       groups={groups}
