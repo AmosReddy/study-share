@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { EnvError, parseServerEnv } from "./env";
+import { EnvError, parseServerEnv, settingsPointAtProduction } from "./env";
 
 // Fake project ids. "prodref" stands in for the real production project.
 const options = { productionProjectRefs: ["prodref"] };
@@ -7,6 +7,8 @@ const options = { productionProjectRefs: ["prodref"] };
 function settingsFor(ref: string, appEnv: "dev" | "production") {
   return {
     APP_ENV: appEnv,
+    // Required in production; optional (and left out) in dev.
+    ...(appEnv === "production" ? { NEXT_PUBLIC_SITE_URL: "https://study.example.com" } : {}),
     DATABASE_URL: `postgres://postgres.${ref}:pw@aws-0-ap-south-1.pooler.supabase.com:6543/postgres`,
     DATABASE_MIGRATION_URL: `postgres://postgres.${ref}:pw@aws-0-ap-south-1.pooler.supabase.com:5432/postgres`,
     NEXT_PUBLIC_SUPABASE_URL: `https://${ref}.supabase.co`,
@@ -152,6 +154,22 @@ describe("parseServerEnv: which project the settings point at", () => {
   });
 });
 
+describe("settingsPointAtProduction (used by the live check scripts)", () => {
+  test("is false for dev settings", () => {
+    expect(settingsPointAtProduction(parseServerEnv(valid, options), options.productionProjectRefs)).toBe(false);
+  });
+
+  test("is true for production settings", () => {
+    const env = parseServerEnv({ ...validProduction, NEXT_PUBLIC_SITE_URL: "https://study.example.com" }, options);
+    expect(settingsPointAtProduction(env, options.productionProjectRefs)).toBe(true);
+  });
+
+  test("is true when APP_ENV says production, whatever the addresses", () => {
+    const env = { ...parseServerEnv(valid, options), APP_ENV: "production" as const };
+    expect(settingsPointAtProduction(env, options.productionProjectRefs)).toBe(true);
+  });
+});
+
 describe("parseServerEnv: email sender address", () => {
   test("sends from the login address by default", () => {
     expect(parseServerEnv(valid, options).SMTP_FROM).toBe("bot@gmail.com");
@@ -165,5 +183,93 @@ describe("parseServerEnv: email sender address", () => {
 
   test("treats an empty SMTP_FROM as not set", () => {
     expect(parseServerEnv({ ...valid, SMTP_FROM: "  " }, options).SMTP_FROM).toBe("bot@gmail.com");
+  });
+});
+
+describe("parseServerEnv: test-mode setting (SERVICES_MODE)", () => {
+  test("defaults to real", () => {
+    expect(parseServerEnv(valid, options).SERVICES_MODE).toBe("real");
+  });
+
+  test("accepts fake for a dev environment", () => {
+    expect(parseServerEnv({ ...valid, SERVICES_MODE: "fake" }, options).SERVICES_MODE).toBe("fake");
+  });
+
+  test("rejects a value that is neither real nor fake", () => {
+    const message = messageOf(() => parseServerEnv({ ...valid, SERVICES_MODE: "mock-it" }, options));
+    expect(message).toContain("SERVICES_MODE");
+    expect(message).not.toContain("mock-it");
+  });
+
+  test("refuses fake when APP_ENV is production", () => {
+    const message = messageOf(() => parseServerEnv({ ...validProduction, SERVICES_MODE: "fake" }, options));
+    expect(message).toContain("SERVICES_MODE");
+  });
+
+  test("refuses fake on a Vercel production deployment", () => {
+    const message = messageOf(() =>
+      parseServerEnv({ ...valid, VERCEL_ENV: "production", SERVICES_MODE: "fake" }, options),
+    );
+    expect(message).toContain("SERVICES_MODE");
+  });
+
+  test("refuses fake when any setting points at a production project", () => {
+    const message = messageOf(() =>
+      parseServerEnv(
+        { ...valid, DATABASE_URL: validProduction.DATABASE_URL, SERVICES_MODE: "fake" },
+        options,
+      ),
+    );
+    expect(message).toContain("SERVICES_MODE");
+    expect(message).not.toContain("prodref");
+  });
+
+  test("still allows real in production", () => {
+    expect(parseServerEnv({ ...validProduction, SERVICES_MODE: "real" }, options).SERVICES_MODE).toBe("real");
+  });
+
+  test.each(["production", "preview", "development", "anything"])(
+    "refuses fake on any Vercel deployment (VERCEL_ENV=%s), even with dev settings",
+    (vercelEnv) => {
+      const message = messageOf(() => parseServerEnv({ ...valid, VERCEL_ENV: vercelEnv, SERVICES_MODE: "fake" }, options));
+      expect(message).toContain("SERVICES_MODE");
+      // The value itself is never printed.
+      if (vercelEnv === "anything") expect(message).not.toContain(vercelEnv);
+    },
+  );
+
+  test("allows fake when VERCEL_ENV is empty or not set (local runs and CI)", () => {
+    expect(parseServerEnv({ ...valid, VERCEL_ENV: "", SERVICES_MODE: "fake" }, options).SERVICES_MODE).toBe("fake");
+    expect(parseServerEnv({ ...valid, SERVICES_MODE: "fake" }, options).SERVICES_MODE).toBe("fake");
+  });
+});
+
+describe("parseServerEnv: site address setting", () => {
+  test("is optional", () => {
+    expect(parseServerEnv(valid, options).NEXT_PUBLIC_SITE_URL).toBeUndefined();
+  });
+
+  test("accepts a URL", () => {
+    const env = parseServerEnv({ ...valid, NEXT_PUBLIC_SITE_URL: "https://study.example.com" }, options);
+    expect(env.NEXT_PUBLIC_SITE_URL).toBe("https://study.example.com");
+  });
+
+  test("is required when APP_ENV is production, and the error names it without values", () => {
+    for (const missing of [undefined, "", "   "]) {
+      const message = messageOf(() => parseServerEnv({ ...validProduction, NEXT_PUBLIC_SITE_URL: missing }, options));
+      expect(message).toContain("NEXT_PUBLIC_SITE_URL");
+      expect(message).not.toContain("prodref");
+      expect(message).not.toContain("service-key");
+    }
+  });
+
+  test("is accepted in production when set", () => {
+    expect(parseServerEnv(validProduction, options).NEXT_PUBLIC_SITE_URL).toBe("https://study.example.com");
+  });
+
+  test("rejects something that is not a URL", () => {
+    expect(messageOf(() => parseServerEnv({ ...valid, NEXT_PUBLIC_SITE_URL: "not a url" }, options))).toContain(
+      "NEXT_PUBLIC_SITE_URL",
+    );
   });
 });

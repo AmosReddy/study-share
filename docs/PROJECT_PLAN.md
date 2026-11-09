@@ -37,7 +37,7 @@ The project starts with students, grows to teachers and colleges, and later to w
 | Decision | Choice |
 |---|---|
 | Platform | A website for both desktop and mobile. The site is built for both screen sizes from the start |
-| Pilot focus | Desktop is fully polished. Phones can join, browse, search and download in a simple layout. Everything else on phones is polished before public launch |
+| Pilot focus | **Phones and desktop are both polished from the start** (changed on 2026-11-06). Every screen is designed phone-first, since most of the owner's class will use phones, then scaled up for desktop. The pilot must feel good on a phone, including upload, search and chat |
 | Invitations | Sent through WhatsApp and email |
 | Budget | Free plans at launch, pay if it grows, no rebuild needed |
 | Domain | No spending for now: use the free Vercel address and send email through Gmail during the pilot. Buy a domain and move email before public launch |
@@ -136,7 +136,7 @@ Key rules:
 
 On phones, the group list collapses into a menu and filters open in a slide-up panel.
 
-Design standards: skeleton loaders rather than spinners, optimistic updates, clear empty states, keyboard support, light and dark themes, WCAG AA contrast. Every page uses a flexible layout from 360px upward. Pilot polish targets 1024px and up.
+Design standards: skeleton loaders rather than spinners, optimistic updates, clear empty states, keyboard support, light and dark themes, WCAG AA contrast. Every screen is designed phone-first at 360px, then scaled up for desktop, and both are polished in every phase. On phones, a group uses bottom tabs with a floating Upload button and a group switcher in the header.
 
 ### Design principles
 
@@ -214,7 +214,7 @@ Each phase ends deployed, tested and merged. Each gets its own detailed task pla
 - Create group, group list, join mode setting, invite link and code, join by password.
 - Share on WhatsApp, email invites and rate limits.
 - Member list, leave group, remove member (with rejoin block), transfer ownership, delete group.
-- Sign-up, invite and join pages polished for phones.
+- Every screen phone-first: the invite page puts the group first with Continue with Google and Sign up with email, and a group's bottom tab bar (Library, Members, Settings) appears. Details in `docs/superpowers/specs/2026-11-06-phase-1-accounts-and-groups-design.md`.
 - **Done when:** two people can register and form a private group through a WhatsApp link and through an email invite.
 
 ### Phase 2: Library and upload
@@ -223,20 +223,20 @@ Each phase ends deployed, tested and merged. Each gets its own detailed task pla
 - Library list, in-browser preview for PDFs and images, download for others.
 - Edit and delete files, storage meter, quotas, "needs details" list for owners and admins.
 - Owners and admins can add a missing option directly from a file's details.
-- Library, preview and download work on phones in a simple layout.
+- Polished on phones from the start: upload from files, photos or the camera, the library list, preview and download, with the floating Upload button.
 - **Done when:** a group defines its own form and members upload, preview and download, and a member can upload a file the form doesn't fit.
 
 ### Phase 3: Search and filters
 - Search by title, description and filename, tolerating typos.
 - Filters generated from each group's own fields, with counts.
 - Sorting, shareable filter URLs, and cursor pagination.
-- Search and filters work on phones in a simple layout.
+- Search and filters are polished on phones, with filters in a slide-up panel.
 - **Done when:** results appear in under 300 ms on a seeded group of 50,000 files.
 
 **Milestone: pilot with your own class,** on the free Vercel address with Gmail email. Collect feedback and fix what's found before Phase 4.
 
 ### Phase 4: Chat
-- Live messages, history, replies, unread counts, and linking a file into chat.
+- Live messages, history, replies, unread counts, and linking a file into chat. Polished on phones, including a chat box that stays visible above the keyboard.
 - Rate limits and message deletion.
 - **Done when:** two browsers chat live and survive a dropped connection without losing or duplicating messages.
 
@@ -250,7 +250,7 @@ Each phase ends deployed, tested and merged. Each gets its own detailed task pla
 ### Phase 6: Public launch readiness
 - Full terms, privacy policy and a copyright takedown process.
 - Buy a domain, then move the site and email to it.
-- Full mobile polish, including upload, chat and settings.
+- A final phone and desktop polish pass, with testing on real devices.
 - Admin page for you: reports, group lookup, usage.
 - Security review, rate limits everywhere, load test, accessibility pass.
 - Nightly database backups to a separate private bucket (ideally at another provider), tested with a real restore.
@@ -360,7 +360,7 @@ Secrets go directly into `.env.local` or the provider dashboards, never into cha
 
 - **Each phase:** CI passes, the phase's "done when" is demonstrated on a preview link, and it's then merged.
 - **Security:** the role-against-action test table passes, and a manual check confirms a non-member and a removed member can't reach files, messages or Realtime.
-- **Screen sizes:** browser tests run at desktop and 360px phone widths. On phones during the pilot, join, browse, search and download must work with no sideways scrolling.
+- **Screen sizes:** browser tests run at desktop and phone sizes (touch device profile, 360px and up) and must really check the phone layout. Every screen works with no sideways scrolling, with tap targets of at least 44px.
 - **Email:** verification and invite emails are tested on Gmail and Outlook addresses before the pilot.
 - **Performance:** run against seeded data of 50,000 files and 100,000 messages. Target under 300 ms for search and under 2 seconds for first page load.
 - **Before public launch:** a real backup restore, a load test, a full run of the browser tests, and your class's pilot feedback resolved.

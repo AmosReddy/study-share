@@ -1,0 +1,718 @@
+/**
+ * Probes how the real Supabase Auth behaves in the cases the code-based registration
+ * design depends on (emailed codes checked with verifyOtp), and prints the facts.
+ * Run with: npm run check:auth-behaviour
+ *
+ * DEV PROJECT ONLY. It creates and deletes test users, so it refuses to run when the
+ * settings are (or point at) production. Test addresses are plus-addresses of the
+ * project's own mailbox (SMTP_USER), so no email ever goes to anyone else. It sends at
+ * most five real emails in (a) to (j) and at most six in (n) (signUp, resend and
+ * resetPasswordForEmail do; the admin generateLink used to obtain a code does not; (k), (l),
+ * (l2), (m), (o), (p) and (q) send none; (r) sends at most two). `--only=k,l,m,n` runs only the named probes. It always deletes every
+ * user it created (by recorded id, then a scan by
+ * tag), including on Ctrl-C, SIGTERM, SIGHUP and SIGBREAK. It says "0 left" only when every
+ * deletion was confirmed and the scan finished.
+ *
+ * It prints labelled FACT lines only: never a password, token, code, key or full email
+ * address. Provider errors are reported by name, HTTP status and error code, never by
+ * message. Each probe is separate: one that fails prints "PROBE FAILED" and the rest run.
+ */
+import { createServerClient } from "@supabase/ssr";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { cleanUpUsers, type DeleteOutcome } from "@/server/clean-up-users";
+import { describeAuthError, describeCodeShape } from "@/server/describe-auth-error";
+import { EnvError, getServerEnv, settingsPointAtProduction } from "@/server/env";
+
+/** Supabase's per-address email limit is about one a minute, so a repeat to one address waits this long. */
+const PER_ADDRESS_WAIT_MS = 65_000;
+const BETWEEN_CALLS_MS = 3_000;
+const TAGS = ["a", "b", "d", "e", "f", "g", "h", "unknown", "k", "l", "l2", "o", "p", "q", "r", "n1", "n2", "n3"];
+/** After a stop signal, how long to wait for the call in flight before cleaning up anyway. */
+const ABORT_SETTLE_MS = 20_000;
+const SCAN_PAGE_SIZE = 200;
+const SCAN_MAX_PAGES = 50;
+
+/** Set by the signal handler: probes stop at their next wait, and no new probe starts. */
+let aborting = false;
+
+/** Waits in short slices so a stop signal ends the wait quickly; throws once aborting. */
+async function sleep(ms: number): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (aborting) throw new Error("stopped by a signal");
+    await new Promise((resolve) => setTimeout(resolve, Math.min(500, end - Date.now())));
+  }
+  if (aborting) throw new Error("stopped by a signal");
+}
+
+function fact(label: string, value: string) {
+  console.log(`FACT  ${label}: ${value}`);
+}
+
+const yesNo = (value: boolean) => (value ? "yes" : "no");
+
+type Ctx = {
+  url: string;
+  anonKey: string;
+  admin: SupabaseClient;
+  /** A new client with its own in-memory session, like one browser. */
+  client: () => SupabaseClient;
+  address: (tag: string) => string;
+  P1: string;
+  P2: string;
+  createConfirmed: (email: string, password?: string) => Promise<string>;
+  /** Admin createUser that records the new user's id for the clean-up. */
+  createUser: (attributes: Parameters<SupabaseClient["auth"]["admin"]["createUser"]>[0]) => ReturnType<SupabaseClient["auth"]["admin"]["createUser"]>;
+  /** Records a user id (for example from signUp) so the clean-up deletes it by id. */
+  track: (id: string | undefined) => void;
+  /** Stops tracking an id the probe itself deleted. */
+  forget: (id: string) => void;
+};
+
+type Probe = { label: string; run: (ctx: Ctx) => Promise<void> };
+
+/** The emailed-style code of an admin-generated link (no email is sent), or undefined with the error described. */
+async function generateCode(
+  ctx: Ctx,
+  params: { type: "signup"; email: string; password: string } | { type: "recovery"; email: string },
+): Promise<{ code?: string; error: string }> {
+  const { data, error } = await ctx.admin.auth.admin.generateLink(params);
+  return { code: data?.properties?.email_otp, error: describeAuthError(error) };
+}
+
+function verify(ctx: Ctx, email: string, token: string, type: "signup" | "email" | "recovery") {
+  return ctx.client().auth.verifyOtp({ email, token, type });
+}
+
+type Verified = Awaited<ReturnType<typeof verify>>;
+
+function acceptedOrRejected(result: Verified, reusableNote?: string): string {
+  if (result.error) return `rejected: ${describeAuthError(result.error)}`;
+  return `ACCEPTED${reusableNote ? ` (${reusableNote})` : ""}; session returned ${yesNo(!!result.data.session)}; user confirmed ${yesNo(!!result.data.user?.email_confirmed_at)}`;
+}
+
+/** (a), (b), (c), (i): sign-up, the signup code, wrong/used/superseded codes, unconfirmed sign-in. */
+async function probeSignupCode(ctx: Ctx) {
+  const email = ctx.address("a");
+  const signUp = await ctx.client().auth.signUp({ email, password: ctx.P1 });
+  ctx.track(signUp.data.user?.id);
+  fact(
+    "(a) signUp of a new address (sends email 1)",
+    `${describeAuthError(signUp.error)}; user returned ${yesNo(!!signUp.data.user)}; session returned ${yesNo(!!signUp.data.session)}; confirmed ${yesNo(!!signUp.data.user?.email_confirmed_at)}`,
+  );
+
+  // (c) sign in while unconfirmed, right and wrong password.
+  const right = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  fact("(c) signInWithPassword, UNCONFIRMED user, RIGHT password", `${describeAuthError(right.error)}; session ${yesNo(!!right.data.session)}`);
+  const wrong = await ctx.client().auth.signInWithPassword({ email, password: ctx.P2 });
+  fact("(c) signInWithPassword, UNCONFIRMED user, WRONG password", `${describeAuthError(wrong.error)}; session ${yesNo(!!wrong.data.session)}`);
+
+  const g1 = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  fact("(a) admin generateLink type signup for the unconfirmed user (sends no email; code from admin generateLink, not the emailed message)", g1.error);
+  fact("(i) signup code shape", describeCodeShape(g1.code));
+
+  // (b) a wrong code (nothing is consumed by a wrong code).
+  const wrongCode = g1.code?.replace(/\d/g, (d) => String((Number(d) + 1) % 10)) ?? "00000000";
+  const wrongTry = await verify(ctx, email, wrongCode, "signup");
+  fact("(b) verifyOtp type signup with a WRONG code (a digit-shifted copy of a generateLink code)", acceptedOrRejected(wrongTry));
+
+  console.log(`      waiting ${PER_ADDRESS_WAIT_MS / 1000} s so the per-address email limit does not decide the second sign-up...`);
+  await sleep(PER_ADDRESS_WAIT_MS);
+  const second = await ctx.client().auth.signUp({ email, password: ctx.P1 });
+  ctx.track(second.data.user?.id);
+  fact("(b) second signUp of the same unconfirmed address (sends email 2)", `${describeAuthError(second.error)}; session returned ${yesNo(!!second.data.session)}`);
+  if (g1.code) {
+    const old = await verify(ctx, email, g1.code, "signup");
+    fact("(b) code generated BEFORE the second signUp, used after it (code from admin generateLink, not the emailed message)", acceptedOrRejected(old, "earlier code NOT invalidated"));
+  }
+
+  // Two generateLink calls in a row: is the first of them superseded by the second?
+  const g2 = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  const g3 = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  fact("(b) two admin generateLink calls in a row", `${g2.error} / ${g3.error}; codes differ ${yesNo(!!g2.code && g2.code !== g3.code)}`);
+  if (g2.code && g2.code !== g3.code) {
+    const earlier = await verify(ctx, email, g2.code, "signup");
+    fact("(b) the EARLIER of two generated codes, used after the later one was issued (code from admin generateLink, not the emailed message)", acceptedOrRejected(earlier, "earlier code NOT invalidated"));
+  }
+
+  // (a) the right code, type signup.
+  const latest = g3.code ?? g2.code ?? g1.code;
+  if (!latest) throw new Error("no code was generated");
+  const ok = await verify(ctx, email, latest, "signup");
+  fact("(a) verifyOtp type signup with the LATEST correct code (code from admin generateLink, not the emailed message)", acceptedOrRejected(ok));
+  // (b) the same code a second time.
+  const again = await verify(ctx, email, latest, "signup");
+  fact("(b) the SAME code used a second time (code from admin generateLink, not the emailed message)", acceptedOrRejected(again, "code is reusable"));
+}
+
+/** (a): does type "email" also verify a signup code, on its own fresh user (admin-created, unconfirmed, no email sent). */
+async function probeEmailType(ctx: Ctx) {
+  const email = ctx.address("b");
+  const created = await ctx.createUser({ email, password: ctx.P1 });
+  if (created.error) throw created.error;
+  const g = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  fact("(a) fresh unconfirmed user B (admin-created, no email): generateLink type signup", g.error);
+  if (!g.code) return;
+  const viaEmail = await verify(ctx, email, g.code, "email");
+  fact("(a) verifyOtp type email with a signup code (code from admin generateLink, not the emailed message)", acceptedOrRejected(viaEmail));
+}
+
+/** (d): admin.deleteUser of an unconfirmed user, then signUp again for the same address (sends email 3). */
+async function probeDeleteThenSignUp(ctx: Ctx) {
+  const email = ctx.address("d");
+  const created = await ctx.createUser({ email, password: ctx.P1 });
+  if (created.error || !created.data.user) throw created.error ?? new Error("no user was created");
+  const oldId = created.data.user.id;
+  const deleted = await ctx.admin.auth.admin.deleteUser(oldId);
+  if (!deleted.error) ctx.forget(oldId);
+  fact("(d) admin.deleteUser of an UNCONFIRMED user (admin-created user)", describeAuthError(deleted.error));
+  const signUp = await ctx.client().auth.signUp({ email, password: ctx.P2 });
+  const newId = signUp.data.user?.id;
+  ctx.track(newId);
+  const stored = newId ? await ctx.admin.auth.admin.getUserById(newId) : undefined;
+  fact(
+    "(d) signUp again for the same address right after the delete (sends email 3, no wait)",
+    `${describeAuthError(signUp.error)}; new id differs from the old one ${yesNo(!!newId && newId !== oldId)}; session returned ${yesNo(!!signUp.data.session)}; confirmation email recorded as sent ${yesNo(!!stored?.data.user?.confirmation_sent_at)}`,
+  );
+}
+
+/** (e): recovery code, session, password change, old and new password. */
+async function probeRecovery(ctx: Ctx) {
+  const email = ctx.address("e");
+  await ctx.createConfirmed(email);
+  const g = await generateCode(ctx, { type: "recovery", email });
+  fact("(e) admin generateLink type recovery (sends no email)", g.error);
+  fact("(i) recovery code shape", describeCodeShape(g.code));
+  if (!g.code) return;
+  const client = ctx.client();
+  const verified = await client.auth.verifyOtp({ email, token: g.code, type: "recovery" });
+  fact("(e) verifyOtp type recovery", acceptedOrRejected(verified));
+  if (!verified.data.session) return;
+  const updated = await client.auth.updateUser({ password: ctx.P2 });
+  fact("(e) updateUser({ password }) with the recovery session", describeAuthError(updated.error));
+  const withNew = await ctx.client().auth.signInWithPassword({ email, password: ctx.P2 });
+  const withOld = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  fact("(e) afterwards: NEW password signs in / OLD password signs in", `${yesNo(!!withNew.data.session)} / ${yesNo(!!withOld.data.session)} (old: ${describeAuthError(withOld.error)})`);
+}
+
+/** (f): signOut({ scope: "others" }) with two independent sessions of one user. */
+async function probeSignOutOthers(ctx: Ctx) {
+  const email = ctx.address("f");
+  await ctx.createConfirmed(email);
+  const a = ctx.client();
+  const b = ctx.client();
+  const inA = await a.auth.signInWithPassword({ email, password: ctx.P1 });
+  const inB = await b.auth.signInWithPassword({ email, password: ctx.P1 });
+  const sessionB = inB.data.session;
+  fact(
+    "(f) the same user signed in twice (two independent sessions)",
+    `${describeAuthError(inA.error)} / ${describeAuthError(inB.error)}; distinct refresh tokens ${yesNo(!!inA.data.session && !!sessionB && inA.data.session.refresh_token !== sessionB.refresh_token)}`,
+  );
+  if (!inA.data.session || !sessionB) return;
+  const out = await a.auth.signOut({ scope: "others" });
+  fact("(f) signOut({ scope: others }) from session A", describeAuthError(out.error));
+  const aUser = await a.auth.getUser();
+  fact("(f) session A afterwards: getUser", `${describeAuthError(aUser.error)}; user ${yesNo(!!aUser.data.user)}`);
+  const bAccess = await ctx.admin.auth.getUser(sessionB.access_token);
+  fact("(f) session B's existing ACCESS token afterwards (checked at the server)", bAccess.error ? `rejected: ${describeAuthError(bAccess.error)}` : "still accepted until it expires");
+  const aRefresh = await a.auth.refreshSession();
+  fact("(f) session A afterwards: refresh", `${describeAuthError(aRefresh.error)}; new session ${yesNo(!!aRefresh.data.session)}`);
+  const bRefresh = await ctx.client().auth.refreshSession({ refresh_token: sessionB.refresh_token });
+  fact("(f) session B's REFRESH token afterwards", bRefresh.error ? `rejected: ${describeAuthError(bRefresh.error)}` : `STILL REFRESHES; new session ${yesNo(!!bRefresh.data.session)}`);
+}
+
+/** (g): a user created without a password gets one through a recovery code. */
+async function probeAddPassword(ctx: Ctx) {
+  const email = ctx.address("g");
+  const created = await ctx.createUser({ email, email_confirm: true });
+  fact("(g) admin createUser with email_confirm and NO password", describeAuthError(created.error));
+  if (created.error) return;
+  const before = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  fact("(g) signInWithPassword before any password exists", `${describeAuthError(before.error)}; session ${yesNo(!!before.data.session)}`);
+  const g = await generateCode(ctx, { type: "recovery", email });
+  fact("(g) generateLink type recovery for the password-less user", g.error);
+  if (!g.code) return;
+  const client = ctx.client();
+  const verified = await client.auth.verifyOtp({ email, token: g.code, type: "recovery" });
+  fact("(g) verifyOtp type recovery", acceptedOrRejected(verified));
+  if (!verified.data.session) return;
+  const updated = await client.auth.updateUser({ password: ctx.P1 });
+  fact("(g) updateUser({ password }) sets the first password", describeAuthError(updated.error));
+  const after = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  fact("(g) signInWithPassword with that new password", `${describeAuthError(after.error)}; session ${yesNo(!!after.data.session)}`);
+}
+
+/** (h): resend({ type: "signup" }) for a confirmed and for an unknown address (may send up to two emails). */
+async function probeResend(ctx: Ctx) {
+  const email = ctx.address("h");
+  await ctx.createConfirmed(email);
+  const client = ctx.client();
+  const confirmed = await client.auth.resend({ type: "signup", email });
+  fact("(h) resend type signup for a CONFIRMED address", describeAuthError(confirmed.error));
+  await sleep(BETWEEN_CALLS_MS);
+  const unknown = await client.auth.resend({ type: "signup", email: ctx.address("unknown") });
+  fact("(h) resend type signup for an UNKNOWN address", describeAuthError(unknown.error));
+}
+
+/** (j): the code lifetime, if the public auth settings expose it. */
+async function probeSettings(ctx: Ctx) {
+  const response = await fetch(`${ctx.url}/auth/v1/settings`, { headers: { apikey: ctx.anonKey, Authorization: `Bearer ${ctx.anonKey}` } });
+  if (!response.ok) {
+    fact("(j) effective code lifetime", `not readable (settings endpoint answered ${response.status})`);
+    return;
+  }
+  const settings = (await response.json()) as Record<string, unknown>;
+  const names = Object.keys(settings).filter((key) => /otp|expir|lifetime/i.test(key));
+  fact(
+    "(j) effective code lifetime",
+    names.length ? `readable through settings keys: ${names.join(", ")}` : "not readable (the public auth settings expose no code lifetime or length; the Management API needs an access token this script does not have)",
+  );
+  fact("(j) related public setting mailer_autoconfirm (true means Confirm email is OFF)", String(settings.mailer_autoconfirm ?? "not present"));
+}
+
+/** How a session stands now: checked at the server by its access token, and by its refresh token. */
+async function sessionState(ctx: Ctx, session: { access_token: string; refresh_token: string }): Promise<string> {
+  const access = await ctx.admin.auth.getUser(session.access_token);
+  const refresh = await ctx.client().auth.refreshSession({ refresh_token: session.refresh_token });
+  return `access token at the server ${access.error ? `rejected (${describeAuthError(access.error)})` : "accepted"}; refresh ${refresh.error ? `rejected (${describeAuthError(refresh.error)})` : "works"}`;
+}
+
+async function passwordsWork(ctx: Ctx, email: string, labels: [string, string][]): Promise<string> {
+  const parts: string[] = [];
+  for (const [name, password] of labels) {
+    const r = await ctx.client().auth.signInWithPassword({ email, password });
+    parts.push(`${name} ${r.data.session ? "signs in" : `refused (${describeAuthError(r.error)})`}`);
+  }
+  return parts.join("; ");
+}
+
+/**
+ * (k), (m admin): a sign-up code verifies (session S), then an admin password update (the
+ * app's scramblePassword). What happens to S, to another session, and to a recovery code
+ * issued before the change. No email is sent (admin-created user, codes from generateLink).
+ */
+async function probeAdminScramble(ctx: Ctx) {
+  const email = ctx.address("k");
+  const created = await ctx.createUser({ email, password: ctx.P1 });
+  if (created.error || !created.data.user) throw created.error ?? new Error("no user was created");
+  const id = created.data.user.id;
+  const g = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  if (!g.code) throw new Error(`no signup code (${g.error})`);
+  const s = ctx.client();
+  const verified = await s.auth.verifyOtp({ email, token: g.code, type: "signup" });
+  fact("(k) fresh user: verifyOtp type signup (session S)", acceptedOrRejected(verified));
+  const sessionS = verified.data.session;
+  if (!sessionS) return;
+  const other = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  const sessionB = other.data.session;
+  fact("(k) a second session B of the same user (password sign-in)", `${describeAuthError(other.error)}; session ${yesNo(!!sessionB)}`);
+  const recovery = await generateCode(ctx, { type: "recovery", email });
+  fact("(m) recovery code generated BEFORE the admin password update", recovery.error);
+
+  const scramble = await ctx.admin.auth.admin.updateUserById(id, { password: `${crypto.randomUUID()}Cc3!` });
+  fact("(k) admin updateUserById({ password: random })", describeAuthError(scramble.error));
+
+  // updateUser first, on S's own client: a server-side getUser failure would make the client
+  // drop its local session, and updateUser would then fail locally instead of at the server.
+  const sUpdate = await s.auth.updateUser({ password: ctx.P2 });
+  fact("(k) session S afterwards: updateUser({ password }) with S", describeAuthError(sUpdate.error));
+  fact("(k) session S afterwards (server check of its access token; refresh)", await sessionState(ctx, sessionS));
+  if (sessionB) fact("(k) session B afterwards", await sessionState(ctx, sessionB));
+  fact("(k) passwords afterwards", await passwordsWork(ctx, email, [["OLD (pre-scramble)", ctx.P1], ["the one S tried to set", ctx.P2]]));
+  if (recovery.code) {
+    const late = await verify(ctx, email, recovery.code, "recovery");
+    fact("(m) that recovery code used AFTER the admin password update", acceptedOrRejected(late, "outstanding code survives the admin update"));
+  }
+}
+
+/**
+ * (l), (m self): two sessions A and B; A changes its own password with updateUser and does
+ * NOT call signOut(others). No email is sent.
+ */
+async function probeSelfPasswordChange(ctx: Ctx) {
+  const email = ctx.address("l");
+  await ctx.createConfirmed(email);
+  const a = ctx.client();
+  const inA = await a.auth.signInWithPassword({ email, password: ctx.P1 });
+  const inB = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  const sessionB = inB.data.session;
+  fact("(l) confirmed user signed in twice (A, B)", `${describeAuthError(inA.error)} / ${describeAuthError(inB.error)}`);
+  if (!inA.data.session || !sessionB) return;
+  const recovery = await generateCode(ctx, { type: "recovery", email });
+  fact("(m) recovery code generated BEFORE the self password change", recovery.error);
+
+  const updated = await a.auth.updateUser({ password: ctx.P2 });
+  fact("(l) A: updateUser({ password }) WITHOUT signOut(others)", describeAuthError(updated.error));
+  fact("(l) session A afterwards", await sessionState(ctx, inA.data.session));
+  fact("(l) session B afterwards", await sessionState(ctx, sessionB));
+  fact("(l) passwords afterwards", await passwordsWork(ctx, email, [["OLD", ctx.P1], ["NEW", ctx.P2]]));
+  if (recovery.code) {
+    const late = await verify(ctx, email, recovery.code, "recovery");
+    fact("(m) that recovery code used AFTER the self password change", acceptedOrRejected(late, "outstanding code survives the self update"));
+  }
+}
+
+/**
+ * (l2), (m self): as (l), but A is a RECOVERY-code session (the reset flow), since (l) showed a
+ * password-sign-in session may be refused a password change. B is a password sign-in.
+ */
+async function probeRecoverySessionPasswordChange(ctx: Ctx) {
+  const email = ctx.address("l2");
+  await ctx.createConfirmed(email);
+  const inB = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  const sessionB = inB.data.session;
+  const g = await generateCode(ctx, { type: "recovery", email });
+  if (!g.code) throw new Error(`no recovery code (${g.error})`);
+  const a = ctx.client();
+  const inA = await a.auth.verifyOtp({ email, token: g.code, type: "recovery" });
+  fact("(l2) session B by password, then session A by a recovery code", `${describeAuthError(inB.error)} / ${acceptedOrRejected(inA)}`);
+  if (!inA.data.session || !sessionB) return;
+  const later = await generateCode(ctx, { type: "recovery", email });
+  fact("(m) another recovery code generated BEFORE the self password change", later.error);
+
+  const updated = await a.auth.updateUser({ password: ctx.P2 });
+  fact("(l2) A (recovery session): updateUser({ password }) WITHOUT signOut(others)", describeAuthError(updated.error));
+  fact("(l2) session A afterwards", await sessionState(ctx, inA.data.session));
+  fact("(l2) session B afterwards", await sessionState(ctx, sessionB));
+  fact("(l2) passwords afterwards", await passwordsWork(ctx, email, [["OLD", ctx.P1], ["NEW", ctx.P2]]));
+  if (later.code) {
+    const late = await verify(ctx, email, later.code, "recovery");
+    fact("(m) that recovery code used AFTER the self password change", acceptedOrRejected(late, "outstanding code survives the self update"));
+  }
+}
+
+/**
+ * (o): from a SIGN-UP-code session, does updateUser({ password }) work (or is it refused like a
+ * password session in (l))? What does it do to the stranger's earlier password P1 and to a
+ * session B made with P1? No signOut(others) is called. No email is sent.
+ */
+async function probeCodeThenOwnPassword(ctx: Ctx) {
+  const email = ctx.address("o");
+  const created = await ctx.createUser({ email, password: ctx.P1 });
+  if (created.error) throw created.error;
+  const g = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  if (!g.code) throw new Error(`no signup code (${g.error})`);
+  const s = ctx.client();
+  const verified = await s.auth.verifyOtp({ email, token: g.code, type: "signup" });
+  fact("(o) pending user with password P1: verifyOtp type signup (session S)", acceptedOrRejected(verified));
+  if (!verified.data.session) return;
+  const inB = await ctx.client().auth.signInWithPassword({ email, password: ctx.P1 });
+  fact("(o) a session B signed in with P1 after the confirmation", `${describeAuthError(inB.error)}; session ${yesNo(!!inB.data.session)}`);
+
+  const updated = await s.auth.updateUser({ password: ctx.P2 });
+  fact("(o) S (sign-up-code session): updateUser({ password: P2 }), NO signOut(others)", describeAuthError(updated.error));
+  fact("(o) session S afterwards", await sessionState(ctx, verified.data.session));
+  if (inB.data.session) fact("(o) session B afterwards", await sessionState(ctx, inB.data.session));
+  fact("(o) passwords afterwards", await passwordsWork(ctx, email, [["P1 (the stranger's)", ctx.P1], ["P2 (set by S)", ctx.P2]]));
+}
+
+/** A server client like the app's: the session lives in this in-memory cookie jar. */
+function cookieClient(ctx: Ctx, jar: Map<string, string>) {
+  return createServerClient(ctx.url, ctx.anonKey, {
+    cookies: {
+      getAll: () => [...jar].map(([name, value]) => ({ name, value })),
+      setAll: (items) => {
+        for (const { name, value } of items) {
+          if (value) jar.set(name, value);
+          else jar.delete(name);
+        }
+      },
+    },
+  });
+}
+
+/**
+ * The chosen openSessionWithoutEmail: admin generateLink type recovery (its code comes back in
+ * the response), then verifyOtp on a cookie-bound client, then the same calls on a NEW client
+ * over the same cookies, as the next request would make. Reports each step.
+ */
+async function mintSession(ctx: Ctx, label: string, email: string, userId: string, password?: string) {
+  const before = await ctx.admin.auth.admin.getUserById(userId);
+  const link = await ctx.admin.auth.admin.generateLink({ type: "recovery", email });
+  const after = await ctx.admin.auth.admin.getUserById(userId);
+  const sentBefore = before.data.user?.recovery_sent_at ?? null;
+  const sentAfter = after.data.user?.recovery_sent_at ?? null;
+  fact(
+    `(${label}) admin generateLink type recovery`,
+    `${describeAuthError(link.error)}; code in the response ${yesNo(!!link.data?.properties?.email_otp)}; recovery_sent_at ${sentBefore === sentAfter ? "unchanged" : sentBefore ? "changed" : "set (was empty)"}`,
+  );
+  const code = link.data?.properties?.email_otp;
+  if (!code) return;
+  const jar = new Map<string, string>();
+  const minted = await cookieClient(ctx, jar).auth.verifyOtp({ email, token: code, type: "recovery" });
+  fact(`(${label}) verifyOtp type recovery with that code on a cookie-bound client`, `${acceptedOrRejected(minted)}; user id matches ${yesNo(minted.data.user?.id === userId)}; session cookies written ${yesNo(jar.size > 0)}`);
+  if (!minted.data.session) return;
+  const next = cookieClient(ctx, jar);
+  const user = await next.auth.getUser();
+  fact(`(${label}) next request on the same cookies: getUser (server check)`, `${describeAuthError(user.error)}; user ${yesNo(user.data.user?.id === userId)}`);
+  const refreshed = await next.auth.refreshSession();
+  fact(`(${label}) next request: refreshSession`, `${describeAuthError(refreshed.error)}; new session ${yesNo(!!refreshed.data.session)}`);
+  if (password) {
+    const updated = await cookieClient(ctx, jar).auth.updateUser({ password });
+    fact(`(${label}) next request: updateUser({ password: P2 }) on the minted session`, describeAuthError(updated.error));
+  }
+}
+
+/**
+ * (p): the chosen design-5.1 sequence on a fresh unconfirmed user with password P1 (admin-made,
+ * so no email): verifyOtp(signup) -> admin scramble -> openSessionWithoutEmail (generateLink
+ * recovery + verifyOtp on a cookie-bound client) -> getUser, refresh, updateUser(P2).
+ */
+async function probeChosenSequence(ctx: Ctx) {
+  const email = ctx.address("p");
+  const created = await ctx.createUser({ email, password: ctx.P1 });
+  if (created.error || !created.data.user) throw created.error ?? new Error("no user was created");
+  const id = created.data.user.id;
+  const g = await generateCode(ctx, { type: "signup", email, password: ctx.P1 });
+  if (!g.code) throw new Error(`no signup code (${g.error})`);
+  const s = ctx.client();
+  const verified = await s.auth.verifyOtp({ email, token: g.code, type: "signup" });
+  fact("(p) pending user with P1: verifyOtp type signup (session S)", acceptedOrRejected(verified));
+  if (!verified.data.session) return;
+  const scramble = await ctx.admin.auth.admin.updateUserById(id, { password: `${crypto.randomUUID()}Dd4!` });
+  fact("(p) admin scramble (updateUserById password)", describeAuthError(scramble.error));
+  fact("(p) session S after the scramble", await sessionState(ctx, verified.data.session));
+  await mintSession(ctx, "p", email, id, ctx.P2);
+  fact("(p) passwords afterwards", await passwordsWork(ctx, email, [["P1 (the stranger's)", ctx.P1], ["P2 (set on the minted session)", ctx.P2]]));
+}
+
+/** (q): the minted session for a confirmed account with no password (admin-made), after a scramble: the Google-repair case. */
+async function probeMintForPasswordless(ctx: Ctx) {
+  const email = ctx.address("q");
+  const created = await ctx.createUser({ email, email_confirm: true });
+  if (created.error || !created.data.user) throw created.error ?? new Error("no user was created");
+  const id = created.data.user.id;
+  const scramble = await ctx.admin.auth.admin.updateUserById(id, { password: `${crypto.randomUUID()}Ee5!` });
+  fact("(q) password-less confirmed user: admin scramble", describeAuthError(scramble.error));
+  await mintSession(ctx, "q", email, id);
+}
+
+/** (r): signUp, admin deleteUser by id, then signUp of the SAME address about 3 s (BETWEEN_CALLS_MS) later (at most two emails). */
+async function probeDeleteThenSignUpQuickly(ctx: Ctx) {
+  const email = ctx.address("r");
+  const first = await ctx.client().auth.signUp({ email, password: ctx.P1 });
+  const firstId = first.data.user?.id;
+  ctx.track(firstId);
+  fact("(r) first signUp (sends an email)", describeAuthError(first.error));
+  if (!firstId) return;
+  const deleted = await ctx.admin.auth.admin.deleteUser(firstId);
+  if (!deleted.error) ctx.forget(firstId);
+  fact("(r) admin deleteUser of that unconfirmed user", describeAuthError(deleted.error));
+  const deletedAt = Date.now();
+  await sleep(BETWEEN_CALLS_MS);
+  // Measured to the moment the call is sent, not to its reply.
+  const waited = Math.round((Date.now() - deletedAt) / 1000);
+  const second = await ctx.client().auth.signUp({ email, password: ctx.P2 });
+  ctx.track(second.data.user?.id);
+  fact(
+    "(r) signUp of the same address again",
+    `sent ${waited} s after the delete returned: ${describeAuthError(second.error)}; new id ${yesNo(!!second.data.user?.id && second.data.user.id !== firstId)}`,
+  );
+}
+
+/**
+ * (n): two calls of the same email-sending method for one address, a few seconds apart,
+ * one address per method. At most two calls per method (so at most six emails, fewer when
+ * the second call is refused).
+ */
+async function probeEmailInterval(ctx: Ctx) {
+  const twice = async (label: string, call: () => Promise<{ error: unknown }>) => {
+    const first = await call();
+    const started = Date.now();
+    await sleep(BETWEEN_CALLS_MS);
+    const second = await call();
+    fact(`(n) ${label}`, `first: ${describeAuthError(first.error)}; second, ${Math.round((Date.now() - started) / 1000)} s later: ${describeAuthError(second.error)}`);
+  };
+
+  const signUpEmail = ctx.address("n1");
+  await twice("signUp twice for one new address", async () => {
+    const r = await ctx.client().auth.signUp({ email: signUpEmail, password: ctx.P1 });
+    ctx.track(r.data.user?.id);
+    return r;
+  });
+
+  const resendEmail = ctx.address("n2");
+  const pending = await ctx.createUser({ email: resendEmail, password: ctx.P1 });
+  if (pending.error) throw pending.error;
+  await twice("resend type signup twice for one UNCONFIRMED (admin-created, never emailed) address", () =>
+    ctx.client().auth.resend({ type: "signup", email: resendEmail }),
+  );
+
+  const resetEmail = ctx.address("n3");
+  await ctx.createConfirmed(resetEmail);
+  await twice("resetPasswordForEmail twice for one CONFIRMED address", () => ctx.client().auth.resetPasswordForEmail(resetEmail));
+}
+
+const probes: Probe[] = [
+  { label: "(a)(b)(c)(i)", run: probeSignupCode },
+  { label: "(a) email type", run: probeEmailType },
+  { label: "(d)", run: probeDeleteThenSignUp },
+  { label: "(e)", run: probeRecovery },
+  { label: "(f)", run: probeSignOutOthers },
+  { label: "(g)", run: probeAddPassword },
+  { label: "(h)", run: probeResend },
+  { label: "(j)", run: probeSettings },
+  { label: "(k)(m)", run: probeAdminScramble },
+  { label: "(l)(m)", run: probeSelfPasswordChange },
+  { label: "(l2)(m)", run: probeRecoverySessionPasswordChange },
+  { label: "(o)", run: probeCodeThenOwnPassword },
+  { label: "(p)", run: probeChosenSequence },
+  { label: "(q)", run: probeMintForPasswordless },
+  { label: "(r)", run: probeDeleteThenSignUpQuickly },
+  { label: "(n)", run: probeEmailInterval },
+];
+
+/**
+ * `--only=k,l,n` runs only the probes whose label contains one of those letters in brackets,
+ * so a later question can be probed without re-sending the earlier emails.
+ */
+function selectedProbes(): Probe[] {
+  const arg = process.argv.find((a) => a.startsWith("--only="));
+  if (!arg) return probes;
+  const wanted = arg.slice("--only=".length).split(",").map((s) => s.trim()).filter(Boolean);
+  return probes.filter((p) => wanted.some((w) => p.label.includes(`(${w})`)));
+}
+
+async function main(): Promise<void> {
+  let env;
+  try {
+    env = getServerEnv();
+  } catch (error) {
+    console.log(`FAIL  environment  ${error instanceof EnvError ? error.message : "could not read the settings"}`);
+    process.exit(1);
+  }
+  if (settingsPointAtProduction(env)) {
+    console.log("FAIL  refusing to run: these settings are, or point at, the production project. Dev only.");
+    process.exit(1);
+  }
+  const at = env.SMTP_USER.lastIndexOf("@");
+  if (at <= 0) {
+    console.log("FAIL  SMTP_USER is not an email address, so there is no safe mailbox for test addresses.");
+    process.exit(1);
+  }
+  const local = env.SMTP_USER.slice(0, at);
+  const domain = env.SMTP_USER.slice(at + 1);
+  const stamp = Date.now();
+  const address = (tag: string) => `${local}+check${stamp}${tag}@${domain}`;
+
+  const url = env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const admin = createClient(url, env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+  const client = () => createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
+
+  // Every user this run creates is recorded by id as soon as it exists, so clean-up can delete by id.
+  const createdIds = new Set<string>();
+
+  /** The tagged users still on the project, found by address. Reports whether it saw every page. */
+  async function scanForTaggedUsers(): Promise<{ ids: string[]; complete: boolean }> {
+    const wanted = new Set(TAGS.map((tag) => address(tag).toLowerCase()));
+    const ids: string[] = [];
+    for (let page = 1; page <= SCAN_MAX_PAGES; page++) {
+      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: SCAN_PAGE_SIZE });
+      if (error) throw new Error(`Could not list users (status ${error.status ?? "none"})`);
+      for (const user of data.users) if (user.email && wanted.has(user.email.toLowerCase())) ids.push(user.id);
+      if (data.nextPage === null || data.users.length === 0) return { ids, complete: true };
+    }
+    return { ids, complete: false };
+  }
+
+  async function deleteById(id: string): Promise<DeleteOutcome> {
+    const { error } = await admin.auth.admin.deleteUser(id);
+    if (!error) return "deleted";
+    return error.status === 404 || error.code === "user_not_found" ? "gone" : "failed";
+  }
+
+  const P1 = `${crypto.randomUUID()}Aa1!`;
+  const P2 = `${crypto.randomUUID()}Bb2!`;
+  const ctx: Ctx = {
+    url,
+    anonKey,
+    admin,
+    client,
+    address,
+    P1,
+    P2,
+    createUser: async (attributes) => {
+      const result = await admin.auth.admin.createUser(attributes);
+      if (result.data.user) createdIds.add(result.data.user.id);
+      return result;
+    },
+    track: (id) => {
+      if (id) createdIds.add(id);
+    },
+    forget: (id) => {
+      createdIds.delete(id);
+    },
+    createConfirmed: async (email, password = P1) => {
+      const created = await ctx.createUser({ email, password, email_confirm: true });
+      if (created.error || !created.data.user) throw new Error(`Could not create a confirmed test user (status ${created.error?.status ?? "none"})`);
+      return created.data.user.id;
+    },
+  };
+
+  // Delete every user this run created: by recorded id first, then a scan by tag as a fallback.
+  // Runs once (the shared promise); "0 left" is printed only when every deletion was confirmed.
+  let cleanedUp: Promise<void> | undefined;
+  const cleanUp = () =>
+    (cleanedUp ??= (async () => {
+      const result = await cleanUpUsers({ knownIds: [...createdIds], scan: scanForTaggedUsers, deleteUser: deleteById });
+      for (const warning of result.warnings) console.log(`WARN  ${warning}`);
+      console.log(result.summary);
+      if (result.left > 0) process.exitCode = 1;
+    })());
+
+  // A stop signal: stop the probes, wait for the call in flight, clean up, exit non-zero.
+  // Further signals are ignored while that runs, so a second Ctrl-C cannot cut the clean-up short.
+  let inFlight: Promise<unknown> = Promise.resolve();
+  let handlingSignal = false;
+  const onSignal = (signal: string) => {
+    if (handlingSignal) {
+      console.log(`${signal} ignored: clean-up is already running.`);
+      return;
+    }
+    handlingSignal = true;
+    aborting = true;
+    process.exitCode = 130;
+    console.log(`\n${signal} received: stopping, then cleaning up the test users before exiting.`);
+    void (async () => {
+      const settled = await Promise.race([
+        inFlight.then(() => true, () => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ABORT_SETTLE_MS)),
+      ]);
+      if (!settled) console.log("WARN  the call in flight did not finish in time; cleaning up anyway (a user it creates after this scan would be missed)");
+      await cleanUp().catch(() => {});
+      process.exit(130);
+    })();
+  };
+  // SIGBREAK exists on Windows only and SIGHUP is emulated there (console close); register what the platform accepts.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
+    try {
+      process.on(signal, () => onSignal(signal));
+    } catch {
+      // This platform does not support this signal.
+    }
+  }
+
+  console.log(`Probing the dev project's code-based Auth behaviour (test addresses are plus-addresses of the project mailbox, tag check${stamp}).`);
+  try {
+    for (const probe of selectedProbes()) {
+      if (aborting) break;
+      inFlight = probe.run(ctx);
+      try {
+        await inFlight;
+      } catch (error) {
+        fact(probe.label, `PROBE FAILED: ${aborting ? "stopped by a signal" : describeAuthError(error)}`);
+        if (!aborting) process.exitCode = 1;
+      }
+      try {
+        await sleep(BETWEEN_CALLS_MS);
+      } catch {
+        break;
+      }
+    }
+  } finally {
+    await cleanUp();
+  }
+}
+
+void main();
