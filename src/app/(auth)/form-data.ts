@@ -1,4 +1,4 @@
-import type { ActionResult } from "@/server/auth/use-cases";
+import type { ActionResult } from "@/server/use-case-kit";
 import type { FormState } from "@/shared/form-state";
 
 /** Helpers shared by the server actions. */

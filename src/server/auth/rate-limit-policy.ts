@@ -1,5 +1,6 @@
-/** How many tries are allowed in a window. The window length is in seconds. */
-export type Limit = { limit: number; windowSeconds: number };
+import type { Limit } from "../use-case-kit";
+
+export type { Limit } from "../use-case-kit";
 
 const HOUR = 60 * 60;
 const FIFTEEN_MINUTES = 15 * 60;
