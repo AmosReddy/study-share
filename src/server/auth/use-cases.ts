@@ -15,6 +15,7 @@ import {
 } from "@/shared/auth-schemas";
 import { TERMS_VERSION } from "@/shared/legal";
 import { safeNextPath } from "@/shared/safe-next-path";
+import { hitWithTimeout, ipCheck, overLimit, parse, type ActionResult, type Check, type Failure } from "@/server/use-case-kit";
 import type { PendingSignup } from "./pending-signup-cookie";
 import {
   CODE_ATTEMPTS,
@@ -31,7 +32,6 @@ import {
   RESEND_EMAIL_LIMIT,
   SIGN_UP_EMAIL_LIMIT,
   SIGN_UP_IP_LIMIT,
-  type Limit,
 } from "./rate-limit-policy";
 
 /*
@@ -58,12 +58,6 @@ export type Deps = {
   pending: PendingSignup | null;
 };
 
-export type ActionResult<T = void> =
-  | { ok: true; data: T }
-  | { ok: false; fieldErrors?: Record<string, string>; formError?: string; retryAfterSeconds?: number };
-
-type Failure = Extract<ActionResult, { ok: false }>;
-
 /** Set as `formError` when the email is not confirmed yet. The screen turns it into copy and a Resend button. */
 export const CONFIRM_EMAIL_CODE = "confirm_email";
 
@@ -75,28 +69,6 @@ const termsSchema = z.object({ acceptTerms: signUpSchema.shape.acceptTerms, term
 const profileSchema = z.object({ displayName: displayNameSchema });
 const newPasswordSchema = resetPasswordSchema.extend({ confirmPassword: z.string() });
 
-function parse<S extends z.ZodType>(schema: S, raw: unknown): { data: z.output<S> } | { failure: Failure } {
-  const result = schema.safeParse(raw);
-  if (result.success) return { data: result.data };
-  const fieldErrors: Record<string, string> = {};
-  let formError: string | undefined;
-  for (const issue of result.error.issues) {
-    const field = issue.path[0];
-    if (typeof field === "string") fieldErrors[field] ??= issue.message;
-    else formError ??= MESSAGES.badForm;
-  }
-  return {
-    failure: {
-      ok: false,
-      ...(Object.keys(fieldErrors).length > 0 ? { fieldErrors } : {}),
-      ...(formError ? { formError } : {}),
-    },
-  };
-}
-
-/** One limit to count. `message` replaces the usual "too many attempts" when this one refuses. */
-type Check = { key: string; limit: Limit; message?: string };
-
 /**
  * The shared one-email-a-minute cooldown. It comes first, so a quick repeat (a double tap)
  * is refused before it uses up any hourly allowance.
@@ -106,17 +78,6 @@ const emailSendCheck = (email: string): Check => ({
   limit: EMAIL_SEND_COOLDOWN,
   message: MESSAGES.justSent,
 });
-
-const MAX_IP_LENGTH = 64;
-
-/**
- * The per-IP check, or none when the address is unknown (empty). Skipping is deliberate:
- * a shared "unknown" bucket would let one visitor use up the limit for everyone.
- */
-function ipCheck(prefix: string, ip: string, limit: Limit): Check[] {
-  const address = ip.trim().slice(0, MAX_IP_LENGTH);
-  return address === "" ? [] : [{ key: `${prefix}:ip:${address}`, limit }];
-}
 
 /**
  * For the flows that send an email (sign-up, resend, reset). A provider rate limit (per address,
@@ -134,49 +95,6 @@ function emailFlowFailure(error: unknown): Failure {
     return { ok: false, formError: MESSAGES.couldNotSend };
   }
   return providerFailure(error);
-}
-
-/** How long one limiter hit may take before it counts as a store failure (fail open). */
-const LIMITER_TIMEOUT_MS = 2000;
-
-/** The hit (or peek), or a rejection once LIMITER_TIMEOUT_MS has passed. The timer never outlives the call. */
-async function hitWithTimeout(limiter: RateLimiter, input: Parameters<RateLimiter["hit"]>[0], op: "hit" | "peek" = "hit") {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("Rate limit store timed out")), LIMITER_TIMEOUT_MS);
-  });
-  try {
-    return await Promise.race([op === "peek" ? limiter.peek(input) : limiter.hit(input), timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Counts each check and returns a failure for the first one that is over its limit.
- * A limiter that throws, or takes over 2 seconds, never blocks anyone: one warning is logged
- * (with no key, email, IP or error text) and that hit counts as allowed.
- */
-async function overLimit(limiter: RateLimiter, checks: Check[]): Promise<Failure | null> {
-  let storeFailed = false;
-  let refusal: Failure | null = null;
-  for (const { key, limit, message } of checks) {
-    try {
-      const result = await hitWithTimeout(limiter, { key, limit: limit.limit, windowSeconds: limit.windowSeconds });
-      if (!result.allowed) {
-        refusal = {
-          ok: false,
-          formError: message ?? MESSAGES.tooMany,
-          retryAfterSeconds: Math.max(1, result.retryAfterSeconds),
-        };
-        break;
-      }
-    } catch {
-      storeFailed = true;
-    }
-  }
-  if (storeFailed) console.warn("Rate limit store unavailable; allowing the request.");
-  return refusal;
 }
 
 /** Turns a provider error into a safe result. Anything that is not a provider error is a bug and is rethrown. */
@@ -201,7 +119,7 @@ export async function logIn(deps: Deps, raw: unknown, next: unknown): Promise<Ac
   const refused = await overLimit(deps.limiter, [
     { key: `login:email:${email}`, limit: LOGIN_EMAIL_LIMIT },
     ...ipCheck("login", deps.ip, LOGIN_IP_LIMIT),
-  ]);
+  ], MESSAGES.tooMany);
   if (refused) return refused;
 
   try {
@@ -427,7 +345,7 @@ export async function signUp(deps: Deps, raw: unknown): Promise<ActionResult<{ p
     emailSendCheck(email),
     { key: `signup:email:${email}`, limit: SIGN_UP_EMAIL_LIMIT },
     ...ipCheck("signup", deps.ip, SIGN_UP_IP_LIMIT),
-  ]);
+  ], MESSAGES.tooMany);
   if (refused) return refused;
 
   try {
@@ -486,7 +404,7 @@ async function checkCode(
   const refused = await overLimit(deps.limiter, [
     { key: `code:email:${email}`, limit: CODE_ATTEMPTS, message: MESSAGES.tooManyCodes },
     ...ipCheck("code", deps.ip, CODE_ATTEMPTS_IP),
-  ]);
+  ], MESSAGES.tooMany);
   if (refused) return { failure: refused };
 
   if (beforeVerify) {
@@ -718,7 +636,7 @@ export async function resendSignUpCode(deps: Deps, raw: unknown): Promise<Action
   const refused = await overLimit(deps.limiter, [
     emailSendCheck(email),
     { key: `resend:email:${email}`, limit: RESEND_EMAIL_LIMIT },
-  ]);
+  ], MESSAGES.tooMany);
   if (refused) return refused;
 
   try {
@@ -746,7 +664,7 @@ export async function requestPasswordReset(deps: Deps, raw: unknown): Promise<Ac
     emailSendCheck(email),
     { key: `reset:email:${email}`, limit: PASSWORD_RESET_EMAIL_LIMIT },
     ...ipCheck("reset", deps.ip, PASSWORD_RESET_IP_LIMIT),
-  ]);
+  ], MESSAGES.tooMany);
   if (refused) return refused;
 
   try {
@@ -835,7 +753,7 @@ export async function setPassword(
 
     const refused = await overLimit(deps.limiter, [
       { key: `password-update:user:${user.id}`, limit: PASSWORD_UPDATE_USER_LIMIT },
-    ]);
+    ], MESSAGES.tooMany);
     if (refused) return refused;
 
     try {

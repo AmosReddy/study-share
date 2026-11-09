@@ -20,15 +20,18 @@ const { getDb, createAccountDirectory } = vi.hoisted(() => ({
   createAccountDirectory: vi.fn(() => ({ sql: true })),
 }));
 const { createProfileStore } = vi.hoisted(() => ({ createProfileStore: vi.fn(() => ({ sqlProfiles: true })) }));
+const { createGroupStore } = vi.hoisted(() => ({ createGroupStore: vi.fn(() => ({ sqlGroups: true })) }));
 
 vi.mock("next/headers", () => ({ cookies }));
 vi.mock("@/server/env", () => ({ getServerEnv }));
 vi.mock("@/server/db/client", () => ({ getDb }));
 vi.mock("@/server/db/account-directory", () => ({ createAccountDirectory }));
 vi.mock("@/server/db/profile-store", () => ({ createProfileStore }));
+vi.mock("@/server/db/group-store", () => ({ createGroupStore }));
 
 import { getFakeAuthStore, resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
-import { getAccountDirectory, getAuthProvider, getProfileStore } from "./services";
+import { resetFakeGroupStore } from "@/server/adapters/fake-group-store";
+import { getAccountDirectory, getAuthProvider, getGroupStore, getProfileStore } from "./services";
 
 describe("getProfileStore", () => {
   beforeEach(() => {
@@ -48,6 +51,68 @@ describe("getProfileStore", () => {
     getServerEnv.mockReturnValueOnce({ SERVICES_MODE: "real" } as never);
     expect(getProfileStore()).toEqual({ sqlProfiles: true });
     expect(createProfileStore).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("getGroupStore", () => {
+  beforeEach(() => {
+    getDb.mockClear();
+    createGroupStore.mockClear();
+  });
+
+  it("in fake mode is the fake store over the shared fake auth store, and never opens the database", async () => {
+    getServerEnv.mockReturnValue({ SERVICES_MODE: "fake" } as never);
+    try {
+      resetFakeAuthStore();
+      resetFakeGroupStore();
+      const owner = "11111111-1111-4111-8111-111111111111";
+      getFakeAuthStore().users.set(owner, {
+        id: owner,
+        email: "ada@example.test",
+        password: null,
+        displayName: "Ada",
+        termsVersion: null,
+        confirmed: true,
+        identities: [],
+      });
+      const made = await getGroupStore().createGroup({
+        ownerId: owner,
+        name: "Maths",
+        description: "",
+        joinMode: "link",
+        passwordHash: null,
+        inviteToken: "token-1",
+        inviteCode: "ABCDEFGH",
+      });
+      expect(made.ok).toBe(true);
+      // A second call sees the same groups, and the names come from the fake auth store.
+      const group = await getGroupStore().findByInvite({ code: "ABCDEFGH" });
+      expect((await getGroupStore().listMembers(group!.id)).map((m) => m.displayName)).toEqual(["Ada"]);
+      expect(getDb).not.toHaveBeenCalled();
+      expect(createGroupStore).not.toHaveBeenCalled();
+    } finally {
+      resetFakeGroupStore();
+      resetFakeAuthStore();
+      getServerEnv.mockReset();
+      getServerEnv.mockImplementation(() => {
+        throw new Error("settings were read before the request-reading call");
+      });
+    }
+  });
+
+  it("otherwise (every real deployment) is the SQL store over the database, made once", () => {
+    getServerEnv.mockReturnValue({ SERVICES_MODE: "real" } as never);
+    try {
+      expect(getGroupStore()).toEqual({ sqlGroups: true });
+      expect(getGroupStore()).toBe(getGroupStore());
+      expect(createGroupStore).toHaveBeenCalledTimes(1);
+      expect(createGroupStore).toHaveBeenCalledWith(getDb.mock.results[0].value);
+    } finally {
+      getServerEnv.mockReset();
+      getServerEnv.mockImplementation(() => {
+        throw new Error("settings were read before the request-reading call");
+      });
+    }
   });
 });
 

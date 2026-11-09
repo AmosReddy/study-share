@@ -6,6 +6,12 @@ export type MemberStatus = "active" | "pending" | "removed";
 /** Later phases add actions here. Each action lists the roles allowed to do it. */
 const allowedRoles = {
   "group.view": ["owner", "admin", "member"],
+  "group.members.view": ["owner", "admin", "member"],
+  "group.leave": ["member"],
+  "group.edit": ["owner"],
+  "group.join.change": ["owner"],
+  "group.invite.view": ["owner"],
+  "group.invite.reset": ["owner"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Action = keyof typeof allowedRoles;

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { cn } from "@/client/lib/utils";
 
 export type SidebarGroup = { id: string; name: string };
@@ -5,9 +6,14 @@ export type SidebarGroup = { id: string; name: string };
 type GroupSidebarProps = {
   groups: SidebarGroup[];
   activeGroupId?: string;
+  /** Called when one of its links is followed (the phone sheet closes itself with it). */
+  onNavigate?: () => void;
 };
 
-export function GroupSidebar({ groups, activeGroupId }: GroupSidebarProps) {
+const actionClass =
+  "flex min-h-11 items-center rounded-md border px-3 py-2 text-sm font-medium hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 outline-none";
+
+export function GroupSidebar({ groups, activeGroupId, onNavigate }: GroupSidebarProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <p className="font-heading px-4 pt-5 pb-3 text-lg font-semibold">
@@ -23,17 +29,18 @@ export function GroupSidebar({ groups, activeGroupId }: GroupSidebarProps) {
             const active = group.id === activeGroupId;
             return (
               <li key={group.id} className="min-w-0">
-                <a
-                  href={`#group-${group.id}`}
+                <Link
+                  href={`/groups/${group.id}`}
                   title={group.name}
                   aria-current={active ? "page" : undefined}
+                  onNavigate={onNavigate}
                   className={cn(
-                    "block min-w-0 rounded-md px-3 py-2 text-sm hover:bg-sidebar-accent",
+                    "flex min-h-11 min-w-0 items-center rounded-md px-3 py-2 text-sm hover:bg-sidebar-accent",
                     active && "bg-sidebar-accent font-medium",
                   )}
                 >
-                  <span className={cn("inline-block max-w-full truncate align-top", active && "marker")}>{group.name}</span>
-                </a>
+                  <span className={cn("block min-w-0 truncate", active && "marker")}>{group.name}</span>
+                </Link>
               </li>
             );
           })}
@@ -41,20 +48,12 @@ export function GroupSidebar({ groups, activeGroupId }: GroupSidebarProps) {
       </nav>
 
       <div className="flex flex-col gap-2 border-t p-3">
-        <button
-          type="button"
-          disabled
-          className="min-h-11 rounded-md border px-3 py-2 text-left text-sm text-muted-foreground disabled:cursor-not-allowed"
-        >
+        <Link href="/groups/new" onNavigate={onNavigate} className={actionClass}>
           New group
-        </button>
-        <button
-          type="button"
-          disabled
-          className="min-h-11 rounded-md border px-3 py-2 text-left text-sm text-muted-foreground disabled:cursor-not-allowed"
-        >
+        </Link>
+        <Link href="/join" onNavigate={onNavigate} className={actionClass}>
           Join a group
-        </button>
+        </Link>
       </div>
     </div>
   );

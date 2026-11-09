@@ -2,6 +2,7 @@
 
 import { startTransition, useActionState, useEffect, useRef, type FormEvent } from "react";
 import { IDLE, type FormAction } from "@/shared/form-state";
+import { guardAction } from "./guard-action";
 
 /** The text of a field's error, from the `<id>-error` element its aria-describedby names. */
 function fieldErrorText(field: HTMLElement): string {
@@ -13,7 +14,8 @@ function fieldErrorText(field: HTMLElement): string {
 }
 
 /**
- * Runs a form through its server action. With JavaScript, the submit goes through a
+ * Runs a form through its server action (guarded: a request that fails shows the form's error,
+ * see guardAction). With JavaScript, the submit goes through a
  * transition so React does not clear what was typed; without it, the form posts to
  * the same action and the page comes back with the echoed values.
  *
@@ -27,7 +29,7 @@ function fieldErrorText(field: HTMLElement): string {
  *   is announced again and a stale message never lingers.
  */
 export function useAuthForm(action: FormAction) {
-  const [state, formAction, pending] = useActionState(action, IDLE);
+  const [state, formAction, pending] = useActionState(guardAction(action), IDLE);
   const formRef = useRef<HTMLFormElement>(null);
   const announcerRef = useRef<HTMLParagraphElement>(null);
 

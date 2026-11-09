@@ -57,7 +57,10 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   // On CI, also write an HTML report to playwright-report/ (uploaded with test-results/ when a run fails).
-  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
+  // The last reporter fails the run when the server logged a prerender error (see its own comment).
+  reporter: process.env.CI
+    ? [["list"], ["html", { open: "never" }], ["./e2e/server-log-reporter.ts"]]
+    : [["list"], ["./e2e/server-log-reporter.ts"]],
   use: { baseURL: BASE_URL },
   projects: [
     {
@@ -102,6 +105,9 @@ export default defineConfig({
     url: BASE_URL,
     reuseExistingServer: false,
     timeout: 240_000,
+    // Piped to the reporters, so server-log-reporter.ts can fail the run on a prerender error.
+    stdout: "pipe",
+    stderr: "pipe",
     env: fakeServicesEnv,
   },
 });

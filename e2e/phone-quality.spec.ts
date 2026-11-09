@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { auditInBothThemes, auditPage, type PageExpectation } from "./audit";
 import {
   codeBox,
+  createGroupThroughForm,
   enterCode,
   forgetEmailCooldown,
   isolateRateLimits,
@@ -12,9 +13,10 @@ import {
   uniqueEmail,
 } from "./helpers";
 import { AUTH_MESSAGES } from "../src/shared/auth-messages";
+import { GROUP_MESSAGES } from "../src/shared/group-messages";
 
 /*
-  The phone quality sweep: every page of Phase 1a, audited (see ./audit.ts) in the light and
+  The phone quality sweep: every page of Phase 1a and 1b, audited (see ./audit.ts) in the light and
   the dark theme, at 360px wide (the small phone) and at desktop width. phone-412 is skipped
   because 360px is the tighter of the two phones. /welcome needs the one shared fake Google
   account, so it is audited in phone-quality-welcome.spec.ts, which runs in its own project.
@@ -29,12 +31,21 @@ import { AUTH_MESSAGES } from "../src/shared/auth-messages";
      new password;
    - /reset-password: Forgot password (the reset-email cookie), and with no cookie;
    - /reset-password/new: Forgot password, then the emailed recovery code.
+  The group pages need data, which the test creates through the real forms in one browser, signing
+  people out and in as it goes (clearing the cookies is how a signed-out visitor is made):
+   - /groups/new, /join: any signed-in person;
+   - /groups/<id> (Library), /members, /settings: the owner of a group made with the Create form;
+   - /invite/<key>: valid and invalid, signed out and signed in (password and link-only groups);
+   - the group pages as a plain member (Members with a Leave button), and with a confirm open.
+  The Group created screen, the wrong-password state and the 60-character name are audited in
+  groups.spec.ts and invite.spec.ts, so they are not repeated here.
 */
 
 /** For a page with a menu or sheet open; see AuditOptions in ./audit.ts. */
 const MODAL_LAYER = { skipAxeRules: ["aria-hidden-focus"] };
 
 const NAME = "Asha Rao";
+const FRIEND = "Ravi Kumar";
 
 test.beforeEach(async ({ page }, info) => {
   test.skip(info.project.name === "phone-412", "The sweep runs at 360px and desktop; 360px is the tighter phone.");
@@ -46,6 +57,10 @@ const h1 = (name: string) => (page: Page) => page.getByRole("heading", { level: 
 const accountMenu = (page: Page) => page.getByRole("banner").getByRole("button", { name: NAME, exact: true });
 /** The signed-out pitch's "Sign up" link. */
 const pitchSignUp = (page: Page) => page.getByRole("main").getByRole("link", { name: "Sign up", exact: true });
+
+const groupHeading = (name: string) => (page: Page) => page.getByRole("heading", { level: 1, name, exact: true });
+const inviteProblem = (page: Page) => page.getByText(GROUP_MESSAGES.invalidInvite, { exact: true });
+const MADE_UP_KEY = "/invite/made-up-key-that-is-not-real";
 
 /** The Google button and the sentence under it, which sit on the log-in and sign-up pages. */
 const googleButton = (page: Page) => page.getByRole("button", { name: "Continue with Google", exact: true });
@@ -61,6 +76,24 @@ const SIGNED_OUT_PAGES: Record<string, PageExpectation> = {
 };
 
 test.describe("signed out", () => {
+  test("/invite/<made-up key> (the invalid message, nothing to join)", async ({ page }) => {
+    await auditInBothThemes(page, { path: MADE_UP_KEY, url: MADE_UP_KEY, landmark: inviteProblem });
+    await expect(googleButton(page)).toHaveCount(0);
+  });
+
+  test("/invite/<key> (a valid invite: the group name and the two ways in)", async ({ page }) => {
+    await signUpAndConfirm(page, { name: NAME });
+    const group = await createGroupThroughForm(page, { name: "Maths Circle", mode: "password" });
+    await page.context().clearCookies();
+    await auditInBothThemes(page, {
+      path: group.invitePath,
+      url: group.invitePath,
+      landmark: groupHeading("Maths Circle"),
+      absent: accountMenu,
+    });
+    await expect(googleButton(page)).toBeVisible();
+  });
+
   for (const [name, expected] of Object.entries(SIGNED_OUT_PAGES)) {
     test(name, async ({ page }) => {
       await auditInBothThemes(page, expected);
@@ -195,6 +228,76 @@ test.describe("signed in", () => {
       await expect(page.getByRole("navigation", { name: "Groups" })).toBeVisible();
       await auditPage(page, MODAL_LAYER);
     }
+  });
+
+  test("/groups/new and /join", async ({ page }) => {
+    await signUpAndConfirm(page, { name: NAME });
+    await auditInBothThemes(page, { path: "/groups/new", url: "/groups/new", landmark: h1("Create a group") });
+    await auditInBothThemes(page, { path: "/join", url: "/join", landmark: h1("Join a group") });
+  });
+
+  test("an owner's group: Library, Members and Settings", async ({ page }) => {
+    await signUpAndConfirm(page, { name: NAME });
+    const group = await createGroupThroughForm(page, { name: "Maths Circle", mode: "password" });
+    // Landmarks that exist only in each tab's own content (the group's title is in the layout, which
+    // is there while the tab is still loading).
+    const library = (p: Page) => p.getByRole("heading", { level: 3, name: "No files here yet", exact: true });
+    const memberList = (p: Page) => p.getByRole("list", { name: "Members", exact: true });
+    const groupDetails = (p: Page) => p.getByRole("region", { name: "Group details", exact: true });
+    await auditInBothThemes(page, { path: group.path, url: group.path, landmark: library });
+    await auditInBothThemes(page, { path: `${group.path}/members`, url: `${group.path}/members`, landmark: memberList });
+    await auditInBothThemes(page, { path: `${group.path}/settings`, url: `${group.path}/settings`, landmark: groupDetails });
+    await expect(groupHeading("Maths Circle")(page)).toBeVisible();
+
+    // The Reset link confirm, open over the Settings page.
+    await page.getByRole("button", { name: "Reset link" }).click();
+    await expect(page.getByRole("dialog", { name: "Reset the invite link?" })).toBeVisible();
+    await auditPage(page, MODAL_LAYER);
+  });
+
+  test("an owner's link-only group: Settings without a password", async ({ page }) => {
+    await signUpAndConfirm(page, { name: NAME });
+    const group = await createGroupThroughForm(page, { name: "Open Chemistry", mode: "link" });
+    const settings = `${group.path}/settings`;
+    await auditInBothThemes(page, { path: settings, url: settings, landmark: groupHeading("Open Chemistry") });
+    await expect(page.getByRole("radio", { name: /Link only/ })).toBeChecked();
+  });
+
+  test("/invite/<key> signed in (password and link-only), then a member's group pages", async ({ page }) => {
+    await signUpAndConfirm(page, { name: NAME });
+    const passwordGroup = await createGroupThroughForm(page, { name: "Maths Circle", mode: "password" });
+    const linkGroup = await createGroupThroughForm(page, { name: "Open Chemistry", mode: "link" });
+    await page.context().clearCookies();
+    await signUpAndConfirm(page, { name: FRIEND });
+
+    // Signed in and not yet a member: the password box, or just the Join button.
+    await auditInBothThemes(page, {
+      path: passwordGroup.invitePath,
+      url: passwordGroup.invitePath,
+      landmark: groupHeading("Maths Circle"),
+    });
+    await expect(page.getByLabel("Group password", { exact: true })).toBeVisible();
+    await auditInBothThemes(page, {
+      path: linkGroup.invitePath,
+      url: linkGroup.invitePath,
+      landmark: groupHeading("Open Chemistry"),
+    });
+    await expect(page.getByLabel("Group password", { exact: true })).toHaveCount(0);
+    await auditInBothThemes(page, { path: MADE_UP_KEY, url: MADE_UP_KEY, landmark: inviteProblem });
+
+    // Join the link-only group, then its pages as a plain member: Members has the Leave button.
+    await page.goto(linkGroup.invitePath);
+    await page.getByRole("button", { name: "Join", exact: true }).click();
+    await expect(page).toHaveURL(linkGroup.path);
+    const members = `${linkGroup.path}/members`;
+    const title = groupHeading("Open Chemistry");
+    await auditInBothThemes(page, { path: linkGroup.path, url: linkGroup.path, landmark: title });
+    await auditInBothThemes(page, { path: members, url: members, landmark: title });
+    await expect(page.getByRole("button", { name: "Leave group" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Leave group" }).click();
+    await expect(page.getByRole("dialog", { name: "Leave Open Chemistry?" })).toBeVisible();
+    await auditPage(page, MODAL_LAYER);
   });
 });
 

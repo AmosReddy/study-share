@@ -10,6 +10,8 @@ export const AUTH_MESSAGES = {
   justSent: "We just sent you an email. Please wait a minute before trying again.",
   couldNotSend: "We couldn't send the email right now. Please try again in a few minutes.",
   generic: "Something went wrong. Please try again.",
+  /** A form's request did not get through (the connection dropped): shown by the form itself. */
+  actionFailed: "That didn't go through. Check your connection and try again.",
   badLogin: "That email and password do not match.",
   badForm: "Check the form and try again.",
   logOutFailed: "We could not log you out. Please try again.",
