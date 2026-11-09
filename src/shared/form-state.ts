@@ -17,6 +17,8 @@ export type FormState = {
   notice?: string;
   /** With `notice`: the same-site path the person continues to. */
   continueTo?: string;
+  /** Shown once on `done` (for example a group password just set); never copied into `values`. */
+  reveal?: { password?: string };
 };
 
 export type FormAction = (state: FormState, formData: FormData) => Promise<FormState>;
