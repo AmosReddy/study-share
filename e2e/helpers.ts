@@ -114,7 +114,7 @@ export async function passwordWorks(page: Page, email: string, password: string)
   await logIn(page, email, password);
   const wrong = page.getByText(AUTH_MESSAGES.badLogin);
   // The signed-in home (whatever the account's name), or the one generic error.
-  await expect(wrong.or(page.getByRole("main").getByRole("button", { name: "Create a group" }))).toBeVisible();
+  await expect(wrong.or(page.getByRole("main").getByRole("link", { name: "Create a group" }))).toBeVisible();
   return (await wrong.count()) === 0;
 }
 

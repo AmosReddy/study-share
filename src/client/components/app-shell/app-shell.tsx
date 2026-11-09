@@ -65,7 +65,7 @@ export function AppShell({ groups, activeGroupId, accountMenu, children }: AppSh
         >
           <SheetTitle className="sr-only">Your groups</SheetTitle>
           <SheetDescription className="sr-only">Choose a group to open its library.</SheetDescription>
-          <GroupSidebar groups={groups} activeGroupId={activeGroupId} />
+          <GroupSidebar groups={groups} activeGroupId={activeGroupId} onNavigate={() => setMenuOpen(false)} />
         </SheetContent>
       </Sheet>
     </div>

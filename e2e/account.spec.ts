@@ -46,11 +46,11 @@ test.describe("home, signed in", () => {
     await signUpAndConfirm(page, { name: "Asha Rao" });
     await expect(menuButton(page, "Asha Rao")).toBeVisible();
 
-    const create = page.getByRole("main").getByRole("button", { name: "Create a group" });
-    const join = page.getByRole("main").getByRole("button", { name: "Join with a code" });
-    await expect(create).toBeDisabled();
-    await expect(join).toBeDisabled();
-    await expect(page.getByRole("main").getByText("Coming in the next step")).toBeVisible();
+    const create = page.getByRole("main").getByRole("link", { name: "Create a group" });
+    const join = page.getByRole("main").getByRole("link", { name: "Join with a code" });
+    await expect(create).toHaveAttribute("href", "/groups/new");
+    await expect(join).toHaveAttribute("href", "/join");
+    await expect(page.getByRole("main").getByText("You are not in any yet.", { exact: false })).toBeVisible();
     await expect(page.getByText("No files here yet")).toHaveCount(0);
     await expect(page.getByText("CSE 2nd Year")).toHaveCount(0);
   });

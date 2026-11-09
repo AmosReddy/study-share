@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { AccountForm } from "@/client/components/auth/account-form";
-import { AccountMenu } from "@/client/components/auth/account-menu";
 import { AuthCardSkeleton } from "@/client/components/auth/auth-card";
-import { AppShell } from "@/client/components/app-shell/app-shell";
 import { requireAcceptedTerms } from "@/server/auth/session";
 import { logOutAction, updateProfileAction } from "../(auth)/actions";
+import { SignedInFrame } from "../_components/signed-in-frame";
 
 export const metadata: Metadata = { title: "Account | study-share" };
 
@@ -22,10 +21,10 @@ async function Account() {
   const user = await requireAcceptedTerms("/account");
 
   return (
-    <AppShell groups={[]} accountMenu={<AccountMenu name={user.displayName} email={user.email} logOutAction={logOutAction} />}>
+    <SignedInFrame user={user}>
       <div className="flex justify-center pt-2 lg:pt-10">
         <AccountForm action={updateProfileAction} logOutAction={logOutAction} name={user.displayName} email={user.email} />
       </div>
-    </AppShell>
+    </SignedInFrame>
   );
 }
