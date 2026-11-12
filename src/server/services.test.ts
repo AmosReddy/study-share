@@ -8,11 +8,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
   A future page that calls getRateLimiter() or getServerEnv() before a dynamic API is caught
   only by the CI quality job, which builds with no settings; that is the intended backstop.
 */
-const { getServerEnv, cookies } = vi.hoisted(() => ({
+const { getServerEnv, cookies, connection, createSupabaseAuthProvider } = vi.hoisted(() => ({
   getServerEnv: vi.fn(() => {
     throw new Error("settings were read before the request-reading call");
   }),
   cookies: vi.fn(),
+  // connection() is what makes a prerender wait for a real request; here a promise the tests settle.
+  connection: vi.fn(),
+  createSupabaseAuthProvider: vi.fn(),
 }));
 
 const { getDb, createAccountDirectory } = vi.hoisted(() => ({
@@ -23,6 +26,8 @@ const { createProfileStore } = vi.hoisted(() => ({ createProfileStore: vi.fn(() 
 const { createGroupStore } = vi.hoisted(() => ({ createGroupStore: vi.fn(() => ({ sqlGroups: true })) }));
 
 vi.mock("next/headers", () => ({ cookies }));
+vi.mock("next/server", () => ({ connection }));
+vi.mock("@/server/adapters/supabase-auth-provider", () => ({ createSupabaseAuthProvider }));
 vi.mock("@/server/env", () => ({ getServerEnv }));
 vi.mock("@/server/db/client", () => ({ getDb }));
 vi.mock("@/server/db/account-directory", () => ({ createAccountDirectory }));
@@ -143,6 +148,9 @@ describe("getAuthProvider", () => {
   beforeEach(() => {
     getServerEnv.mockClear();
     cookies.mockReset();
+    connection.mockReset();
+    connection.mockResolvedValue(undefined);
+    createSupabaseAuthProvider.mockReset();
   });
 
   it("stops at cookies() without reading the settings (so a prerender needs none)", async () => {
@@ -151,6 +159,59 @@ describe("getAuthProvider", () => {
 
     await expect(getAuthProvider()).rejects.toBe(stop);
     expect(getServerEnv).not.toHaveBeenCalled();
+  });
+
+  it("stops at connection() too: nothing is read or built until there is a real request", async () => {
+    cookies.mockResolvedValue({ get: () => undefined, getAll: () => [], set: () => {}, delete: () => {} });
+    connection.mockReturnValue(new Promise(() => {})); // a prerender never gets past this
+
+    const pending = getAuthProvider();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(connection).toHaveBeenCalledTimes(1);
+    expect(getServerEnv).not.toHaveBeenCalled();
+    expect(createSupabaseAuthProvider).not.toHaveBeenCalled();
+    void pending;
+  });
+
+  it("reads the cookies, then waits for connection(), and only then builds the Supabase client", async () => {
+    // Building the client reads the clock (see supabase-auth-provider.test.ts), and Next.js refuses
+    // that while it prerenders a page with the session cookies for a prefetch. So the client must not
+    // exist before connection() has resolved. A real incident: this once ran connection() later, in
+    // getCurrentUser, and every signed-in prefetch logged "unstable value Date.now()".
+    const order: string[] = [];
+    let release!: () => void;
+    cookies.mockImplementation(async () => {
+      order.push("cookies");
+      return { get: () => undefined, getAll: () => [], set: () => {}, delete: () => {} };
+    });
+    connection.mockImplementation(async () => {
+      order.push("connection:start");
+      await new Promise<void>((resolve) => (release = resolve));
+      order.push("connection:done");
+    });
+    getServerEnv.mockImplementationOnce(() => {
+      order.push("env");
+      return {
+        SERVICES_MODE: "real",
+        NEXT_PUBLIC_SUPABASE_URL: "https://abc.supabase.co",
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon",
+        SUPABASE_SERVICE_ROLE_KEY: "service",
+      } as never;
+    });
+    createSupabaseAuthProvider.mockImplementation(() => {
+      order.push("client");
+      return { built: true };
+    });
+
+    const provider = getAuthProvider();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(order).toEqual(["cookies", "connection:start"]);
+    expect(createSupabaseAuthProvider).not.toHaveBeenCalled();
+
+    release();
+    await expect(provider).resolves.toEqual({ built: true });
+    expect(order).toEqual(["cookies", "connection:start", "connection:done", "env", "client"]);
   });
 
   it("reads the settings once the request's cookies are available", async () => {
