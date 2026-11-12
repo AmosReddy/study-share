@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useId, useRef, useState } from "react";
+import { useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { SubmitButton } from "@/client/components/auth/submit-button";
 import { Button } from "@/client/components/ui/button";
@@ -50,10 +50,24 @@ export function MemberList({
 }: MemberListProps) {
   // Unique in the document: Next keeps pages the person left, so another copy can be in the DOM.
   const headingId = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const removedRef = useRef(false);
+  // After a removal the row (and its Remove button) is gone and focus would fall to the page: put
+  // it on the list's heading, so a keyboard or screen-reader user stays in the Members list.
+  const onRemoved = useCallback(() => {
+    removedRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (!removedRef.current) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    removedRef.current = false;
+    headingRef.current?.focus();
+  }, [members]);
   return (
     <div className="flex flex-col gap-8">
       <section aria-labelledby={headingId} className="flex flex-col gap-3">
-        <h2 id={headingId} className="text-xl font-semibold">
+        <h2 ref={headingRef} id={headingId} tabIndex={-1} className="text-xl font-semibold outline-none">
           Members <span className="text-base font-normal text-muted-foreground">({members.length})</span>
         </h2>
         <ul aria-label="Members" className="flex flex-col divide-y rounded-xl border">
@@ -74,6 +88,7 @@ export function MemberList({
                   userId={member.userId}
                   name={member.name}
                   action={removeAction}
+                  onRemoved={onRemoved}
                 />
               ) : null}
             </li>
@@ -104,17 +119,20 @@ function RemoveMember({
   userId,
   name,
   action,
+  onRemoved,
 }: {
   groupId: string;
   groupName: string;
   userId: string;
   name: string;
   action: FormAction;
+  onRemoved: () => void;
 }) {
   return (
     <ConfirmSheet
       action={action}
       fields={{ groupId, userId }}
+      onDone={onRemoved}
       opener={{ label: "Remove", ariaLabel: `Remove ${name}`, variant: "destructive", className: "h-11 min-w-11 shrink-0 px-4 text-base" }}
       title={`Remove ${name}?`}
       description={`${name} will lose access to ${groupName} and won't be able to join this group again.`}

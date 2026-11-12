@@ -117,7 +117,11 @@ export async function removeMemberAction(_state: FormState, form: FormData): Pro
   const groupId = text(form, "groupId");
   const deps = await requireGroupDeps(groupPath(groupId, "/members"));
   const result = await removeGroupMember(deps, groupId, text(form, "userId"));
-  if (!result.ok) return failed(result, {});
+  if (!result.ok) {
+    // A lost response after a success leaves a stale row that every retry refuses: refresh the list.
+    revalidatePath("/", "layout");
+    return failed(result, {});
+  }
 
   revalidatePath("/", "layout");
   return { status: "done" };
@@ -128,7 +132,11 @@ export async function transferOwnershipAction(_state: FormState, form: FormData)
   const groupId = text(form, "groupId");
   const deps = await requireGroupDeps(groupPath(groupId, "/settings"));
   const result = await transferGroupOwnership(deps, groupId, { targetUserId: text(form, "targetUserId") });
-  if (!result.ok) return failed(result, {});
+  if (!result.ok) {
+    // The people or the owner may have changed since this page was drawn: refresh it.
+    revalidatePath("/", "layout");
+    return failed(result, {});
+  }
 
   revalidatePath("/", "layout");
   redirect(groupPath(groupId));

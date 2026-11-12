@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ErrorAnnouncer } from "@/client/components/auth/error-announcer";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { SubmitButton } from "@/client/components/auth/submit-button";
@@ -17,6 +17,7 @@ import {
   SheetTitle,
 } from "@/client/components/ui/sheet";
 import type { FormAction, FormState } from "@/shared/form-state";
+import { normalizeGroupNameForCompare } from "@/shared/groups";
 
 type ConfirmSheetProps = {
   action: FormAction;
@@ -37,8 +38,13 @@ type ConfirmSheetProps = {
   confirmLabel: string;
   pendingLabel: string;
   confirmVariant?: "default" | "destructive";
-  /** The confirm button stays disabled until this text is typed exactly; the server checks again. */
+  /**
+   * The confirm button stays disabled until this text is typed (spaces around and inside and the
+   * Unicode form do not count, case does); the server checks again the same way.
+   */
   typeToConfirm?: { name: string; label: string; expected: string };
+  /** Called once when the action succeeded, before the sheet shuts (the opener may be gone after). */
+  onDone?: () => void;
 };
 
 /**
@@ -47,18 +53,22 @@ type ConfirmSheetProps = {
  * shut, so every opening starts clean: no typed text, no old error. The sheet is also shut when
  * Next hides the page (Activity), so nothing waits open on a page the person left.
  */
-export function ConfirmSheet({ opener, canOpen, title, description, action, ...form }: ConfirmSheetProps) {
+export function ConfirmSheet({ opener, canOpen, title, description, action, onDone, ...form }: ConfirmSheetProps) {
   const [open, setOpen] = useState(false);
   const openerRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
   // A finished action shuts the sheet, so no confirm can outlive the thing it was about.
   const closeWhenDone = useCallback(
     async (previous: FormState, data: FormData) => {
       const next = await action(previous, data);
-      if (next.status === "done") setOpen(false);
+      if (next.status === "done") {
+        onDone?.();
+        setOpen(false);
+      }
       return next;
     },
-    [action],
+    [action, onDone],
   );
 
   useLayoutEffect(() => () => setOpen(false), []);
@@ -82,8 +92,15 @@ export function ConfirmSheet({ opener, canOpen, title, description, action, ...f
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent
           side="bottom"
-          className="mx-auto w-full max-w-lg sm:rounded-t-xl"
+          className="mx-auto max-h-[90dvh] w-full max-w-lg overflow-y-auto sm:rounded-t-xl"
           style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+          onOpenAutoFocus={(event) => {
+            // The destructive button comes first in the page order: a key press or a held Enter must
+            // not land on it. Cancel gets the focus; the typed-name sheet keeps its input focused.
+            if (form.typeToConfirm) return;
+            event.preventDefault();
+            cancelRef.current?.focus();
+          }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             openerRef.current?.focus();
@@ -93,7 +110,7 @@ export function ConfirmSheet({ opener, canOpen, title, description, action, ...f
             <SheetTitle className="text-lg font-semibold [overflow-wrap:anywhere]">{title}</SheetTitle>
             <SheetDescription className="text-base [overflow-wrap:anywhere]">{description}</SheetDescription>
           </SheetHeader>
-          <ConfirmForm action={closeWhenDone} {...form} />
+          <ConfirmForm action={closeWhenDone} cancelRef={cancelRef} {...form} />
         </SheetContent>
       </Sheet>
     </>
@@ -107,7 +124,10 @@ function ConfirmForm({
   pendingLabel,
   confirmVariant = "default",
   typeToConfirm,
-}: Pick<ConfirmSheetProps, "action" | "fields" | "confirmLabel" | "pendingLabel" | "confirmVariant" | "typeToConfirm">) {
+  cancelRef,
+}: Pick<ConfirmSheetProps, "action" | "fields" | "confirmLabel" | "pendingLabel" | "confirmVariant" | "typeToConfirm"> & {
+  cancelRef: RefObject<HTMLButtonElement | null>;
+}) {
   const { state, formAction, pending, formRef, announcerRef, onSubmit } = useAuthForm(action);
   const [typed, setTyped] = useState("");
   // Unique in the document: Next keeps pages the person left, so another copy can be in the DOM.
@@ -140,6 +160,7 @@ function ConfirmForm({
             data-lpignore="true"
             data-bwignore
             error={typedError}
+            labelClassName="[overflow-wrap:anywhere]"
           />
         </div>
       ) : null}
@@ -147,14 +168,17 @@ function ConfirmForm({
         <SubmitButton
           pending={pending}
           pendingLabel={pendingLabel}
-          disabled={typeToConfirm !== undefined && typed !== typeToConfirm.expected}
+          disabled={
+            typeToConfirm !== undefined &&
+            normalizeGroupNameForCompare(typed) !== normalizeGroupNameForCompare(typeToConfirm.expected)
+          }
           variant={confirmVariant}
           className="h-auto min-h-11 py-2 whitespace-normal [overflow-wrap:anywhere] sm:w-auto sm:px-5"
         >
           {confirmLabel}
         </SubmitButton>
         <SheetClose asChild>
-          <Button type="button" variant="outline" className="h-11 w-full text-base sm:w-auto sm:px-5">
+          <Button ref={cancelRef} type="button" variant="outline" className="h-11 w-full text-base sm:w-auto sm:px-5">
             Cancel
           </Button>
         </SheetClose>

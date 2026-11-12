@@ -33,13 +33,15 @@ type TextFieldProps = Omit<ComponentProps<"input">, "id" | "name"> & {
   id?: string;
   hint?: ReactNode;
   error?: string;
+  /** Extra classes for the label (for example to wrap a long label text). */
+  labelClassName?: string;
 };
 
 /** A labelled input with its hint and error tied to it. */
-export function TextField({ label, name, id = name, hint, error, className, ...props }: TextFieldProps) {
+export function TextField({ label, name, id = name, hint, error, className, labelClassName, ...props }: TextFieldProps) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-sm font-medium">
+      <label htmlFor={id} className={cn("text-sm font-medium", labelClassName)}>
         {label}
       </label>
       <input

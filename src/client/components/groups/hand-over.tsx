@@ -62,7 +62,11 @@ export function HandOver({ groupId, candidates, action }: HandOverProps) {
           );
         })}
       </fieldset>
-      {missing ? <FieldError id={errorId}>{GROUP_MESSAGES.transferTargetInvalid}</FieldError> : null}
+      {missing ? (
+        <div role="alert">
+          <FieldError id={errorId}>{GROUP_MESSAGES.transferTargetInvalid}</FieldError>
+        </div>
+      ) : null}
       <ConfirmSheet
         action={action}
         fields={{ groupId, targetUserId: chosen?.userId ?? "" }}

@@ -6,6 +6,7 @@ import {
   isolateRateLimits,
   joinWith,
   newPersonContext,
+  sidewaysOverflow,
   signUpAndConfirm,
 } from "./helpers";
 
@@ -86,16 +87,24 @@ test("owner removes a member, who then sees not-found, loses the group from thei
   await page.getByRole("button", { name: `Remove ${MEMBER}` }).click();
   const confirm = page.getByRole("dialog", { name: `Remove ${MEMBER}?` });
   await expect(confirm).toBeVisible();
+  // Focus starts on Cancel, not on the button that removes the person.
+  await expect(confirm.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await expect(confirm.getByRole("button", { name: `Yes, remove ${MEMBER}`, exact: true })).not.toBeFocused();
   await expect(confirm).toContainText(`${MEMBER} will lose access to Removal Group and won't be able to join this group again.`);
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(confirm).toBeHidden();
   await expect(memberList(page).getByRole("listitem")).toHaveCount(2);
 
   await page.getByRole("button", { name: `Remove ${MEMBER}` }).click();
-  await page.getByRole("dialog", { name: `Remove ${MEMBER}?` }).getByRole("button", { name: `Remove ${MEMBER}` }).click();
+  await page
+    .getByRole("dialog", { name: `Remove ${MEMBER}?` })
+    .getByRole("button", { name: `Yes, remove ${MEMBER}`, exact: true })
+    .click();
   await expect(memberList(page).getByRole("listitem")).toHaveCount(1);
   await expect(memberList(page)).not.toContainText(MEMBER);
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  // The row with the button is gone: focus moves to the list's heading, not to the page.
+  await expect(page.getByRole("heading", { level: 2, name: /^Members/ })).toBeFocused();
 
   // The removed person: the group address is exactly a made-up id's not-found page.
   const real = await notFoundAt(member, group.path);
@@ -269,9 +278,14 @@ test("deleting a group needs the exact name; afterwards members see not-found, t
   await expect(box).toHaveAttribute("spellcheck", "false");
   await expect(confirmButton).toBeDisabled();
   // Nothing short of the exact name enables it.
-  for (const typed of ["Delete Test", "delete test group", "Delete Test Group "]) {
+  for (const typed of ["Delete Test", "delete test group"]) {
     await box.fill(typed);
     await expect(confirmButton).toBeDisabled();
+  }
+  // Spaces around or inside do not count (a phone keyboard may add one after a suggestion).
+  for (const typed of ["Delete Test Group ", "  Delete   Test Group"]) {
+    await box.fill(typed);
+    await expect(confirmButton).toBeEnabled();
   }
 
   // The server checks too: a name that was changed meanwhile (here from another tab) is refused on the input.
@@ -341,7 +355,7 @@ test("a failed remove request shows an inline error and the member stays", async
 
   await page.getByRole("button", { name: `Remove ${MEMBER}` }).click();
   const sheet = page.getByRole("dialog", { name: `Remove ${MEMBER}?` });
-  const confirm = sheet.getByRole("button", { name: `Remove ${MEMBER}` });
+  const confirm = sheet.getByRole("button", { name: `Yes, remove ${MEMBER}`, exact: true });
   await confirm.click();
   await expect(sheet.getByRole("alert").filter({ hasText: AUTH_MESSAGES.actionFailed })).toBeVisible();
   await expect(confirm).toBeEnabled();
@@ -364,7 +378,7 @@ test("removing the first of two members leaves no confirm dialog open for the ne
   await expect(memberList(page).getByRole("listitem")).toHaveCount(3);
 
   await page.getByRole("button", { name: "Remove Anil Das" }).click();
-  await page.getByRole("dialog", { name: "Remove Anil Das?" }).getByRole("button", { name: "Remove Anil Das" }).click();
+  await page.getByRole("dialog", { name: "Remove Anil Das?" }).getByRole("button", { name: "Yes, remove Anil Das", exact: true }).click();
   await expect(memberList(page).getByRole("listitem")).toHaveCount(2);
   await expect(memberList(page)).not.toContainText("Anil Das");
   await expect(memberList(page)).toContainText("Bela Nair");
@@ -379,4 +393,72 @@ test("removing the first of two members leaves no confirm dialog open for the ne
   await expect(second.getByRole("heading", { level: 1, name: "Two Members" })).toBeVisible();
   await second.goto(`${group.path}/members`);
   await expect(memberList(second).getByRole("listitem")).toHaveCount(2);
+});
+
+test("a stale list that tries to remove someone already removed in another tab gets an error and then the fresh list", async ({
+  page,
+  browser,
+}, info) => {
+  const { group } = await setUp({ page, browser }, info, "Stale Tabs", ["Anil Das", "Bela Nair"]);
+  await page.goto(`${group.path}/members`);
+  await expect(memberList(page).getByRole("listitem")).toHaveCount(3);
+
+  // Second tab of the same owner removes Anil.
+  const other = await page.context().newPage();
+  await isolateRateLimits(other);
+  await other.goto(`${group.path}/members`);
+  await other.getByRole("button", { name: "Remove Anil Das" }).click();
+  await other.getByRole("dialog", { name: "Remove Anil Das?" }).getByRole("button", { name: "Yes, remove Anil Das", exact: true }).click();
+  await expect(memberList(other).getByRole("listitem")).toHaveCount(2);
+
+  // The first tab still lists Anil. Removing him again is refused, and the list is refreshed.
+  const rows = page.locator('ul[aria-label="Members"] > li');
+  await expect(rows).toHaveCount(3);
+  await page.getByRole("button", { name: "Remove Anil Das" }).click();
+  await page.getByRole("dialog", { name: "Remove Anil Das?" }).getByRole("button", { name: "Yes, remove Anil Das", exact: true }).click();
+  await expect(rows).toHaveCount(2);
+  await expect(memberList(page)).not.toContainText("Anil Das");
+  await expect(memberList(page)).toContainText("Bela Nair");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await other.close();
+});
+
+test("a 60-character group name and a 50-character member name fit the Remove and Delete sheets at 360px", async ({
+  page,
+  browser,
+}, info) => {
+  await page.setViewportSize({ width: 360, height: 740 });
+  const groupName = "Longgroupname".repeat(4) + "abcdefgh"; // 60 characters, no spaces
+  const memberName = "Memberwithaverylongname".repeat(3).slice(0, 50);
+  expect(groupName).toHaveLength(60);
+  expect(memberName).toHaveLength(50);
+  const { group } = await setUp({ page, browser }, info, groupName, [memberName]);
+  await page.setViewportSize({ width: 360, height: 740 });
+
+  const reachable = async (button: ReturnType<Page["getByRole"]>) => {
+    await button.scrollIntoViewIfNeeded();
+    await expect(button).toBeVisible();
+    const box = await button.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(360);
+    expect(await sidewaysOverflow(page)).toBeLessThanOrEqual(0);
+  };
+
+  await page.goto(`${group.path}/members`);
+  await page.getByRole("button", { name: `Remove ${memberName}` }).click();
+  const remove = page.getByRole("dialog", { name: `Remove ${memberName}?` });
+  await expect(remove).toBeVisible();
+  await reachable(remove.getByRole("button", { name: `Yes, remove ${memberName}`, exact: true }));
+  await remove.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(remove).toBeHidden();
+
+  await page.goto(`${group.path}/settings`);
+  await deleteSection(page).getByRole("button", { name: "Delete group…" }).click();
+  const sheet = page.getByRole("dialog", { name: `Delete ${groupName}?` });
+  await expect(sheet).toBeVisible();
+  const box = sheet.getByLabel(`Type ${groupName} to confirm`, { exact: true });
+  await box.fill(groupName);
+  await reachable(sheet.getByRole("button", { name: "Delete this group", exact: true }));
+  await reachable(sheet.getByRole("button", { name: "Cancel", exact: true }));
 });
