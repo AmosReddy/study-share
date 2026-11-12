@@ -209,7 +209,7 @@ Each phase ends deployed, tested and merged. Each gets its own detailed task pla
 - **Done when:** a pull request runs CI, gets a preview link, and merging deploys to production.
 
 ### Phase 1: Accounts and groups
-- **Status:** Phase 1a (accounts) is done. Phase 1b (create group, invite link and code, join, member list, leave, owner settings) is built and awaiting live acceptance ([PHASE_1B_ACCEPTANCE.md](PHASE_1B_ACCEPTANCE.md)). Email invites, remove member, transfer ownership and delete group are Phase 1c.
+- **Status:** Phase 1a (accounts) is done. Phase 1b (create group, invite link and code, join, member list, leave, owner settings) is built and awaiting live acceptance ([PHASE_1B_ACCEPTANCE.md](PHASE_1B_ACCEPTANCE.md)). Phase 1c (remove a member and block rejoining, hand a group over, delete a group with 30-day soft delete) is built on branch `feature/phase-1c-member-management` and awaiting acceptance ([PHASE_1C_ACCEPTANCE.md](PHASE_1C_ACCEPTANCE.md)). Email invites were dropped from scope by the owner on 2026-11-12.
 - Register, Google sign-in, email verification, password reset and profile.
 - Age confirmation, short terms and privacy notice, with acceptance recorded.
 - Create group, group list, join mode setting, invite link and code, join by password.
