@@ -31,5 +31,11 @@ export const wrongPasswordKey = (groupId: string, userId: string) => `join-wrong
 /** Editing a group's name, description or join settings: 60 an hour per person, so a script cannot hammer the database. */
 export const GROUP_EDIT_USER_LIMIT: Limit = { limit: 60, windowSeconds: HOUR };
 
+/**
+ * Removing a member, handing the group over and deleting it share one budget: 60 an hour per acting
+ * person (key `group-manage:<userId>`).
+ */
+export const GROUP_MANAGE_LIMIT: Limit = { limit: 60, windowSeconds: HOUR };
+
 /** Resetting an invite link: 20 an hour per person. */
 export const RESET_INVITE_USER_LIMIT: Limit = { limit: 20, windowSeconds: HOUR };

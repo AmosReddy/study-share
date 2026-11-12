@@ -344,10 +344,22 @@ export async function viewGroup(
   return { group: visible(context.group, invite), membership: context.membership };
 }
 
-export async function listGroupMembers(deps: GroupDeps, groupId: string): Promise<MemberRow[] | null> {
+/**
+ * One row of the member list as the pages may see it. `userId` is present only for someone who may
+ * remove members (the owner), who needs it to aim a removal; plain members get rows without ids.
+ */
+export type MemberEntry = Omit<MemberRow, "userId"> & { isYou: boolean; userId?: string };
+
+export async function listGroupMembers(deps: GroupDeps, groupId: string): Promise<MemberEntry[] | null> {
   const context = await memberContext(deps, groupId);
   if (!context?.membership || !can(deps.user, "group.members.view", { membership: context.membership })) return null;
-  return deps.groups.listMembers(context.group.id);
+  const withIds = can(deps.user, "group.members.remove", { membership: context.membership });
+  const rows = await deps.groups.listMembers(context.group.id);
+  return rows.map(({ userId, ...row }) => ({
+    ...row,
+    isYou: userId === deps.user.id,
+    ...(withIds ? { userId } : {}),
+  }));
 }
 
 /**

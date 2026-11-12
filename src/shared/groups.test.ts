@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createGroupSchema,
+  deleteGroupSchema,
   editGroupSchema,
   GROUP_CODE_ALPHABET,
   GROUP_LIMITS,
@@ -9,6 +10,7 @@ import {
   joinGroupSchema,
   joinModeSchema,
   normalizeGroupCode,
+  transferOwnershipSchema,
 } from "./groups";
 import { GROUP_MESSAGES } from "./group-messages";
 
@@ -188,6 +190,27 @@ describe("group codes", () => {
   });
 });
 
+describe("transferOwnershipSchema and deleteGroupSchema", () => {
+  const id = "3f0c7f0e-6b7a-4d6e-9d0f-5a1b2c3d4e5f";
+
+  it("transferOwnershipSchema takes only a UUID string", () => {
+    expect(transferOwnershipSchema.parse({ targetUserId: id })).toEqual({ targetUserId: id });
+    for (const bad of [{}, { targetUserId: "" }, { targetUserId: "nope" }, { targetUserId: 7 }, { targetUserId: ` ${id}` }]) {
+      expect(transferOwnershipSchema.safeParse(bad).success).toBe(false);
+    }
+  });
+
+  it("deleteGroupSchema trims, needs 1 to 100 characters and rejects a NUL", () => {
+    expect(deleteGroupSchema.parse({ confirmName: "  Maths   club " })).toEqual({ confirmName: "Maths   club" });
+    expect(deleteGroupSchema.safeParse({ confirmName: "   " }).success).toBe(false);
+    expect(deleteGroupSchema.safeParse({}).success).toBe(false);
+    expect(deleteGroupSchema.safeParse({ confirmName: "a".repeat(100) }).success).toBe(true);
+    expect(deleteGroupSchema.safeParse({ confirmName: "a".repeat(101) }).success).toBe(false);
+    expect(deleteGroupSchema.safeParse({ confirmName: "😀".repeat(100) }).success).toBe(true);
+    expect(deleteGroupSchema.safeParse({ confirmName: "bad\u0000name" }).success).toBe(false);
+  });
+});
+
 describe("GROUP_MESSAGES", () => {
   it("pins the fixed sentences", () => {
     expect(GROUP_MESSAGES.invalidInvite).toBe(
@@ -201,7 +224,11 @@ describe("GROUP_MESSAGES", () => {
     expect(GROUP_MESSAGES.tooManyGroups).toBe(
       "You are in 20 groups, the most one account can be in. Leave one to join another.",
     );
-    expect(GROUP_MESSAGES.ownerCannotLeave).toBe("You own this group, so you can't leave it yet.");
+    expect(GROUP_MESSAGES.ownerCannotLeave).toBe(
+      "You own this group. Hand it over to another member first, then you can leave.",
+    );
+    expect(GROUP_MESSAGES.transferTargetInvalid).toBe("Pick someone who is in this group.");
+    expect(GROUP_MESSAGES.deleteNameMismatch).toBe("That is not the group's name. Type it exactly as shown.");
     expect(GROUP_MESSAGES.badForm).toBe("Check the form and try again.");
     for (const key of ["tooMany", "couldNotSave"] as const) {
       expect(GROUP_MESSAGES[key].length).toBeGreaterThan(0);

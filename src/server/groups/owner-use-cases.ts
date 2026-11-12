@@ -3,8 +3,15 @@ import type { GroupDeps } from "./use-cases";
 import { MAX_INVITE_ATTEMPTS, actionContext, memberContext } from "./use-cases";
 import { overLimit, parse, type ActionResult } from "@/server/use-case-kit";
 import { GROUP_MESSAGES } from "@/shared/group-messages";
-import { editGroupSchema, joinModeSchema, type JoinMode } from "@/shared/groups";
-import { GROUP_EDIT_USER_LIMIT, RESET_INVITE_USER_LIMIT } from "./rate-limit-policy";
+import type { GroupStore } from "@/server/ports/group-store";
+import {
+  deleteGroupSchema,
+  editGroupSchema,
+  joinModeSchema,
+  transferOwnershipSchema,
+  type JoinMode,
+} from "@/shared/groups";
+import { GROUP_EDIT_USER_LIMIT, GROUP_MANAGE_LIMIT, RESET_INVITE_USER_LIMIT } from "./rate-limit-policy";
 import { hashGroupPassword, newGroupCode, newInviteToken } from "./secrets";
 
 /*
@@ -132,4 +139,104 @@ export async function getInviteForOwner(
     joinMode: group.joinMode,
     ownerName: deps.user.displayName,
   };
+}
+
+const MANAGE_CHECK = (userId: string) => [{ key: `group-manage:${userId}`, limit: GROUP_MANAGE_LIMIT }];
+
+/**
+ * Owner only. Removes an ACTIVE member other than the owner: the status becomes
+ * removed, which keeps the person from joining again. Every refusal, and a store that says no, is
+ * the same couldNotSave, so nothing says whether the group or the person exists.
+ */
+export async function removeGroupMember(deps: GroupDeps, groupId: string, targetUserId: string): Promise<ActionResult> {
+  const group = await allowedForAction(deps, groupId, "group.members.remove");
+  if (!group) return COULD_NOT_SAVE;
+  if (!transferOwnershipSchema.shape.targetUserId.safeParse(targetUserId).success) return COULD_NOT_SAVE;
+  if (targetUserId === deps.user.id) return COULD_NOT_SAVE;
+
+  let target: Awaited<ReturnType<GroupStore["getMembership"]>>;
+  try {
+    target = await deps.groups.getMembership(group.id, targetUserId);
+  } catch {
+    console.error("Could not remove the member.");
+    return COULD_NOT_SAVE;
+  }
+  if (target?.status !== "active") return COULD_NOT_SAVE;
+
+  const refused = await overLimit(deps.limiter, MANAGE_CHECK(deps.user.id), GROUP_MESSAGES.tooMany);
+  if (refused) return refused;
+
+  let removed: boolean;
+  try {
+    removed = await deps.groups.removeMember(group.id, targetUserId);
+  } catch {
+    console.error("Could not remove the member.");
+    return COULD_NOT_SAVE;
+  }
+  return removed ? { ok: true, data: undefined } : COULD_NOT_SAVE;
+}
+
+/**
+ * Owner only. Hands the group to another ACTIVE member; the owner becomes a plain member. A target
+ * who is not in the group (or is the owner) is a field error so the owner can pick again; every
+ * other refusal is couldNotSave.
+ */
+export async function transferGroupOwnership(deps: GroupDeps, groupId: string, raw: unknown): Promise<ActionResult> {
+  const group = await allowedForAction(deps, groupId, "group.transfer");
+  if (!group) return COULD_NOT_SAVE;
+
+  const parsed = parse(transferOwnershipSchema, raw, GROUP_MESSAGES.badForm);
+  if ("failure" in parsed) {
+    return parsed.failure.fieldErrors?.targetUserId
+      ? { ok: false, fieldErrors: { targetUserId: GROUP_MESSAGES.transferTargetInvalid } }
+      : parsed.failure;
+  }
+
+  const refused = await overLimit(deps.limiter, MANAGE_CHECK(deps.user.id), GROUP_MESSAGES.tooMany);
+  if (refused) return refused;
+
+  let outcome: Awaited<ReturnType<GroupStore["transferOwnership"]>>;
+  try {
+    outcome = await deps.groups.transferOwnership(group.id, deps.user.id, parsed.data.targetUserId);
+  } catch {
+    console.error("Could not hand over the group.");
+    return COULD_NOT_SAVE;
+  }
+  switch (outcome) {
+    case "ok":
+      return { ok: true, data: undefined };
+    case "not_member":
+    case "same_person":
+      return { ok: false, fieldErrors: { targetUserId: GROUP_MESSAGES.transferTargetInvalid } };
+    default:
+      return COULD_NOT_SAVE;
+  }
+}
+
+/** Names compare after trimming and collapsing runs of whitespace; case counts. */
+const squash = (text: string) => text.trim().replace(/\s+/g, " ");
+
+/**
+ * Owner only, and only when the typed name matches the group's current name. A soft delete: the
+ * group vanishes for everyone and its invite stops working, but the rows are kept.
+ */
+export async function deleteGroup(deps: GroupDeps, groupId: string, raw: unknown): Promise<ActionResult> {
+  const group = await allowedForAction(deps, groupId, "group.delete");
+  if (!group) return COULD_NOT_SAVE;
+
+  const mismatch = { ok: false, fieldErrors: { confirmName: GROUP_MESSAGES.deleteNameMismatch } } as const;
+  const parsed = deleteGroupSchema.safeParse(raw);
+  if (!parsed.success || squash(parsed.data.confirmName) !== squash(group.name)) return mismatch;
+
+  const refused = await overLimit(deps.limiter, MANAGE_CHECK(deps.user.id), GROUP_MESSAGES.tooMany);
+  if (refused) return refused;
+
+  let deleted: boolean;
+  try {
+    deleted = await deps.groups.softDeleteGroup(group.id);
+  } catch {
+    console.error("Could not delete the group.");
+    return COULD_NOT_SAVE;
+  }
+  return deleted ? { ok: true, data: undefined } : COULD_NOT_SAVE;
 }

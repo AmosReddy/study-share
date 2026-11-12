@@ -31,7 +31,7 @@ async function Members({ params }: Pick<PageProps<"/groups/[id]/members">, "para
       members={rows.map((row) => ({
         name: row.displayName,
         isOwner: row.role === "owner",
-        isYou: row.userId === page.user.id,
+        isYou: row.isYou,
       }))}
       leave={
         can(page.user, "group.leave", { membership: page.membership })

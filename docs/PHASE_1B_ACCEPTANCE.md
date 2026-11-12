@@ -117,7 +117,7 @@ Use a friend who is **not yet a member** of the password group, signed in, on th
 - [ ] **8.1** With both accounts in the group, open the **Members** tab on **Phone A** and on **Phone B**.
   - **You should see:** both names on both phones. The owner has an **Owner** label. Your own name shows **You** on your own phone.
 - [ ] **8.2** On **Phone A** (the owner), look for a **Leave group** button.
-  - **You should see:** **no** Leave button. The page says "You own this group, so you can't leave it yet."
+  - **You should see:** **no** Leave button. The page says "You own this group. Hand it over to another member first, then you can leave."
 - [ ] **8.3** On **Phone B**, tap **Leave group**. A question appears (**Leave Maths Circle?**). Tap **Cancel** first.
   - **You should see:** nothing changed; you are still on Members.
 - [ ] **8.4** Tap **Leave group** again, then **Leave group** in the question.
