@@ -458,6 +458,15 @@ describe("transferGroupOwnership", () => {
     expect((await joinGroup(owner, { key: group.inviteCode })).ok).toBe(true);
   });
 
+  it("answers a hand-over to yourself with an upper-case id like any other hand-over to yourself", async () => {
+    const { owner, groups, group } = await groupWithMember();
+    expect(await transferGroupOwnership(owner, group.id, { targetUserId: owner.user.id.toUpperCase() })).toEqual({
+      ok: false,
+      fieldErrors: { targetUserId: GROUP_MESSAGES.transferTargetInvalid },
+    });
+    expect(await groups.getMembership(group.id, owner.user.id)).toEqual({ role: "owner", status: "active" });
+  });
+
   it("refuses a non-owner and a bad target and keeps the owner", async () => {
     const { owner, member, second, as, groups, group } = await groupWithTwoMembers();
     const stranger = as(person("Eve"));
@@ -506,6 +515,17 @@ describe("transferGroupOwnership", () => {
 });
 
 describe("deleteGroup", () => {
+  it("accepts the name typed in the other Unicode form (NFD against a stored NFC name)", async () => {
+    const env = setup();
+    const owner = env.as(person("Asha"));
+    const { group } = await make(owner, { name: "Caf\u00e9 \u0928\u0941\u0915\u0924\u093e", description: "", joinMode: "link" });
+    expect(await deleteGroup(owner, group.id, { confirmName: "Cafe\u0301 \u0928\u0941\u0915\u0924\u093e " })).toEqual({
+      ok: true,
+      data: undefined,
+    });
+    expect(await env.groups.findById(group.id)).toBeNull();
+  });
+
   it("requires the exact name, hides the group everywhere and kills the invite link and code", async () => {
     const { owner, member, as, signedOut, groups, group } = await groupWithMember();
     const outsider = as(person("Cy"));

@@ -124,10 +124,25 @@ export const joinModeSchema = z
   .superRefine(applyPasswordRule)
   .transform(dropLinkPassword);
 
-/** The id of the person who becomes the owner. Never trimmed: it is an id, not typed text. */
+/** An id (UUID) in any letter case, handed on lower-case. Never trimmed: it is an id, not typed text. */
+export const uuidSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+  .transform((id) => id.toLowerCase());
+
+/** The id of the person who becomes the owner. */
 export const transferOwnershipSchema = z.object({
-  targetUserId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
+  targetUserId: uuidSchema,
 });
+
+/**
+ * A group name as compared when someone types it to confirm a delete: Unicode-normalised (NFC, so
+ * "é" typed either way matches), trimmed, runs of whitespace as one space. Case still counts. The
+ * confirm sheet and the server both use this, so the button enables exactly when the server accepts.
+ */
+export function normalizeGroupNameForCompare(name: string): string {
+  return name.normalize("NFC").trim().replace(/\s+/g, " ");
+}
 
 /** The name typed to confirm a delete; the server compares it with the group's current name. */
 export const deleteGroupSchema = z.object({

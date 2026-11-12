@@ -245,7 +245,7 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
               where group_id = ${groupId}::uuid and user_id = ${to}::uuid and status = 'active') as to_active`);
         if (!state.group_ok) return "group_gone";
         if (!state.from_owner) return "not_owner";
-        if (fromUserId === toUserId) return "same_person";
+        if (fromUserId.toLowerCase() === toUserId.toLowerCase()) return "same_person";
         if (!state.to_active) return "not_member";
         // Demote first: the unique index allows one active owner and is checked per statement.
         // Both run in this transaction under the group's lock, so nothing sees two owners or none.

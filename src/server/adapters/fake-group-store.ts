@@ -147,8 +147,8 @@ export function createFakeGroupStore(authStore: FakeAuthStore = getFakeAuthStore
       if (!liveGroup(groupId) || !members) return "group_gone";
       const from = members.get(fromUserId);
       if (!from || from.role !== "owner" || from.status !== "active") return "not_owner";
-      if (fromUserId === toUserId) return "same_person";
-      const to = members.get(toUserId);
+      if (fromUserId.toLowerCase() === toUserId.toLowerCase()) return "same_person";
+      const to = members.get(toUserId.toLowerCase());
       if (!to || to.status !== "active") return "not_member";
       // One synchronous section: no other call can see the group between the two writes.
       from.role = "member";

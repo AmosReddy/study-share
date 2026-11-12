@@ -10,7 +10,9 @@ import {
   joinGroupSchema,
   joinModeSchema,
   normalizeGroupCode,
+  normalizeGroupNameForCompare,
   transferOwnershipSchema,
+  uuidSchema,
 } from "./groups";
 import { GROUP_MESSAGES } from "./group-messages";
 
@@ -233,5 +235,41 @@ describe("GROUP_MESSAGES", () => {
     for (const key of ["tooMany", "couldNotSave"] as const) {
       expect(GROUP_MESSAGES[key].length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("normalizeGroupNameForCompare", () => {
+  const same = (a: string, b: string) => normalizeGroupNameForCompare(a) === normalizeGroupNameForCompare(b);
+
+  it("ignores spaces around and inside, also tabs and no-break spaces", () => {
+    expect(same("Maths club", "  Maths   club ")).toBe(true);
+    expect(same("Maths club", "Maths\u00a0 club\t")).toBe(true);
+    expect(same("Maths club", "Mathsclub")).toBe(false);
+  });
+
+  it("treats NFC and NFD forms of accented and Devanagari names as the same", () => {
+    expect(same("Caf\u00e9 club", "Cafe\u0301 club")).toBe(true);
+    // Devanagari QA (U+0958) is canonically equivalent to KA + NUKTA.
+    expect(same("\u0958\u093f", "\u0915\u093c\u093f")).toBe(true);
+  });
+
+  it("keeps emoji and stays case sensitive", () => {
+    expect(same("Study \u{1F600} crew", " Study  \u{1F600} crew ")).toBe(true);
+    expect(same("Study \u{1F600} crew", "Study \u{1F601} crew")).toBe(false);
+    expect(same("Maths club", "maths club")).toBe(false);
+  });
+});
+
+describe("uuidSchema", () => {
+  it("takes a UUID of any case and nothing else", () => {
+    const id = "3f0c7f0e-6b7a-4d6e-9d0f-5a1b2c3d4e5f";
+    expect(uuidSchema.safeParse(id).success).toBe(true);
+    expect(uuidSchema.safeParse(id.toUpperCase()).success).toBe(true);
+    for (const bad of ["", "nope", ` ${id}`, 7]) expect(uuidSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it("transferOwnershipSchema lower-cases the id", () => {
+    const id = "3F0C7F0E-6B7A-4D6E-9D0F-5A1B2C3D4E5F";
+    expect(transferOwnershipSchema.parse({ targetUserId: id })).toEqual({ targetUserId: id.toLowerCase() });
   });
 });

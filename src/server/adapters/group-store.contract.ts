@@ -346,6 +346,16 @@ export function runGroupStoreContract(withStore: WithStore): void {
         expect(await ctx.store.getMembership(group.id, stranger)).toBeNull();
       }));
 
+    test("transferOwnership treats an upper-case id of the same person as same_person", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser();
+        const member = await ctx.newUser();
+        const group = await makeGroup(ctx, owner);
+        await ctx.store.addMember(group.id, member);
+        expect(await ctx.store.transferOwnership(group.id, owner, owner.toUpperCase())).toBe("same_person");
+        expect(await ctx.store.getMembership(group.id, owner)).toEqual({ role: "owner", status: "active" });
+      }));
+
     test("two transfers of the same group at the same instant leave exactly one owner", () =>
       withStore(async (ctx) => {
         const owner = await ctx.newUser();
@@ -408,7 +418,7 @@ export function runGroupStoreContract(withStore: WithStore): void {
         // The invite keys stay taken, so a new group can never reuse them.
         expect(await ctx.store.createGroup(groupInput(owner, { inviteToken: group.inviteToken }))).toEqual({ ok: false, reason: "invite_taken" });
         expect(await ctx.store.createGroup(groupInput(owner, { inviteCode: group.inviteCode }))).toEqual({ ok: false, reason: "invite_taken" });
-        // A deleted group does not count towards the owner's limit.
+        // The deleted group is gone from the owner's list (the group-count limit reads this list, not tested here).
         expect(await ctx.store.listGroupsFor(owner)).toEqual([]);
       }));
 

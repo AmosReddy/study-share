@@ -8,14 +8,17 @@ import {
   deleteGroupSchema,
   editGroupSchema,
   joinModeSchema,
+  normalizeGroupNameForCompare,
   transferOwnershipSchema,
+  uuidSchema,
   type JoinMode,
 } from "@/shared/groups";
 import { GROUP_EDIT_USER_LIMIT, GROUP_MANAGE_LIMIT, RESET_INVITE_USER_LIMIT } from "./rate-limit-policy";
 import { hashGroupPassword, newGroupCode, newInviteToken } from "./secrets";
 
 /*
-  Owner use-cases: edit the group, change how people join, reset the invite link, read the invite.
+  Owner use-cases: edit the group, change how people join, reset the invite link, read the invite,
+  remove a member, hand the group over and delete it.
   Every one of them asks can() with the person's membership first. Anyone who is not an active
   owner (a member, a removed person, a stranger, an unknown or malformed id, a deleted group) gets
   the same answer and nothing changes, so the answer never says whether the group exists. Nothing
@@ -151,12 +154,14 @@ const MANAGE_CHECK = (userId: string) => [{ key: `group-manage:${userId}`, limit
 export async function removeGroupMember(deps: GroupDeps, groupId: string, targetUserId: string): Promise<ActionResult> {
   const group = await allowedForAction(deps, groupId, "group.members.remove");
   if (!group) return COULD_NOT_SAVE;
-  if (!transferOwnershipSchema.shape.targetUserId.safeParse(targetUserId).success) return COULD_NOT_SAVE;
-  if (targetUserId === deps.user.id) return COULD_NOT_SAVE;
+  const parsedTarget = uuidSchema.safeParse(targetUserId);
+  if (!parsedTarget.success) return COULD_NOT_SAVE;
+  const targetId = parsedTarget.data;
+  if (targetId === deps.user.id.toLowerCase()) return COULD_NOT_SAVE;
 
   let target: Awaited<ReturnType<GroupStore["getMembership"]>>;
   try {
-    target = await deps.groups.getMembership(group.id, targetUserId);
+    target = await deps.groups.getMembership(group.id, targetId);
   } catch {
     console.error("Could not remove the member.");
     return COULD_NOT_SAVE;
@@ -168,7 +173,7 @@ export async function removeGroupMember(deps: GroupDeps, groupId: string, target
 
   let removed: boolean;
   try {
-    removed = await deps.groups.removeMember(group.id, targetUserId);
+    removed = await deps.groups.removeMember(group.id, targetId);
   } catch {
     console.error("Could not remove the member.");
     return COULD_NOT_SAVE;
@@ -213,9 +218,6 @@ export async function transferGroupOwnership(deps: GroupDeps, groupId: string, r
   }
 }
 
-/** Names compare after trimming and collapsing runs of whitespace; case counts. */
-const squash = (text: string) => text.trim().replace(/\s+/g, " ");
-
 /**
  * Owner only, and only when the typed name matches the group's current name. A soft delete: the
  * group vanishes for everyone and its invite stops working, but the rows are kept.
@@ -226,7 +228,7 @@ export async function deleteGroup(deps: GroupDeps, groupId: string, raw: unknown
 
   const mismatch = { ok: false, fieldErrors: { confirmName: GROUP_MESSAGES.deleteNameMismatch } } as const;
   const parsed = deleteGroupSchema.safeParse(raw);
-  if (!parsed.success || squash(parsed.data.confirmName) !== squash(group.name)) return mismatch;
+  if (!parsed.success || normalizeGroupNameForCompare(parsed.data.confirmName) !== normalizeGroupNameForCompare(group.name)) return mismatch;
 
   const refused = await overLimit(deps.limiter, MANAGE_CHECK(deps.user.id), GROUP_MESSAGES.tooMany);
   if (refused) return refused;
