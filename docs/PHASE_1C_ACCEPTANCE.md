@@ -133,8 +133,8 @@ Use a group that you do not mind losing (make a new one called **Delete Test Gro
   - **You should see:** the words "Everyone loses access at once and the invite link stops working. The group is kept for 30 days in case it was a mistake — ask the project owner to restore it." and a red **Delete group…** button.
 - [ ] **6.2** Tap **Delete group…**.
   - **You should see:** a panel with the title **Delete Delete Test Group?** (the word "Delete", then the group's name), the text "Everyone loses access at once. This cannot be undone from the app.", a box labelled **Type Delete Test Group to confirm**, a red button **Delete this group** that is **greyed out**, and **Cancel**.
-- [ ] **6.3** Type the name **wrongly**: for example `Delete Test`, then `delete test group` (small letters), and then the right name with an extra space at the end.
-  - **You should see:** the **Delete this group** button stays **greyed out** each time. Only the name typed exactly (capital letters and all) turns it on.
+- [ ] **6.3** Type the name **wrongly**: for example `Delete Test`, then `delete test group` (small letters), and then `Delete Test Group` with the right letters.
+  - **You should see:** the **Delete this group** button stays **greyed out** for the first two. It turns on as soon as the name is right, capital letters and all. **Spaces before, after or between the words do not matter**: `Delete Test Group ` (with a space at the end, which a phone keyboard often adds after a suggestion) turns the button on too.
 - [ ] **6.4** Tap **Cancel**, then tap **Delete group…** again.
   - **You should see:** the box is **empty** again. Nothing is kept from last time.
 - [ ] **6.5** Type the name exactly and tap **Delete this group**.
@@ -154,8 +154,8 @@ Do these on the **phone**.
   - **You should see:** the names show correctly, with no sideways scrolling anywhere (swipe left and right to check).
 - [ ] **7.2** On a phone with a narrow screen (about 360 pixels wide, for example a small Android phone, or a desktop browser narrowed to that width), open **Members** and tap **Remove** beside the person with the long name.
   - **You should see:** the panel slides up from the bottom and fits the screen. The long name wraps onto more lines instead of running off the edge. Both buttons are big enough to tap easily, and the **Yes, remove ...** button is fully readable.
-- [ ] **7.3** Open **Settings**, **Delete group…**, and tap into the name box so the keyboard opens.
-  - **You should see:** the name box is **not hidden** behind the keyboard, and the page does **not zoom in**. You can still see the **Delete this group** button after scrolling a little.
+- [ ] **7.3** Open **Settings**, **Delete group…** on the group with the 60-character name, and tap into the name box so the keyboard opens.
+  - **You should see:** the long name in the line above the box **wraps onto more lines** and does not run off the edge, and the page does **not zoom in**. The panel is never taller than the screen: it **scrolls inside itself**, so scroll the panel a little to reach the **Delete this group** and **Cancel** buttons.
 - [ ] **7.4** Open **Hand over this group** in Settings with a member who has a long name.
   - **You should see:** the choices wrap, each is easy to tap, and the **Make ... the owner** panel fits on the screen.
 - [ ] **7.5** Open the **Remove** panel and tap **Cancel**, or tap the small close mark in its corner.
@@ -165,7 +165,7 @@ Do these on the **phone**.
 
 Phase 1c deletes a group "softly". **Nothing is erased for good yet.**
 
-- [ ] **8.1** Read this and remember it: if you (or another owner) delete a group by mistake, **do not make a new one**. Ask the **project owner** (the person who runs the database, which is the developer) to restore it. It can be restored for **30 days** after it was deleted, because the group is only marked as deleted in the database, and its members are still recorded there.
+- [ ] **8.1** Read this and remember it: if you (or another owner) delete a group by mistake, **do not make a new one**. Ask **the developer who runs the database** to restore it. It can be restored for **30 days** after it was deleted, because the group is only marked as deleted in the database, and its members are still recorded there.
 - [ ] **8.2** Ask the developer to restore the **Delete Test Group** from Test 6 (see "Database restore note for the developer" below).
   - **You should see:** after the developer says it is restored, the group is back in its members' lists, and its old invite link and code work again.
 - [ ] **8.3** Understand what is **not** possible yet: there is no "Restore" button in the app, and after 30 days there is no automatic clean-up either (that job comes later). Treat "30 days" as the time the developer promises to keep it, not as a countdown you can see.
@@ -191,15 +191,19 @@ These are by design. They are not bugs.
 **Restore a deleted group** (works for up to 30 days after deleting, which is how long the group is kept; there is no purge job in Phase 1c, so rows are in practice kept longer):
 
 ```sql
-update groups set deleted_at = null where id = '<group id>';
+update groups set deleted_at = null where id = '<group id>' and deleted_at is not null;
 ```
+
+Note: restoring a group gives its members the group back, which can push one of them **past 20 active groups** if they joined other groups meanwhile. The app does not check that limit for a direct update; count the groups of the members you care about first, or accept that someone is temporarily over 20.
 
 The `<group id>` is the long address part in the group's page address: `/groups/<group id>`. Ask the owner for the group page address, or look up the group by name in `groups` (select `id, name, deleted_at` where `deleted_at` is not null).
 
 **Let a removed person back in** (only because the owner asked, and the app has no button for it):
 
 ```sql
-update group_members set status = 'active' where group_id = '<group id>' and user_id = '<user id>';
+update group_members set status = 'active' where group_id = '<group id>' and user_id = '<user id>' and status = 'removed';
 ```
+
+To find the `<user id>`, look up the person's row in `auth.users` by their email: `select id from auth.users where email = '<their email>';`.
 
 Take care with the limits: a group can have at most **300 members** and a person can be in at most **20 groups** (see `GROUP_LIMITS`). The database does not check these limits for a direct update, so count the active members of the group and the active groups of the person first. Also make sure the group has exactly one active owner afterwards (one active owner per group is enforced by a partial unique index), and do not change anyone's `role` in this statement.
