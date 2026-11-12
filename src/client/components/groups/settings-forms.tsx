@@ -21,6 +21,8 @@ import { IDLE, type FormAction, type FormState } from "@/shared/form-state";
 import { GROUP_LIMITS, type JoinMode } from "@/shared/groups";
 import { CopyButton } from "./copy-button";
 import { DescriptionField, JoinModeChoice } from "./create-group-form";
+import { DeleteGroup } from "./delete-group";
+import { HandOver, type HandOverCandidate } from "./hand-over";
 import { InviteCard } from "./invite-card";
 
 type GroupSettingsProps = {
@@ -30,20 +32,35 @@ type GroupSettingsProps = {
   detailsAction: FormAction;
   joinAction: FormAction;
   resetAction: FormAction;
+  /** The other active members the group can be handed to. */
+  candidates: HandOverCandidate[];
+  transferAction: FormAction;
+  deleteAction: FormAction;
 };
 
 const sectionHeading = "text-xl font-semibold";
 
 /**
  * The owner's Settings tab: the name and description, how people join, the invite link and code,
- * and resetting them. Nothing else yet (email invites, removing people, handing over and deleting
- * come later).
+ * resetting them, handing the group over and deleting it.
  */
-export function GroupSettings({ group, invite, ownerName, detailsAction, joinAction, resetAction }: GroupSettingsProps) {
+export function GroupSettings({
+  group,
+  invite,
+  ownerName,
+  detailsAction,
+  joinAction,
+  resetAction,
+  candidates,
+  transferAction,
+  deleteAction,
+}: GroupSettingsProps) {
   // Unique in the document: Next keeps pages the person left, so another copy can be in the DOM.
   const uid = useId();
   const detailsHeading = `${uid}-details-heading`;
   const joinHeading = `${uid}-join-heading`;
+  const handOverHeading = `${uid}-hand-over-heading`;
+  const deleteHeading = `${uid}-delete-heading`;
   return (
     <div className="flex flex-col gap-10">
       <section aria-labelledby={detailsHeading} className="flex flex-col gap-4">
@@ -69,6 +86,27 @@ export function GroupSettings({ group, invite, ownerName, detailsAction, joinAct
       />
 
       <ResetInvite groupId={group.id} action={resetAction} />
+
+      <section aria-labelledby={handOverHeading} className="flex flex-col gap-3">
+        <h2 id={handOverHeading} className={sectionHeading}>
+          Hand over this group
+        </h2>
+        <p className="text-muted-foreground">
+          Make another member the owner. You become a regular member, and only the new owner can change these settings.
+        </p>
+        <HandOver groupId={group.id} candidates={candidates} action={transferAction} />
+      </section>
+
+      <section aria-labelledby={deleteHeading} className="flex flex-col gap-3 rounded-xl border border-destructive/40 p-4">
+        <h2 id={deleteHeading} className={sectionHeading}>
+          Delete this group
+        </h2>
+        <p className="text-muted-foreground">
+          Everyone loses access at once and the invite link stops working. The group is kept for 30 days in case it was a
+          mistake — ask the project owner to restore it.
+        </p>
+        <DeleteGroup groupId={group.id} groupName={group.name} action={deleteAction} />
+      </section>
     </div>
   );
 }

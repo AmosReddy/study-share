@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
 import { AUTH_MESSAGES } from "../src/shared/auth-messages";
 
 /** Shared by the browser specs; all of it runs against the fake auth provider (SERVICES_MODE=fake). */
@@ -220,4 +220,46 @@ export async function createGroupThroughForm(
     await expect(page.getByRole("heading", { level: 1, name, exact: true })).toBeVisible();
   }
   return group;
+}
+
+type JoinAnswer = { ok: boolean; groupId?: string; formError?: string; fieldErrors?: Record<string, string> };
+
+/** Joins as the person signed in on `page`, with an invite token or a code (test-only route, same use-case as the invite page). */
+export async function joinWith(page: Page, key: string, password?: string): Promise<JoinAnswer> {
+  return page.evaluate(
+    async (body) => {
+      const response = await fetch("/api/test/join-group", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return (await response.json()) as JoinAnswer;
+    },
+    { key, password },
+  );
+}
+
+/**
+ * A second person in a browser of their own, signed up, on `/`, and sized like this project's device.
+ * The caller closes `context` (usually in a `finally`).
+ */
+export async function newPersonContext(
+  browser: Browser,
+  info: TestInfo,
+  ownerPage: Page,
+  name: string,
+): Promise<{ page: Page; context: BrowserContext }> {
+  const { viewport, userAgent, deviceScaleFactor, isMobile, hasTouch } = info.project.use;
+  const context = await browser.newContext({
+    baseURL: new URL(ownerPage.url()).origin,
+    viewport,
+    userAgent,
+    deviceScaleFactor,
+    isMobile,
+    hasTouch,
+  });
+  const page = await context.newPage();
+  await isolateRateLimits(page);
+  await signUpAndConfirm(page, { name });
+  return { page, context };
 }

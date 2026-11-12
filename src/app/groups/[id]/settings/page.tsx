@@ -2,8 +2,15 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { GroupSettings } from "@/client/components/groups/settings-forms";
 import { Skeleton } from "@/client/components/ui/skeleton";
+import { listGroupMembers } from "@/server/groups/use-cases";
 import { can } from "@/server/permissions";
-import { changeJoinSettingsAction, resetInviteAction, updateGroupDetailsAction } from "../../actions";
+import {
+  changeJoinSettingsAction,
+  deleteGroupAction,
+  resetInviteAction,
+  transferOwnershipAction,
+  updateGroupDetailsAction,
+} from "../../actions";
 import { loadGroupPage } from "../load-group";
 
 export default function SettingsPage({ params }: PageProps<"/groups/[id]/settings">) {
@@ -21,6 +28,11 @@ async function Settings({ params }: Pick<PageProps<"/groups/[id]/settings">, "pa
   const invite = page?.group.invite;
   if (!page || !invite || !can(page.user, "group.edit", { membership: page.membership })) notFound();
   const { group, deps } = page;
+  const members = (await listGroupMembers(deps, id)) ?? [];
+  // Only the owner gets here, so the rows carry ids; the owner themselves cannot be picked.
+  const candidates = members.flatMap((row) =>
+    row.userId && !row.isYou && row.role !== "owner" ? [{ userId: row.userId, name: row.displayName }] : [],
+  );
 
   return (
     <GroupSettings
@@ -30,6 +42,9 @@ async function Settings({ params }: Pick<PageProps<"/groups/[id]/settings">, "pa
       detailsAction={updateGroupDetailsAction}
       joinAction={changeJoinSettingsAction}
       resetAction={resetInviteAction}
+      candidates={candidates}
+      transferAction={transferOwnershipAction}
+      deleteAction={deleteGroupAction}
     />
   );
 }

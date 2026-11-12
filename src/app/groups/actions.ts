@@ -2,7 +2,14 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { changeJoinSettings, resetInvite, updateGroupDetails } from "@/server/groups/owner-use-cases";
+import {
+  changeJoinSettings,
+  deleteGroup,
+  removeGroupMember,
+  resetInvite,
+  transferGroupOwnership,
+  updateGroupDetails,
+} from "@/server/groups/owner-use-cases";
 import { requireGroupDeps } from "@/server/groups/request-deps";
 import { createGroup, joinGroup, leaveGroup, previewInvite } from "@/server/groups/use-cases";
 import type { FormState } from "@/shared/form-state";
@@ -103,6 +110,39 @@ export async function resetInviteAction(_state: FormState, form: FormData): Prom
 
   revalidatePath("/", "layout");
   return { status: "done", notice: "New link and code made. The old ones no longer work." };
+}
+
+/** Removes one person from the group (owner only); the Members list then comes back without them. */
+export async function removeMemberAction(_state: FormState, form: FormData): Promise<FormState> {
+  const groupId = text(form, "groupId");
+  const deps = await requireGroupDeps(groupPath(groupId, "/members"));
+  const result = await removeGroupMember(deps, groupId, text(form, "userId"));
+  if (!result.ok) return failed(result, {});
+
+  revalidatePath("/", "layout");
+  return { status: "done" };
+}
+
+/** Hands the group to another member. The previous owner is a plain member now, so they go to the group's first page. */
+export async function transferOwnershipAction(_state: FormState, form: FormData): Promise<FormState> {
+  const groupId = text(form, "groupId");
+  const deps = await requireGroupDeps(groupPath(groupId, "/settings"));
+  const result = await transferGroupOwnership(deps, groupId, { targetUserId: text(form, "targetUserId") });
+  if (!result.ok) return failed(result, {});
+
+  revalidatePath("/", "layout");
+  redirect(groupPath(groupId));
+}
+
+/** Deletes the group (owner only, and only with its exact name typed); a wrong name stays on the sheet as the field's error. */
+export async function deleteGroupAction(_state: FormState, form: FormData): Promise<FormState> {
+  const groupId = text(form, "groupId");
+  const deps = await requireGroupDeps(groupPath(groupId, "/settings"));
+  const result = await deleteGroup(deps, groupId, { confirmName: text(form, "confirmName") });
+  if (!result.ok) return failed(result, { confirmName: text(form, "confirmName") });
+
+  revalidatePath("/", "layout");
+  redirect("/");
 }
 
 /**
