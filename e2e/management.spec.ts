@@ -36,6 +36,8 @@ test.afterEach(async () => {
 const tabs = (page: Page) => page.getByRole("navigation", { name: "Group sections" });
 const memberList = (page: Page) => page.getByRole("list", { name: "Members" });
 const handOver = (page: Page) => page.getByRole("region", { name: "Hand over this group", exact: true });
+/** The signed-in home, fully shown (its "Create a group" link): a list on it is only judged after this. */
+const homeShown = (page: Page) => expect(page.getByRole("main").getByRole("link", { name: "Create a group" })).toBeVisible();
 const deleteSection = (page: Page) => page.getByRole("region", { name: "Delete this group", exact: true });
 
 /** An owner with a group, and the people who joined it (each in a browser of their own). */
@@ -104,8 +106,10 @@ test("owner removes a member, who then sees not-found, loses the group from thei
 
   // The group is gone from their list after a reload.
   await member.goto("/");
+  await homeShown(member);
   await expect(member.getByRole("main").getByRole("link", { name: "Removal Group" })).toHaveCount(0);
   await member.reload();
+  await homeShown(member);
   await expect(member.getByRole("main").getByRole("link", { name: "Removal Group" })).toHaveCount(0);
 
   // The invite link and the code say they cannot join.
@@ -193,6 +197,8 @@ test("owner hands the group over, becomes a plain member, loses Settings, can le
   await expect(tabs(page).getByRole("link")).toHaveText(["Library", "Members"]);
   await notFoundAt(page, `${group.path}/settings`);
   await page.goto(`${group.path}/members`);
+  await expect(memberList(page).getByRole("listitem")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "Leave group" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Remove/ })).toHaveCount(0);
   await expect(page.getByText(GROUP_MESSAGES.ownerCannotLeave)).toHaveCount(0);
 
@@ -212,6 +218,8 @@ test("owner hands the group over, becomes a plain member, loses Settings, can le
 
   // Someone else who is a plain member still sees no owner controls.
   await other.goto(`${group.path}/members`);
+  await expect(memberList(other).getByRole("listitem")).toHaveCount(3);
+  await expect(other.getByRole("button", { name: "Leave group" })).toBeVisible();
   await expect(other.getByRole("button", { name: /Remove/ })).toHaveCount(0);
   await expect(other.getByText("Owner", { exact: true })).toHaveCount(1);
 
@@ -296,6 +304,7 @@ test("deleting a group needs the exact name; afterwards members see not-found, t
   await second.getByLabel("Type Delete Test Group Two to confirm", { exact: true }).fill("Delete Test Group Two");
   await second.getByRole("button", { name: "Delete this group", exact: true }).click();
   await expect(page).toHaveURL("/");
+  await homeShown(page);
   await expect(page.getByRole("main").getByRole("link", { name: /Delete Test Group/ })).toHaveCount(0);
 
   // The member: not-found, a dead invite (link and code), and nothing in their list.
@@ -306,12 +315,14 @@ test("deleting a group needs the exact name; afterwards members see not-found, t
   await member.goto(`/invite/${group.code}`);
   await expect(member.getByText(GROUP_MESSAGES.invalidInvite, { exact: true })).toBeVisible();
   await member.goto("/");
+  await homeShown(member);
   await expect(member.getByRole("main").getByRole("link", { name: /Delete Test Group/ })).toHaveCount(0);
   await expect(member.getByRole("link", { name: /Delete Test Group/ })).toHaveCount(0);
 
   // The owner too.
   await notFoundAt(page, `${group.path}/settings`);
   await page.goto("/");
+  await homeShown(page);
   await expect(page.getByRole("link", { name: /Delete Test Group/ })).toHaveCount(0);
   expect((await joinWith(member, group.code)).ok).toBe(false);
 });
@@ -344,4 +355,28 @@ test("a failed remove request shows an inline error and the member stays", async
   await confirm.click();
   await expect(memberList(page).getByRole("listitem")).toHaveCount(1);
   await expect(memberList(page)).not.toContainText(MEMBER);
+});
+
+test("removing the first of two members leaves no confirm dialog open for the next one", async ({ page, browser }, info) => {
+  const { group, members } = await setUp({ page, browser }, info, "Two Members", ["Anil Das", "Bela Nair"]);
+  const [, second] = members as [Page, Page];
+  await page.goto(`${group.path}/members`);
+  await expect(memberList(page).getByRole("listitem")).toHaveCount(3);
+
+  await page.getByRole("button", { name: "Remove Anil Das" }).click();
+  await page.getByRole("dialog", { name: "Remove Anil Das?" }).getByRole("button", { name: "Remove Anil Das" }).click();
+  await expect(memberList(page).getByRole("listitem")).toHaveCount(2);
+  await expect(memberList(page)).not.toContainText("Anil Das");
+  await expect(memberList(page)).toContainText("Bela Nair");
+
+  // Nothing is left open, least of all a confirm for the person who moved into the removed row.
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText("Remove Bela Nair?")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Remove Bela Nair" })).toBeVisible();
+
+  // Bela is still a member.
+  await second.goto(group.path);
+  await expect(second.getByRole("heading", { level: 1, name: "Two Members" })).toBeVisible();
+  await second.goto(`${group.path}/members`);
+  await expect(memberList(second).getByRole("listitem")).toHaveCount(2);
 });

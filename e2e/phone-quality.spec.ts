@@ -46,6 +46,17 @@ import { GROUP_MESSAGES } from "../src/shared/group-messages";
 /** For a page with a menu or sheet open; see AuditOptions in ./audit.ts. */
 const MODAL_LAYER = { skipAxeRules: ["aria-hidden-focus"] };
 
+/** Audits the sheet that is open, in the light theme and in the dark one. */
+async function auditSheetInBothThemes(page: Page) {
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? /dark/ : /^(?!.*dark)/);
+    // Colours are audited at rest: not while the sheet slides in or the buttons fade to the new theme.
+    await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))));
+    await auditPage(page, MODAL_LAYER);
+  }
+}
+
 const NAME = "Asha Rao";
 const FRIEND = "Ravi Kumar";
 
@@ -264,10 +275,10 @@ test.describe("signed in", () => {
     await page.getByRole("button", { name: "Delete group…" }).click();
     const sheet = page.getByRole("dialog", { name: "Delete Maths Circle?" });
     await expect(sheet).toBeVisible();
-    await auditPage(page, MODAL_LAYER);
+    await auditSheetInBothThemes(page);
     await sheet.getByLabel("Type Maths Circle to confirm", { exact: true }).fill("Maths");
     await expect(sheet.getByRole("button", { name: "Delete this group", exact: true })).toBeDisabled();
-    await auditPage(page, MODAL_LAYER);
+    await auditSheetInBothThemes(page);
   });
 
   test("an owner's group with a member: Members with Remove, Settings with the hand-over choice, and their confirms", async ({
@@ -291,7 +302,7 @@ test.describe("signed in", () => {
     await expect(page.getByRole("link", { name: "Hand over this group" })).toBeVisible();
     await removeButton(page).click();
     await expect(page.getByRole("dialog", { name: `Remove ${FRIEND}?` })).toBeVisible();
-    await auditPage(page, MODAL_LAYER);
+    await auditSheetInBothThemes(page);
     await page.keyboard.press("Escape");
 
     await auditInBothThemes(page, { path: settings, url: settings, landmark: handOver });
@@ -303,7 +314,7 @@ test.describe("signed in", () => {
     await handOver(page).getByRole("radio", { name: FRIEND }).check();
     await handOver(page).getByRole("button", { name: /^Hand over/ }).click();
     await expect(page.getByRole("dialog", { name: `Make ${FRIEND} the owner?` })).toBeVisible();
-    await auditPage(page, MODAL_LAYER);
+    await auditSheetInBothThemes(page);
   });
 
   test("an owner's link-only group: Settings without a password", async ({ page }) => {

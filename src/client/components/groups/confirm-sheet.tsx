@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ErrorAnnouncer } from "@/client/components/auth/error-announcer";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { SubmitButton } from "@/client/components/auth/submit-button";
@@ -16,7 +16,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/client/components/ui/sheet";
-import type { FormAction } from "@/shared/form-state";
+import type { FormAction, FormState } from "@/shared/form-state";
 
 type ConfirmSheetProps = {
   action: FormAction;
@@ -47,9 +47,19 @@ type ConfirmSheetProps = {
  * shut, so every opening starts clean: no typed text, no old error. The sheet is also shut when
  * Next hides the page (Activity), so nothing waits open on a page the person left.
  */
-export function ConfirmSheet({ opener, canOpen, title, description, ...form }: ConfirmSheetProps) {
+export function ConfirmSheet({ opener, canOpen, title, description, action, ...form }: ConfirmSheetProps) {
   const [open, setOpen] = useState(false);
   const openerRef = useRef<HTMLButtonElement>(null);
+
+  // A finished action shuts the sheet, so no confirm can outlive the thing it was about.
+  const closeWhenDone = useCallback(
+    async (previous: FormState, data: FormData) => {
+      const next = await action(previous, data);
+      if (next.status === "done") setOpen(false);
+      return next;
+    },
+    [action],
+  );
 
   useLayoutEffect(() => () => setOpen(false), []);
 
@@ -83,7 +93,7 @@ export function ConfirmSheet({ opener, canOpen, title, description, ...form }: C
             <SheetTitle className="text-lg font-semibold [overflow-wrap:anywhere]">{title}</SheetTitle>
             <SheetDescription className="text-base [overflow-wrap:anywhere]">{description}</SheetDescription>
           </SheetHeader>
-          <ConfirmForm {...form} />
+          <ConfirmForm action={closeWhenDone} {...form} />
         </SheetContent>
       </Sheet>
     </>
