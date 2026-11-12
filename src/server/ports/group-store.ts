@@ -51,11 +51,35 @@ export interface GroupStore {
   /**
    * Deletes the membership row, so a person who left can join again. "owner" for the owner (the
    * row stays). "not_member" when there is no row, and also for a removed person, whose row is
-   * kept as it is: leaving never clears a removal.
+   * kept as it is (leaving never clears a removal), and for a deleted group. Takes the group's
+   * lock, so it cannot interleave with a join, a removal or a hand-over of the same group.
    */
   leave(groupId: string, userId: string): Promise<"left" | "owner" | "not_member">;
-  /** Sets the status to removed (which blocks a later join). False for the owner and for a non-member. */
+  /**
+   * Sets the status to removed (which blocks a later join). False for the owner, for a non-member
+   * and for a deleted group; removing an already removed person is true again. Takes the group's
+   * lock, so a removal can never interleave with a join, a leave or a hand-over of the same group.
+   */
   removeMember(groupId: string, userId: string): Promise<boolean>;
+  /**
+   * Hands the group over: `fromUserId` becomes a plain member and `toUserId` the owner, as one
+   * step, so the group has exactly one active owner at every moment, also when two hand-overs of
+   * the same group run at the same instant (the second finds "not_owner"). The first answer that
+   * applies: "group_gone" (no such group, or it is deleted); "not_owner" (`fromUserId` is not the
+   * group's active owner); "same_person" (from and to are the same); "not_member" (`toUserId` is
+   * not an ACTIVE member: removed, left or never joined); otherwise "ok".
+   */
+  transferOwnership(
+    groupId: string,
+    fromUserId: string,
+    toUserId: string,
+  ): Promise<"ok" | "not_owner" | "not_member" | "same_person" | "group_gone">;
+  /**
+   * Marks the group deleted (a soft delete: every read then ignores it, and its invite link and
+   * code stop working). Rows, memberships and invite keys are kept, and the keys stay unique
+   * across deleted groups. False for an unknown group and for one that is deleted already.
+   */
+  softDeleteGroup(groupId: string): Promise<boolean>;
   /** Active members only, the owner first and then by joining time. */
   listMembers(groupId: string): Promise<MemberRow[]>;
   updateDetails(groupId: string, d: { name: string; description: string }): Promise<boolean>;

@@ -58,7 +58,8 @@ function isUniqueViolation(error: unknown): boolean {
 
 /*
   Advisory lock keys. Every transaction that takes both takes the group's first and then the
-  person's (addMember); createGroup takes only the person's. So no transaction ever holds a
+  person's (addMember); createGroup takes only the person's; leave, removeMember,
+  transferOwnership and softDeleteGroup take only the group's. So no transaction ever holds a
   person lock while waiting for a group lock, and two transactions cannot wait on each other.
 */
 /** The lock-then-count steps rely on READ COMMITTED (each statement sees what committed before
@@ -67,6 +68,16 @@ const LOCKING_TX = { isolationLevel: "read committed" } as const;
 
 const groupLockKey = (groupId: string) => `group-members:${groupId.toLowerCase()}`;
 const personLockKey = (userId: string) => `group-person:${userId.toLowerCase()}`;
+
+/** Takes the group's lock (released when the transaction ends). A statement of its own, so the
+ * statements after it start after the lock is held and see what the earlier holder committed. */
+type Tx = Parameters<Parameters<Executor<Record<string, unknown>>["transaction"]>[0]>[0];
+const lockGroup = (tx: Tx, groupId: string) =>
+  tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${groupLockKey(groupId)}, 0))`);
+
+/** The all-zero uuid: no account has it, so it stands in for an id that is not a uuid and
+ * matches no membership (the foreign key to auth.users keeps it out of group_members). */
+const NO_ONE = "00000000-0000-0000-0000-000000000000";
 
 /**
  * The SQL GroupStore, on public.groups and public.group_members (RLS on, no policies; the app
@@ -152,7 +163,7 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
       if (!isUuid(userId)) throw new Error("addMember needs a user id.");
       return db.transaction(async (tx) => {
         // Group first, then person: the one order every transaction here uses (see the keys above).
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${groupLockKey(groupId)}, 0))`);
+        await lockGroup(tx, groupId);
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${personLockKey(userId)}, 0))`);
         const [state] = await tx.execute<{ group_ok: boolean; status: MemberStatus | null; member_count: number; group_count: number }>(sql`
           select
@@ -181,29 +192,84 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
 
     async leave(groupId, userId) {
       if (!isUuid(groupId) || !isUuid(userId)) return "not_member";
-      // One statement: both parts see the row as it was, and the delete skips the owner and a
-      // removed person (leaving must not clear a removal).
-      const [row] = await db.execute<{ role: GroupRole | null; status: MemberStatus | null; deleted: boolean }>(sql`
-        with m as (
-          select role, status from public.group_members where group_id = ${groupId} and user_id = ${userId}
-        ), d as (
-          delete from public.group_members
-          where group_id = ${groupId} and user_id = ${userId} and role <> 'owner' and status <> 'removed'
-          returning 1
-        )
-        select (select role from m) as role, (select status from m) as status, exists (select 1 from d) as deleted`);
-      if (row.deleted) return "left";
-      if (row.role === "owner" && row.status !== "removed") return "owner";
-      return "not_member";
+      return db.transaction(async (tx) => {
+        // The group's lock first, so a leave cannot interleave with a join, a removal or a hand-over.
+        await lockGroup(tx, groupId);
+        // One statement: both parts see the row as it was, and the delete skips the owner and a
+        // removed person (leaving must not clear a removal). A deleted group has nothing to leave.
+        const [row] = await tx.execute<{ role: GroupRole | null; status: MemberStatus | null; deleted: boolean }>(sql`
+          with live as (
+            select 1 from public.groups where id = ${groupId}::uuid and deleted_at is null
+          ), m as (
+            select role, status from public.group_members
+            where group_id = ${groupId}::uuid and user_id = ${userId}::uuid and exists (select 1 from live)
+          ), d as (
+            delete from public.group_members
+            where group_id = ${groupId}::uuid and user_id = ${userId}::uuid and role <> 'owner' and status <> 'removed'
+              and exists (select 1 from live)
+            returning 1
+          )
+          select (select role from m) as role, (select status from m) as status, exists (select 1 from d) as deleted`);
+        if (row.deleted) return "left";
+        if (row.role === "owner" && row.status !== "removed") return "owner";
+        return "not_member";
+      }, LOCKING_TX);
     },
 
     async removeMember(groupId, userId) {
       if (!isUuid(groupId) || !isUuid(userId)) return false;
-      const rows = await db.execute(sql`
-        update public.group_members set status = 'removed'
-        where group_id = ${groupId} and user_id = ${userId} and role <> 'owner'
-        returning 1`);
-      return rows.length > 0;
+      return db.transaction(async (tx) => {
+        await lockGroup(tx, groupId);
+        const rows = await tx.execute(sql`
+          update public.group_members m set status = 'removed'
+          where m.group_id = ${groupId}::uuid and m.user_id = ${userId}::uuid and m.role <> 'owner'
+            and exists (select 1 from public.groups g where g.id = m.group_id and g.deleted_at is null)
+          returning 1`);
+        return rows.length > 0;
+      }, LOCKING_TX);
+    },
+
+    async transferOwnership(groupId, fromUserId, toUserId) {
+      if (!isUuid(groupId)) return "group_gone";
+      // An id that is not a uuid names no one, so it matches no membership below.
+      const from = isUuid(fromUserId) ? fromUserId : NO_ONE;
+      const to = isUuid(toUserId) ? toUserId : NO_ONE;
+      return db.transaction(async (tx) => {
+        await lockGroup(tx, groupId);
+        const [state] = await tx.execute<{ group_ok: boolean; from_owner: boolean; to_active: boolean }>(sql`
+          select
+            exists (select 1 from public.groups where id = ${groupId}::uuid and deleted_at is null) as group_ok,
+            exists (select 1 from public.group_members
+              where group_id = ${groupId}::uuid and user_id = ${from}::uuid and role = 'owner' and status = 'active') as from_owner,
+            exists (select 1 from public.group_members
+              where group_id = ${groupId}::uuid and user_id = ${to}::uuid and status = 'active') as to_active`);
+        if (!state.group_ok) return "group_gone";
+        if (!state.from_owner) return "not_owner";
+        if (fromUserId === toUserId) return "same_person";
+        if (!state.to_active) return "not_member";
+        // Demote first: the unique index allows one active owner and is checked per statement.
+        // Both run in this transaction under the group's lock, so nothing sees two owners or none.
+        await tx.execute(sql`
+          update public.group_members set role = 'member'
+          where group_id = ${groupId}::uuid and user_id = ${from}::uuid and role = 'owner' and status = 'active'`);
+        await tx.execute(sql`
+          update public.group_members set role = 'owner'
+          where group_id = ${groupId}::uuid and user_id = ${to}::uuid and status = 'active'`);
+        return "ok";
+      }, LOCKING_TX);
+    },
+
+    async softDeleteGroup(groupId) {
+      if (!isUuid(groupId)) return false;
+      return db.transaction(async (tx) => {
+        // Under the group's lock, so a join that already checked the group finishes first.
+        await lockGroup(tx, groupId);
+        const rows = await tx.execute(sql`
+          update public.groups set deleted_at = now()
+          where id = ${groupId}::uuid and deleted_at is null
+          returning 1`);
+        return rows.length > 0;
+      }, LOCKING_TX);
     },
 
     async listMembers(groupId) {
