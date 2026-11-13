@@ -7,11 +7,13 @@ vi.mock("@/server/env", () => ({ getServerEnv: () => ({ DATABASE_URL: "postgres:
 
 import { getDb } from "./client";
 
-test("connects through the pooler without prepared statements, one connection, giving up after 5 seconds", () => {
+test("connects through the pooler without prepared statements, one connection, giving up after 5 seconds, closing idle connections", () => {
   getDb();
   expect(postgres).toHaveBeenCalledWith("postgres://u:p@db.example:6543/postgres", {
     prepare: false,
     max: 1,
     connect_timeout: 5,
+    idle_timeout: 20,
+    max_lifetime: 300,
   });
 });

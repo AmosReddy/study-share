@@ -43,7 +43,7 @@ export default class ServerLogReporter implements Reporter {
         "",
         "Something read the clock or a random value before the request was known (Date.now(), new Date(),",
         "Math.random(), crypto.randomUUID()). Call `await connection()` (next/server) before it, after",
-        "cookies()/headers(); see getCurrentUser in src/server/auth/session.ts.",
+        "cookies()/headers(); and never build a Supabase client before it: see getAuthProvider in src/server/services.ts.",
         "",
       ].join("\n"),
     );

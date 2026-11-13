@@ -228,4 +228,27 @@ describe.skipIf(!url)("SQL group store", { timeout: 120_000 }, () => {
         ["groups", true],
       ]);
     }));
+
+  test("a lock held by a stuck transaction makes a join fail within seconds instead of hanging", () =>
+    withStore(async ({ store, client, newUser }) => {
+      const owner = await newUser("Owner");
+      const friend = await newUser("Friend");
+      const groupId = (await makeGroup(store, owner, "Stuck lock")).id;
+      // Another connection takes the group's lock and never lets go (a frozen instance mid-transaction).
+      const holder = await client.reserve();
+      try {
+        await holder`begin`;
+        await holder`select pg_advisory_xact_lock(hashtextextended(${`group-members:${groupId}`}, 0))`;
+        const started = Date.now();
+        await expect(store.addMember(groupId, friend)).rejects.toThrow();
+        const waited = Date.now() - started;
+        expect(waited).toBeLessThan(8000);
+        expect(waited).toBeGreaterThanOrEqual(2500);
+      } finally {
+        await holder`rollback`.catch(() => {});
+        holder.release();
+      }
+      // With the stuck transaction gone, joining works again.
+      expect(await store.addMember(groupId, friend)).toBe("joined");
+    }));
 });

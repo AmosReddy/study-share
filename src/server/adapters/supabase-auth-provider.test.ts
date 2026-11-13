@@ -689,3 +689,77 @@ describe("other operations", () => {
     expect(offline.client.auth.signOut).toHaveBeenLastCalledWith({ scope: "local" });
   });
 });
+
+/*
+  The REAL Supabase client, offline. Making it reads the clock when the browser sent a session
+  cookie: createServerClient (@supabase/ssr) registers onAuthStateChange listeners, and each one,
+  a microtask after construction, loads the stored session from the cookies and checks its expiry
+  with Date.now() (auth-js GoTrueClient.__loadSession). Next.js refuses a clock read while it
+  prerenders a page (a link's prefetch renders the shell WITH the session cookies), so the app must
+  not build the client before connection(): see getAuthProvider in src/server/services.ts and its
+  test. This pins the library behaviour that rule rests on. If it starts failing, the library
+  stopped reading the clock at construction: re-read the comment in getAuthProvider before relaxing
+  anything. The session below is not expired, so nothing refreshes and nothing reaches the network.
+*/
+describe("the real Supabase client reads the clock when it is made", () => {
+  const URL_ = "https://abcdefgh.supabase.co";
+  const COOKIE_NAME = "sb-abcdefgh-auth-token";
+
+  function sessionCookie(expiresAtSeconds: number) {
+    const session = {
+      access_token: "header.payload.signature",
+      refresh_token: "refresh-token",
+      token_type: "bearer",
+      expires_in: 3600,
+      expires_at: expiresAtSeconds,
+      user: { id: USER_ID, aud: "authenticated", email: "asha@example.test" },
+    };
+    return { name: COOKIE_NAME, value: `base64-${Buffer.from(JSON.stringify(session)).toString("base64url")}` };
+  }
+
+  /** Makes the real provider over these cookies, lets the microtasks and timers the constructor started run. */
+  async function makeAndSettle(cookies: { name: string; value: string }[]) {
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("the network must not be reached");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const clock = vi.spyOn(Date, "now");
+    const jar = { getAll: vi.fn(() => cookies), setAll: vi.fn() };
+    clock.mockClear();
+    const provider = createSupabaseAuthProvider({ url: URL_, anonKey: "anon-key", cookies: jar, secureCookies: true });
+    const callsRightAfterConstruction = clock.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return { provider, clock, jar, fetchSpy, callsRightAfterConstruction };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  test("with a session cookie it checks the expiry against Date.now() right after construction, with no method called", async () => {
+    const { clock, jar, fetchSpy, callsRightAfterConstruction } = await makeAndSettle([
+      sessionCookie(Math.floor(Date.now() / 1000) + 3600),
+    ]);
+    // Not synchronously in the constructor, but in the microtasks it queues: still inside the same
+    // render, before anything later in it (such as a connection() call) can stop the prerender.
+    expect(callsRightAfterConstruction).toBe(0);
+    expect(jar.getAll).toHaveBeenCalled();
+    expect(clock).toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("without a session cookie it does not (so only signed-in visitors hit the prerender error)", async () => {
+    const { clock, fetchSpy } = await makeAndSettle([]);
+    expect(clock).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("getUser also reads the clock to check the token (so it too must wait for a real request)", async () => {
+    const { provider, clock } = await makeAndSettle([sessionCookie(Math.floor(Date.now() / 1000) + 3600)]);
+    clock.mockClear();
+    // The stand-in token is not a real JWT, so this answers "no user"; what matters is the clock read.
+    await provider.getUser().catch(() => null);
+    expect(clock).toHaveBeenCalled();
+  });
+});

@@ -1,6 +1,7 @@
 import "server-only";
 import { sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { guardTransaction } from "./transaction-guard";
 import type { RateLimiter } from "@/server/ports/rate-limiter";
 import type * as schema from "./schema";
 
@@ -29,6 +30,7 @@ export function createPostgresRateLimiter(
       const nowIso = new Date(t).toISOString();
 
       const { startMs, hits } = await db.transaction(async (tx) => {
+        await guardTransaction(tx);
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
         const rows = await tx.execute<{ start_ms: string; hits: number }>(sql`
           insert into rate_limits (key, window_start, hits)
