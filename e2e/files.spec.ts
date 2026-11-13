@@ -486,13 +486,16 @@ test("the library, upload and file pages fit the screen, meet the phone quality 
   await auditPage(page, { skipAxeRules: ["aria-hidden-focus"] });
 });
 
-test("a library of more than 20 files shows Show more, the next page and the way back", async ({ page }) => {
+test("a library of more than 20 files shows Show more, the next page and the way back", async ({ page, browser }, info) => {
   test.slow();
   const group = await setUp(page, "Long Library");
+  const memberPage = await addMember(page, browser, info, group);
+  // Two people share the uploads, because one person may start only 15 uploads an hour.
   for (let n = 1; n <= 21; n++) {
-    await fillUpload(page, group.path, { name: `f${n}.txt`, mimeType: "text/plain", buffer: TEXT, title: `File ${String(n).padStart(2, "0")}` });
-    await uploadButton(page).click();
-    await expect(page).toHaveURL(`${group.path}?notice=uploaded`);
+    const uploader = n <= 11 ? page : memberPage;
+    await fillUpload(uploader, group.path, { name: `f${n}.txt`, mimeType: "text/plain", buffer: TEXT, title: `File ${String(n).padStart(2, "0")}` });
+    await uploadButton(uploader).click();
+    await expect(uploader).toHaveURL(`${group.path}?notice=uploaded`);
   }
   await page.goto(group.path);
   await expect(fileList(page).getByRole("listitem")).toHaveCount(20);
