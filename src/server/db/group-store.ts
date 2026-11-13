@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { GROUP_LIMITS, type GroupRole, type JoinMode, type MemberStatus } from "@/shared/groups";
 import type { GroupRecord, GroupStore } from "@/server/ports/group-store";
+import { guardTransaction } from "./transaction-guard";
 
 /**
  * `execute` for single statements, `transaction` for the steps that lock, count and write.
@@ -84,6 +85,7 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
     async createGroup(input) {
       if (!isUuid(input.ownerId)) throw new Error("createGroup needs the owner's user id.");
       return db.transaction(async (tx) => {
+        await guardTransaction(tx);
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${personLockKey(input.ownerId)}, 0))`);
         const [{ group_count }] = await tx.execute<{ group_count: number }>(sql`
           select count(*)::int as group_count
@@ -151,6 +153,7 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
       if (!isUuid(groupId)) return "group_gone";
       if (!isUuid(userId)) throw new Error("addMember needs a user id.");
       return db.transaction(async (tx) => {
+        await guardTransaction(tx);
         // Group first, then person: the one order every transaction here uses (see the keys above).
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${groupLockKey(groupId)}, 0))`);
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${personLockKey(userId)}, 0))`);
