@@ -216,6 +216,42 @@ describe.skipIf(!url)("SQL group store", { timeout: 120_000 }, () => {
       expect(await store.listMembers("not-a-uuid")).toEqual([]);
       expect(await store.listGroupsFor("not-a-uuid")).toEqual([]);
       expect(await store.replaceInvite("not-a-uuid", randomKeys())).toBe("group_gone");
+      expect(await store.softDeleteGroup("not-a-uuid")).toBe(false);
+      expect(await store.transferOwnership("not-a-uuid", person, person)).toBe("group_gone");
+      const group = await makeGroup(store, person);
+      expect(await store.transferOwnership(group.id, "not-a-uuid", person)).toBe("not_owner");
+      expect(await store.transferOwnership(group.id, person, "not-a-uuid")).toBe("not_member");
+      expect(await store.transferOwnership(group.id, "not-a-uuid", "not-a-uuid")).toBe("not_owner");
+    }));
+
+  test("a transfer keeps exactly one active owner row, and a soft delete keeps every row", () =>
+    withStore(async ({ store, client, newUser }) => {
+      const owner = await newUser();
+      const person = await newUser();
+      const group = await makeGroup(store, owner);
+      await store.addMember(group.id, person);
+
+      expect(await store.transferOwnership(group.id, owner, person)).toBe("ok");
+      const roles = await client<{ user_id: string; role: string; status: string }[]>`
+        select user_id, role, status from public.group_members where group_id = ${group.id} order by role`;
+      expect(roles.map((r) => [r.user_id, r.role, r.status]).sort()).toEqual(
+        [
+          [owner, "member", "active"],
+          [person, "owner", "active"],
+        ].sort(),
+      );
+      // The index still refuses a second active owner after the swap.
+      expect(
+        await rejection(client`update public.group_members set role = 'owner' where group_id = ${group.id} and user_id = ${owner}`),
+      ).toMatchObject({ code: "23505", constraint_name: "group_members_one_active_owner" });
+
+      expect(await store.softDeleteGroup(group.id)).toBe(true);
+      const [{ deleted, members }] = await client<{ deleted: boolean; members: number }[]>`
+        select (g.deleted_at is not null) as deleted,
+          (select count(*)::int from public.group_members where group_id = g.id) as members
+        from public.groups g where g.id = ${group.id}`;
+      expect(deleted).toBe(true);
+      expect(members).toBe(2);
     }));
 
   test("both tables have Row Level Security on", () =>
@@ -251,4 +287,34 @@ describe.skipIf(!url)("SQL group store", { timeout: 120_000 }, () => {
       // With the stuck transaction gone, joining works again.
       expect(await store.addMember(groupId, friend)).toBe("joined");
     }));
+
+  test("leave, remove, hand-over and delete also give up within seconds on a stuck group lock", () =>
+    withStore(async ({ store, client, newUser }) => {
+      const owner = await newUser("Owner");
+      const friend = await newUser("Friend");
+      const groupId = (await makeGroup(store, owner, "Stuck lock 1c")).id;
+      expect(await store.addMember(groupId, friend)).toBe("joined");
+      const actions: [string, () => Promise<unknown>][] = [
+        ["leave", () => store.leave(groupId, friend)],
+        ["removeMember", () => store.removeMember(groupId, friend)],
+        ["transferOwnership", () => store.transferOwnership(groupId, owner, friend)],
+        ["softDeleteGroup", () => store.softDeleteGroup(groupId)],
+      ];
+      const holder = await client.reserve();
+      try {
+        await holder`begin`;
+        await holder`select pg_advisory_xact_lock(hashtextextended(${`group-members:${groupId}`}, 0))`;
+        for (const [name, run] of actions) {
+          const started = Date.now();
+          await expect(run(), name).rejects.toThrow();
+          expect(Date.now() - started, name).toBeLessThan(8000);
+        }
+      } finally {
+        await holder`rollback`.catch(() => {});
+        holder.release();
+      }
+      // Nothing changed while the lock was held, and the group works again afterwards.
+      expect(await store.getMembership(groupId, friend)).toEqual({ role: "member", status: "active" });
+      expect(await store.removeMember(groupId, friend)).toBe(true);
+    }), 60_000);
 });

@@ -12,6 +12,9 @@ const allowedRoles = {
   "group.join.change": ["owner"],
   "group.invite.view": ["owner"],
   "group.invite.reset": ["owner"],
+  "group.members.remove": ["owner"],
+  "group.transfer": ["owner"],
+  "group.delete": ["owner"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Action = keyof typeof allowedRoles;

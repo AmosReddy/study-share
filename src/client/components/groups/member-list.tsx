@@ -1,6 +1,7 @@
 "use client";
 
-import { useActionState, useId, useRef, useState } from "react";
+import Link from "next/link";
+import { useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { SubmitButton } from "@/client/components/auth/submit-button";
 import { Button } from "@/client/components/ui/button";
@@ -15,9 +16,10 @@ import {
 } from "@/client/components/ui/sheet";
 import { guardAction } from "@/client/components/auth/guard-action";
 import { IDLE, type FormAction } from "@/shared/form-state";
+import { ConfirmSheet } from "./confirm-sheet";
 
-/** One row of the list. No ids or emails: only what the screen shows. */
-export type MemberItem = { name: string; isOwner: boolean; isYou: boolean };
+/** One row of the list. No emails. `userId` is there only for the owner, who needs it to aim a removal. */
+export type MemberItem = { name: string; isOwner: boolean; isYou: boolean; userId?: string };
 
 type MemberListProps = {
   groupId: string;
@@ -27,28 +29,68 @@ type MemberListProps = {
   leave: "allowed" | "owner" | "none";
   ownerCannotLeave: string;
   leaveAction: FormAction;
+  /** The owner's way to remove people; without it no row has a Remove button. */
+  removeAction?: FormAction;
+  /** Where an owner who cannot leave goes to hand the group over (Settings). */
+  handOverHref?: string;
 };
 
 const badgeClass = "shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium";
 
 /** The Members tab: everyone in the group, the owner first, then leaving. */
-export function MemberList({ groupId, groupName, members, leave, ownerCannotLeave, leaveAction }: MemberListProps) {
+export function MemberList({
+  groupId,
+  groupName,
+  members,
+  leave,
+  ownerCannotLeave,
+  leaveAction,
+  removeAction,
+  handOverHref,
+}: MemberListProps) {
   // Unique in the document: Next keeps pages the person left, so another copy can be in the DOM.
   const headingId = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const removedRef = useRef(false);
+  // After a removal the row (and its Remove button) is gone and focus would fall to the page: put
+  // it on the list's heading, so a keyboard or screen-reader user stays in the Members list.
+  const onRemoved = useCallback(() => {
+    removedRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (!removedRef.current) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    removedRef.current = false;
+    headingRef.current?.focus();
+  }, [members]);
   return (
     <div className="flex flex-col gap-8">
       <section aria-labelledby={headingId} className="flex flex-col gap-3">
-        <h2 id={headingId} className="text-xl font-semibold">
+        <h2 ref={headingRef} id={headingId} tabIndex={-1} className="text-xl font-semibold outline-none">
           Members <span className="text-base font-normal text-muted-foreground">({members.length})</span>
         </h2>
         <ul aria-label="Members" className="flex flex-col divide-y rounded-xl border">
           {members.map((member, index) => (
-            <li key={index} className="flex min-h-14 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
+            // The owner's rows carry a user id, which is stable when the list changes (a removal): the
+            // Remove sheet's open state must stay with its person, never slide to the next row. Rows
+            // without an id (plain members' view) have no state to keep.
+            <li key={member.userId ?? `row-${index}`} className="flex min-h-14 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
               <span className="min-w-0 flex-1 font-medium [overflow-wrap:anywhere]">{member.name}</span>
               <span className="flex shrink-0 gap-2">
                 {member.isOwner ? <span className={`${badgeClass} bg-highlight/25`}>Owner</span> : null}
                 {member.isYou ? <span className={`${badgeClass} bg-muted`}>You</span> : null}
               </span>
+              {removeAction && member.userId && !member.isOwner && !member.isYou ? (
+                <RemoveMember
+                  groupId={groupId}
+                  groupName={groupName}
+                  userId={member.userId}
+                  name={member.name}
+                  action={removeAction}
+                  onRemoved={onRemoved}
+                />
+              ) : null}
             </li>
           ))}
         </ul>
@@ -57,9 +99,47 @@ export function MemberList({ groupId, groupName, members, leave, ownerCannotLeav
       {leave === "allowed" ? (
         <LeaveGroup groupId={groupId} groupName={groupName} action={leaveAction} />
       ) : leave === "owner" ? (
-        <p className="text-muted-foreground">{ownerCannotLeave}</p>
+        <div className="flex flex-col gap-1">
+          <p className="text-muted-foreground">{ownerCannotLeave}</p>
+          {handOverHref ? (
+            <Link href={handOverHref} className="inline-flex min-h-11 items-center self-start font-medium underline underline-offset-4">
+              Hand over this group
+            </Link>
+          ) : null}
+        </div>
       ) : null}
     </div>
+  );
+}
+
+/** The owner's Remove button for one person, with a confirm sheet. The list comes back without them. */
+function RemoveMember({
+  groupId,
+  groupName,
+  userId,
+  name,
+  action,
+  onRemoved,
+}: {
+  groupId: string;
+  groupName: string;
+  userId: string;
+  name: string;
+  action: FormAction;
+  onRemoved: () => void;
+}) {
+  return (
+    <ConfirmSheet
+      action={action}
+      fields={{ groupId, userId }}
+      onDone={onRemoved}
+      opener={{ label: "Remove", ariaLabel: `Remove ${name}`, variant: "destructive", className: "h-11 min-w-11 shrink-0 px-4 text-base" }}
+      title={`Remove ${name}?`}
+      description={`${name} will lose access to ${groupName} and won't be able to join this group again.`}
+      confirmLabel={`Yes, remove ${name}`}
+      pendingLabel="Removing…"
+      confirmVariant="destructive"
+    />
   );
 }
 

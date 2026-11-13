@@ -288,5 +288,194 @@ export function runGroupStoreContract(withStore: WithStore): void {
         expect(await ctx.store.findByInvite({ token: fresh.inviteToken })).toBeNull();
         expect(await ctx.store.findById(first.id)).toEqual(first);
       }));
+
+    test("transferOwnership makes the target the owner and the previous owner a member", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser("Olive");
+        const person = await ctx.newUser("Bea");
+        const group = await makeGroup(ctx, owner);
+        await ctx.store.addMember(group.id, person);
+        expect(await ctx.store.transferOwnership(group.id, owner, person)).toBe("ok");
+        expect(await ctx.store.getMembership(group.id, owner)).toEqual({ role: "member", status: "active" });
+        expect(await ctx.store.getMembership(group.id, person)).toEqual({ role: "owner", status: "active" });
+        // Both stay listed, the new owner first.
+        const members = await ctx.store.listMembers(group.id);
+        expect(members.map((m) => [m.userId, m.role])).toEqual([
+          [person, "owner"],
+          [owner, "member"],
+        ]);
+        expect(await ctx.store.listGroupsFor(owner)).toEqual([{ id: group.id, name: group.name }]);
+        // And it can be handed on again.
+        expect(await ctx.store.transferOwnership(group.id, person, owner)).toBe("ok");
+        expect(await ctx.store.getMembership(group.id, owner)).toEqual({ role: "owner", status: "active" });
+        expect(await ctx.store.getMembership(group.id, person)).toEqual({ role: "member", status: "active" });
+      }));
+
+    test("transferOwnership refuses a non-owner, a removed or non-member target, the same person, and an unknown group", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser();
+        const member = await ctx.newUser();
+        const other = await ctx.newUser();
+        const removed = await ctx.newUser();
+        const left = await ctx.newUser();
+        const stranger = await ctx.newUser();
+        const group = await makeGroup(ctx, owner);
+        for (const person of [member, other, removed, left]) await ctx.store.addMember(group.id, person);
+        await ctx.store.removeMember(group.id, removed);
+        await ctx.store.leave(group.id, left);
+
+        // A member, a stranger and a removed person are not the owner.
+        expect(await ctx.store.transferOwnership(group.id, member, other)).toBe("not_owner");
+        expect(await ctx.store.transferOwnership(group.id, stranger, other)).toBe("not_owner");
+        expect(await ctx.store.transferOwnership(group.id, removed, other)).toBe("not_owner");
+        // The target must be an active member.
+        expect(await ctx.store.transferOwnership(group.id, owner, removed)).toBe("not_member");
+        expect(await ctx.store.transferOwnership(group.id, owner, left)).toBe("not_member");
+        expect(await ctx.store.transferOwnership(group.id, owner, stranger)).toBe("not_member");
+        // Nobody hands a group to themselves.
+        expect(await ctx.store.transferOwnership(group.id, owner, owner)).toBe("same_person");
+        // No such group.
+        expect(await ctx.store.transferOwnership(crypto.randomUUID(), owner, member)).toBe("group_gone");
+
+        // Nothing changed.
+        expect(await ctx.store.getMembership(group.id, owner)).toEqual({ role: "owner", status: "active" });
+        expect(await ctx.store.getMembership(group.id, member)).toEqual({ role: "member", status: "active" });
+        expect(await ctx.store.getMembership(group.id, other)).toEqual({ role: "member", status: "active" });
+        expect(await ctx.store.getMembership(group.id, removed)).toEqual({ role: "member", status: "removed" });
+        expect(await ctx.store.getMembership(group.id, left)).toBeNull();
+        expect(await ctx.store.getMembership(group.id, stranger)).toBeNull();
+      }));
+
+    test("transferOwnership treats an upper-case id of the same person as same_person", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser();
+        const member = await ctx.newUser();
+        const group = await makeGroup(ctx, owner);
+        await ctx.store.addMember(group.id, member);
+        expect(await ctx.store.transferOwnership(group.id, owner, owner.toUpperCase())).toBe("same_person");
+        expect(await ctx.store.getMembership(group.id, owner)).toEqual({ role: "owner", status: "active" });
+      }));
+
+    test("two transfers of the same group at the same instant leave exactly one owner", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser();
+        const [a, b] = await ctx.newUsers(2);
+        const group = await makeGroup(ctx, owner);
+        await ctx.store.addMember(group.id, a);
+        await ctx.store.addMember(group.id, b);
+        const results = await Promise.all([
+          ctx.store.transferOwnership(group.id, owner, a),
+          ctx.store.transferOwnership(group.id, owner, b),
+        ]);
+        expect([...results].sort()).toEqual(["not_owner", "ok"]);
+        const members = await ctx.store.listMembers(group.id);
+        expect(members).toHaveLength(3);
+        expect(members.filter((m) => m.role === "owner")).toHaveLength(1);
+        expect(await ctx.store.getMembership(group.id, owner)).toEqual({ role: "member", status: "active" });
+      }));
+
+    test("after a transfer the previous owner can leave and the new owner cannot", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser();
+        const person = await ctx.newUser();
+        const group = await makeGroup(ctx, owner);
+        await ctx.store.addMember(group.id, person);
+        expect(await ctx.store.transferOwnership(group.id, owner, person)).toBe("ok");
+        expect(await ctx.store.leave(group.id, person)).toBe("owner");
+        expect(await ctx.store.removeMember(group.id, person)).toBe(false);
+        expect(await ctx.store.leave(group.id, owner)).toBe("left");
+        expect(await ctx.store.getMembership(group.id, owner)).toBeNull();
+        expect(await ctx.store.getMembership(group.id, person)).toEqual({ role: "owner", status: "active" });
+        expect(await ctx.store.listGroupsFor(owner)).toEqual([]);
+        // The previous owner is an ordinary person now: they can join again, and be removed.
+        expect(await ctx.store.addMember(group.id, owner)).toBe("joined");
+        expect(await ctx.store.removeMember(group.id, owner)).toBe(true);
+      }));
+
+    test("softDeleteGroup hides the group from findById, findByInvite, listGroupsFor and addMember, and is false the second time", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser();
+        const person = await ctx.newUser();
+        const group = await makeGroup(ctx, owner);
+        await ctx.store.addMember(group.id, person);
+
+        expect(await ctx.store.softDeleteGroup(group.id)).toBe(true);
+        expect(await ctx.store.findById(group.id)).toBeNull();
+        expect(await ctx.store.findByInvite({ token: group.inviteToken })).toBeNull();
+        expect(await ctx.store.findByInvite({ code: group.inviteCode })).toBeNull();
+        expect(await ctx.store.listGroupsFor(owner)).toEqual([]);
+        expect(await ctx.store.listGroupsFor(person)).toEqual([]);
+        expect(await ctx.store.getMembership(group.id, owner)).toBeNull();
+        expect(await ctx.store.listMembers(group.id)).toEqual([]);
+        expect(await ctx.store.addMember(group.id, await ctx.newUser())).toBe("group_gone");
+        expect(await ctx.store.updateDetails(group.id, { name: "x", description: "" })).toBe(false);
+        expect(await ctx.store.transferOwnership(group.id, owner, person)).toBe("group_gone");
+
+        expect(await ctx.store.softDeleteGroup(group.id)).toBe(false);
+        expect(await ctx.store.softDeleteGroup(crypto.randomUUID())).toBe(false);
+        expect(await ctx.store.softDeleteGroup("not-a-uuid")).toBe(false);
+
+        // The invite keys stay taken, so a new group can never reuse them.
+        expect(await ctx.store.createGroup(groupInput(owner, { inviteToken: group.inviteToken }))).toEqual({ ok: false, reason: "invite_taken" });
+        expect(await ctx.store.createGroup(groupInput(owner, { inviteCode: group.inviteCode }))).toEqual({ ok: false, reason: "invite_taken" });
+        // The deleted group is gone from the owner's list (the group-count limit reads this list, not tested here).
+        expect(await ctx.store.listGroupsFor(owner)).toEqual([]);
+      }));
+
+    test("leave and removeMember do nothing on a deleted group", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser();
+        const person = await ctx.newUser();
+        const group = await makeGroup(ctx, owner);
+        await ctx.store.addMember(group.id, person);
+        expect(await ctx.store.softDeleteGroup(group.id)).toBe(true);
+        expect(await ctx.store.removeMember(group.id, person)).toBe(false);
+        expect(await ctx.store.leave(group.id, person)).toBe("not_member");
+        expect(await ctx.store.leave(group.id, owner)).toBe("not_member");
+        expect(await ctx.store.removeMember(group.id, owner)).toBe(false);
+        // The rows were left alone: undoing the deletion (by hand, in the database) would find them.
+        // Only the store's own view is checkable here, and it shows nothing.
+        expect(await ctx.store.getMembership(group.id, person)).toBeNull();
+        expect(await ctx.store.listGroupsFor(person)).toEqual([]);
+      }));
+
+    test("a removal and a join racing for the same person never leave them active", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser();
+        const group = await makeGroup(ctx, owner);
+        for (let round = 0; round < 5; round++) {
+          const person = await ctx.newUser();
+          expect(await ctx.store.addMember(group.id, person)).toBe("joined");
+          const [removal, join] = await Promise.all([
+            ctx.store.removeMember(group.id, person),
+            ctx.store.addMember(group.id, person),
+          ]);
+          // The person is a member when both start, so the removal always finds them; the join
+          // sees them either still in (already_member) or already removed.
+          expect(removal).toBe(true);
+          expect(["already_member", "removed"]).toContain(join);
+          expect(await ctx.store.getMembership(group.id, person)).toEqual({ role: "member", status: "removed" });
+          expect(await ctx.store.addMember(group.id, person)).toBe("removed");
+        }
+
+        // A removal and a leave racing: either the person left first (nothing to remove, no row)
+        // or they were removed first (the leave does nothing, the removal stays).
+        for (let round = 0; round < 5; round++) {
+          const person = await ctx.newUser();
+          await ctx.store.addMember(group.id, person);
+          const [removal, left] = await Promise.all([
+            ctx.store.removeMember(group.id, person),
+            ctx.store.leave(group.id, person),
+          ]);
+          const membership = await ctx.store.getMembership(group.id, person);
+          if (removal) {
+            expect(left).toBe("not_member");
+            expect(membership).toEqual({ role: "member", status: "removed" });
+          } else {
+            expect(left).toBe("left");
+            expect(membership).toBeNull();
+          }
+        }
+      }));
   });
 }

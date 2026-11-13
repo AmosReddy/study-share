@@ -16,6 +16,9 @@ const groupActions = {
   "group.join.change": ["owner"],
   "group.invite.view": ["owner"],
   "group.invite.reset": ["owner"],
+  "group.members.remove": ["owner"],
+  "group.transfer": ["owner"],
+  "group.delete": ["owner"],
 } as const satisfies Record<Action, readonly Role[]>;
 
 describe("can(group actions)", () => {
@@ -48,7 +51,7 @@ describe("can(group actions)", () => {
   test("the table above lists every action the module knows", () => {
     // If an action is added to permissions without a row here, this line stops compiling.
     const listed: Record<Action, readonly Role[]> = groupActions;
-    expect(Object.keys(listed)).toHaveLength(7);
+    expect(Object.keys(listed)).toHaveLength(10);
   });
 
   test("unknown action is denied", () => {

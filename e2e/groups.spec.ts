@@ -490,6 +490,9 @@ test("the owner has no Leave button and is told why", async ({ page }) => {
   await expect(memberList(page).getByRole("listitem")).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Leave group" })).toHaveCount(0);
   await expect(page.getByText(GROUP_MESSAGES.ownerCannotLeave)).toBeVisible();
+  // ...and is pointed to the way out: handing the group over, in Settings.
+  await page.getByRole("link", { name: "Hand over this group" }).click();
+  await expect(page).toHaveURL(`/groups/${group.id}/settings`);
 });
 
 test("a non-member opening /groups/<id> sees the same not-found page as a made-up id", async ({ page, browser }, info) => {

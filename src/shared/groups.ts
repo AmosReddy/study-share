@@ -124,6 +124,35 @@ export const joinModeSchema = z
   .superRefine(applyPasswordRule)
   .transform(dropLinkPassword);
 
+/** An id (UUID) in any letter case, handed on lower-case. Never trimmed: it is an id, not typed text. */
+export const uuidSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+  .transform((id) => id.toLowerCase());
+
+/** The id of the person who becomes the owner. */
+export const transferOwnershipSchema = z.object({
+  targetUserId: uuidSchema,
+});
+
+/**
+ * A group name as compared when someone types it to confirm a delete: Unicode-normalised (NFC, so
+ * "é" typed either way matches), trimmed, runs of whitespace as one space. Case still counts. The
+ * confirm sheet and the server both use this, so the button enables exactly when the server accepts.
+ */
+export function normalizeGroupNameForCompare(name: string): string {
+  return name.normalize("NFC").trim().replace(/\s+/g, " ");
+}
+
+/** The name typed to confirm a delete; the server compares it with the group's current name. */
+export const deleteGroupSchema = z.object({
+  confirmName: z
+    .string()
+    .trim()
+    .refine(hasNoNul, NO_NUL_MESSAGE)
+    .refine((name) => characterCount(name) >= 1 && characterCount(name) <= MAX_KEY_LENGTH),
+});
+
 /** The key is an invite token or a group code from the address; the password is never trimmed. */
 export const joinGroupSchema = z.object({
   key: z.string().trim().min(1).max(MAX_KEY_LENGTH).refine(hasNoNul, NO_NUL_MESSAGE),
@@ -140,5 +169,7 @@ export const joinCodeSchema = z.object({
 export type CreateGroupInput = z.infer<typeof createGroupSchema>;
 export type EditGroupInput = z.infer<typeof editGroupSchema>;
 export type JoinModeInput = z.infer<typeof joinModeSchema>;
+export type TransferOwnershipInput = z.infer<typeof transferOwnershipSchema>;
+export type DeleteGroupInput = z.infer<typeof deleteGroupSchema>;
 export type JoinGroupInput = z.infer<typeof joinGroupSchema>;
 export type JoinCodeInput = z.infer<typeof joinCodeSchema>;

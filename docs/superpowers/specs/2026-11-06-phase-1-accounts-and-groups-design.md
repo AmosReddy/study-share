@@ -2,7 +2,7 @@
 
 Status: draft for the owner's approval. Part of [docs/PROJECT_PLAN.md](../../PROJECT_PLAN.md). Phase 0 is live (see that plan's section 8); this phase builds on it.
 
-> **Status:** Phase 1b (groups and joining) is implemented per [docs/superpowers/plans/2026-11-09-phase-1b-groups-and-joining.md](../plans/2026-11-09-phase-1b-groups-and-joining.md).
+> **Status:** Phase 1b (groups and joining) is implemented per [docs/superpowers/plans/2026-11-09-phase-1b-groups-and-joining.md](../plans/2026-11-09-phase-1b-groups-and-joining.md). Email invites were removed from scope by the owner on 2026-11-12; Phase 1c (remove, hand over, delete) was implemented without a separate plan, see [docs/PHASE_1C_ACCEPTANCE.md](../../PHASE_1C_ACCEPTANCE.md).
 
 > **Superseded in part.** The [registration redesign](2026-11-07-registration-redesign-design.md) (2026-11-07) replaces sign-up, email confirmation and password reset by emailed codes with no verification link. Where it conflicts, the redesign wins: section 4.2 (confirm by link), the "Same email, two ways in" decision in section 5, the email-confirmation and reset rows of section 6.1, the Google known risk in section 7, and the Supabase settings in section 9 (the setup guide has the current ones). Everything else here still applies.
 
