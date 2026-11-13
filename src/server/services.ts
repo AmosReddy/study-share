@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { connection } from "next/server";
 import { createFakeAccountDirectory } from "@/server/adapters/fake-account-directory";
 import { createFakeAuthProvider, getFakeAuthStore } from "@/server/adapters/fake-auth-provider";
+import { createFakeFileStorage } from "@/server/adapters/fake-file-storage";
 import { createFakeGroupStore } from "@/server/adapters/fake-group-store";
 import { createFakeProfileStore } from "@/server/adapters/fake-profile-store";
 import { createFakeResourceStore } from "@/server/adapters/fake-resource-store";
@@ -18,6 +19,7 @@ import { createPostgresRateLimiter } from "@/server/db/postgres-rate-limiter";
 import { createProfileStore } from "@/server/db/profile-store";
 import { createResourceStore } from "@/server/db/resource-store";
 import { getServerEnv } from "@/server/env";
+import { getSiteUrl } from "@/server/site-url";
 import type { AccountDirectory } from "@/server/ports/account-directory";
 import type { AuthProvider } from "@/server/ports/auth-provider";
 import type { EmailSender } from "@/server/ports/email-sender";
@@ -39,9 +41,15 @@ import type { ResourceStore } from "@/server/ports/resource-store";
 let storage: FileStorage | undefined;
 let email: EmailSender | undefined;
 
+/**
+ * File storage. In SERVICES_MODE=fake it is the in-memory fake (its objects are kept on
+ * globalThis, so each call can make a fresh wrapper); the app refuses fake mode on every real
+ * deployment (see env.ts), so a deployment always gets the S3 adapter.
+ */
 export function getFileStorage(): FileStorage {
+  const env = getServerEnv();
+  if (env.SERVICES_MODE === "fake") return createFakeFileStorage({ siteUrl: getSiteUrl() });
   if (!storage) {
-    const env = getServerEnv();
     storage = createS3FileStorage({
       endpoint: env.STORAGE_ENDPOINT,
       region: env.STORAGE_REGION,

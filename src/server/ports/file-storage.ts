@@ -33,8 +33,12 @@ export interface FileStorage {
 
   put(key: string, body: Uint8Array | string, contentType: string): Promise<void>;
 
-  /** The file's bytes, or null when it does not exist. */
-  get(key: string): Promise<Uint8Array | null>;
+  /**
+   * The file's bytes, or null when it does not exist. With `range` only those bytes come back
+   * (both ends included; an end past the file's end is cut short), so a caller can look at the
+   * start of a large file without reading all of it. The file must not be empty.
+   */
+  get(key: string, options?: { range?: { start: number; endInclusive: number } }): Promise<Uint8Array | null>;
 
   /** Deleting a file that does not exist is not an error. */
   delete(key: string): Promise<void>;

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /*
   The build runs with no settings at all, and prerenders pages that call getAuthProvider().
@@ -38,8 +38,9 @@ vi.mock("@/server/db/resource-store", () => ({ createResourceStore }));
 
 import { getFakeAuthStore, resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
 import { resetFakeGroupStore } from "@/server/adapters/fake-group-store";
+import { getFakeFileStorageState, resetFakeFileStorage } from "@/server/adapters/fake-file-storage";
 import { resetFakeResourceStore } from "@/server/adapters/fake-resource-store";
-import { getAccountDirectory, getAuthProvider, getGroupStore, getProfileStore, getResourceStore } from "./services";
+import { getAccountDirectory, getAuthProvider, getFileStorage, getGroupStore, getProfileStore, getResourceStore } from "./services";
 
 describe("getProfileStore", () => {
   beforeEach(() => {
@@ -197,6 +198,44 @@ describe("getResourceStore", () => {
         throw new Error("settings were read before the request-reading call");
       });
     }
+  });
+});
+
+describe("getFileStorage", () => {
+  afterEach(() => {
+    resetFakeFileStorage();
+    vi.unstubAllEnvs();
+    getServerEnv.mockReset();
+    getServerEnv.mockImplementation(() => {
+      throw new Error("settings were read before the request-reading call");
+    });
+  });
+
+  it("in fake mode is the in-memory fake, with links on the site's own address, and never builds the S3 client", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://site.test/");
+    getServerEnv.mockReturnValue({ SERVICES_MODE: "fake" } as never);
+    const storage = getFileStorage();
+    await storage.put("k/a.pdf", "x", "application/pdf");
+    // Another call sees the same objects.
+    expect(await getFileStorage().head("k/a.pdf")).toEqual({ sizeBytes: 1, contentType: "application/pdf" });
+    expect(getFakeFileStorageState().objects.size).toBe(1);
+    const { url } = await storage.createUploadUrl({ key: "k/b.pdf", contentType: "application/pdf", sizeBytes: 1, expiresInSeconds: 60 });
+    expect(url.startsWith("https://site.test/api/test/storage/k/b.pdf?token=")).toBe(true);
+  });
+
+  it("otherwise (every real deployment) is the S3 adapter, signing links for the bucket", async () => {
+    getServerEnv.mockReturnValue({
+      SERVICES_MODE: "real",
+      STORAGE_ENDPOINT: "https://abc.storage.supabase.co/storage/v1/s3",
+      STORAGE_REGION: "r",
+      STORAGE_ACCESS_KEY_ID: "id",
+      STORAGE_SECRET_ACCESS_KEY: "secret",
+      STORAGE_BUCKET: "bucket",
+      STORAGE_FORCE_PATH_STYLE: true,
+    } as never);
+    const url = await getFileStorage().createDownloadUrl({ key: "k", expiresInSeconds: 60 });
+    expect(url).toContain("abc.storage.supabase.co/storage/v1/s3/bucket/k");
+    expect(url).toContain("X-Amz-Signature=");
   });
 });
 

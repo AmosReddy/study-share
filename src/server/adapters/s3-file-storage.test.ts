@@ -144,6 +144,34 @@ describe("createS3FileStorage", () => {
     expect(await missing.get("gone")).toBeNull();
   });
 
+  describe("get", () => {
+    const stored = (bytes: number[]) => ({ transformToByteArray: async () => new Uint8Array(bytes) });
+
+    test("without a range asks for the whole file", async () => {
+      const sent: { input: Record<string, unknown> }[] = [];
+      const storage = createS3FileStorage(config, {
+        send: async (command) => {
+          sent.push(command as never);
+          return { Body: stored([1, 2, 3]) };
+        },
+      });
+      expect(await storage.get("k")).toEqual(new Uint8Array([1, 2, 3]));
+      expect(sent[0].input).toEqual({ Bucket: "test-bucket", Key: "k" });
+    });
+
+    test("with a range sends an inclusive Range header and returns only those bytes", async () => {
+      const sent: { input: Record<string, unknown> }[] = [];
+      const storage = createS3FileStorage(config, {
+        send: async (command) => {
+          sent.push(command as never);
+          return { Body: stored([37, 80]) };
+        },
+      });
+      expect(await storage.get("k", { range: { start: 0, endInclusive: 4095 } })).toEqual(new Uint8Array([37, 80]));
+      expect(sent[0].input).toEqual({ Bucket: "test-bucket", Key: "k", Range: "bytes=0-4095" });
+    });
+  });
+
   test("other vendor errors are not hidden", async () => {
     const broken = createS3FileStorage(config, {
       send: async () => {
