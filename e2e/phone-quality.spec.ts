@@ -254,7 +254,7 @@ test.describe("signed in", () => {
     const group = await createGroupThroughForm(page, { name: "Maths Circle", mode: "password" });
     // Landmarks that exist only in each tab's own content (the group's title is in the layout, which
     // is there while the tab is still loading).
-    const library = (p: Page) => p.getByRole("heading", { level: 3, name: "No files here yet", exact: true });
+    const library = (p: Page) => p.getByRole("heading", { level: 3, name: "No files yet", exact: true });
     const memberList = (p: Page) => p.getByRole("list", { name: "Members", exact: true });
     const groupDetails = (p: Page) => p.getByRole("region", { name: "Group details", exact: true });
     await auditInBothThemes(page, { path: group.path, url: group.path, landmark: library });

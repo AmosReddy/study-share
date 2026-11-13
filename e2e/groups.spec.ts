@@ -418,13 +418,16 @@ test("a plain member's pages never contain the invite link token or the group co
 });
 
 test("Library shows an honest empty state, not fake files", async ({ page }) => {
-  await createAndOpen(page, { name: "Empty Library", mode: "link" });
+  const group = await createAndOpen(page, { name: "Empty Library", mode: "link" });
   const library = page.getByRole("region", { name: "Library" });
-  await expect(library.getByRole("heading", { name: "No files here yet" })).toBeVisible();
-  await expect(library.getByRole("listitem")).toHaveCount(0);
-  await expect(library.getByRole("link")).toHaveCount(0);
-  await expect(library.getByRole("button")).toHaveCount(0);
-  await expect(library).not.toContainText(/\.pdf|\.docx|MB|KB/);
+  await expect(library.getByRole("heading", { name: "No files yet" })).toBeVisible();
+  await expect(library.getByText("Be the first to share something.")).toBeVisible();
+  await expect(library.getByRole("list", { name: "Files" })).toHaveCount(0);
+  await expect(library).not.toContainText(/.pdf|.docx|MB|KB/);
+  // The only way forward is the Upload button, in the header and in the empty state.
+  const upload = library.getByRole("link", { name: "Upload a file" });
+  await expect(upload).toHaveCount(2);
+  await expect(upload.first()).toHaveAttribute("href", `/groups/${group.id}/upload`);
 });
 
 test('Members lists names, marks the owner and "You"', async ({ page, browser }, info) => {

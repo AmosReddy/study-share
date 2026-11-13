@@ -19,6 +19,7 @@ import {
   completeUpload,
   deleteFile,
   FILE_PAGE_SIZE,
+  getFile,
   listFiles,
   openFile,
   prepareUpload,
@@ -654,6 +655,7 @@ describe("listFiles", () => {
       uploaderName: "Asha",
       uploadedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/),
       previewable: true,
+      isPdf: false,
       canDelete: false,
       canEdit: false,
     });
@@ -763,6 +765,35 @@ describe("listFiles", () => {
     const groupId = await t.makeGroup(owner);
     await uploadReady(t.as(owner), groupId);
     expect((await listFiles(t.as(owner), groupId, { cursor: "garbage!!" }))?.items).toHaveLength(1);
+  });
+});
+
+describe("getFile", () => {
+  it("shows a ready file with what the caller may do, and never the storage key", async () => {
+    const t = setup();
+    const owner = t.person("Asha");
+    const member = t.person("Ravi");
+    const groupId = await t.makeGroup(owner);
+    await t.groups.addMember(groupId, member.id);
+    const { resourceId } = await uploadReady(t.as(member), groupId);
+    const own = await getFile(t.as(member), groupId, resourceId);
+    expect(own).toMatchObject({ id: resourceId, title: "Unit 1 notes", uploaderName: "Ravi", previewable: true, canEdit: true, canDelete: true });
+    expect(JSON.stringify(own)).not.toContain("groups/");
+    expect(await getFile(t.as(owner), groupId, resourceId)).toMatchObject({ canEdit: false, canDelete: true });
+  });
+
+  it("answers null for a stranger, a bad id, a missing file and an unfinished upload", async () => {
+    const t = setup();
+    const owner = t.person("Asha");
+    const stranger = t.person("Zed");
+    const groupId = await t.makeGroup(owner);
+    const { resourceId } = await uploadReady(t.as(owner), groupId);
+    expect(await getFile(t.as(stranger), groupId, resourceId)).toBeNull();
+    expect(await getFile(t.as(owner), groupId, "nope")).toBeNull();
+    expect(await getFile(t.as(owner), groupId, MISSING_ID)).toBeNull();
+    const pending = await prepareUpload(t.as(owner), groupId, details());
+    expect(pending.ok).toBe(true);
+    if (pending.ok) expect(await getFile(t.as(owner), groupId, pending.data.resourceId)).toBeNull();
   });
 });
 

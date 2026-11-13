@@ -58,6 +58,8 @@ export type FileView = {
   uploadedAt: string;
   /** True when the browser can show it (a PDF or common image), so the page offers "Preview". */
   previewable: boolean;
+  /** True for a PDF (shown in a frame); the other previewable files are images. */
+  isPdf: boolean;
   /** For the caller: the uploader, or the owner. */
   canDelete: boolean;
   /** For the caller: the uploader only. */
@@ -141,6 +143,7 @@ function viewOf(deps: FileDeps, membership: Membership, record: ResourceRecord):
     uploaderName: record.uploaderName.trim() === "" ? FILE_MESSAGES.formerMember : record.uploaderName,
     uploadedAt: record.createdAt.toISOString(),
     previewable: isPreviewableType(record.contentType),
+    isPdf: record.contentType === "application/pdf",
     canDelete: own || can(deps.user, "file.delete.any", { membership }),
     canEdit: own,
   };
@@ -305,6 +308,17 @@ export async function listFiles(deps: FileDeps, groupId: string, query: FileQuer
     nextCursor: page.nextCursor,
     subjects,
   };
+}
+
+/**
+ * One ready file for the file page, as the caller may see it. Null for anyone who may not see the
+ * library and for a file that is missing, deleted, unfinished or in another group. A store failure throws.
+ */
+export async function getFile(deps: FileDeps, groupId: string, resourceId: string): Promise<FileView | null> {
+  const access = await readAccess(deps, groupId, "file.view");
+  if (!access) return null;
+  const record = await readyFile(deps, access.group.id, resourceId);
+  return record ? viewOf(deps, access.membership, record) : null;
 }
 
 /**

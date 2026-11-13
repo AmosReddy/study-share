@@ -46,7 +46,7 @@ test("signed-in pages and the invite page prerender and prefetch without reading
   await bringLinksIntoView(page);
 
   const group = await createGroupThroughForm(page, { name: "Prerender check", mode: "link", fromHome: true });
-  for (const path of ["/", "/account", "/join", "/groups/new", group.path, `${group.path}/members`, `${group.path}/settings`]) {
+  for (const path of ["/", "/account", "/join", "/groups/new", group.path, `${group.path}/upload`, `${group.path}/members`, `${group.path}/settings`]) {
     await page.goto(path);
     await expect(page.getByRole("main")).toBeVisible();
     await bringLinksIntoView(page);

@@ -26,4 +26,9 @@ export const FILE_MESSAGES = {
   doesNotLookLike: (kind: string) =>
     `That file does not look like a ${kind}. Check that it is the right file, then upload it again.`,
   formerMember: "Former member",
+  /** The browser could not send the file to storage (offline, a dropped connection, an expired link). */
+  uploadInterrupted: "The upload didn't finish. Check your connection, then choose Upload to try again.",
+  /** Shown on the library after a successful upload or delete (the `notice` in the address). */
+  notices: { uploaded: "Your file is shared with the group.", deleted: "The file was deleted." },
+  saved: "Saved.",
 } as const;
