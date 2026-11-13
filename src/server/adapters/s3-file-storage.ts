@@ -38,6 +38,9 @@ export function createS3FileStorage(config: S3Config, sender?: Sender): FileStor
     region: config.region,
     endpoint: config.endpoint,
     forcePathStyle: config.forcePathStyle,
+    // Without this the SDK puts a checksum of an EMPTY body in every upload link, which some S3
+    // services reject for a real file. Size and type stay bound by the signed headers.
+    requestChecksumCalculation: "WHEN_REQUIRED",
     credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
   });
   // Signing always uses the real client. Only network calls can be swapped.

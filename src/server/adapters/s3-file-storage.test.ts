@@ -37,6 +37,9 @@ describe("createS3FileStorage", () => {
       expiresInSeconds: 60,
     });
     expect(decodeURIComponent(new URL(url).searchParams.get("X-Amz-SignedHeaders") ?? "")).toContain("content-type");
+    expect(decodeURIComponent(new URL(url).searchParams.get("X-Amz-SignedHeaders") ?? "")).toContain("content-length");
+    // No checksum of an empty body in the link: it would make a real (non-empty) upload fail.
+    expect(url).not.toMatch(/x-amz-checksum|x-amz-sdk-checksum-algorithm/i);
   });
 
   test("download URL forces a download by default", async () => {

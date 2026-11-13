@@ -150,7 +150,23 @@ export function UploadForm({ groupId, subjects, prepareAction, completeAction }:
       }
 
       setPhase("checking");
-      const done = await completeAction(groupId, prepared.data.resourceId);
+      // Finishing is safe to repeat. Retrying a dropped connection here keeps a fully sent file from
+      // being left behind unfinished (the person would otherwise upload it all again).
+      let done = await completeAction(groupId, prepared.data.resourceId).catch((error: unknown) => {
+        if (isNextControlFlow(error)) throw error;
+        return null;
+      });
+      for (let attempt = 0; done === null && attempt < 2; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        done = await completeAction(groupId, prepared.data.resourceId).catch((error: unknown) => {
+          if (isNextControlFlow(error)) throw error;
+          return null;
+        });
+      }
+      if (done === null) {
+        fail({}, AUTH_MESSAGES.actionFailed);
+        return;
+      }
       if (!done.ok) {
         fail({}, done.formError ?? FILE_MESSAGES.couldNotSave);
         return;

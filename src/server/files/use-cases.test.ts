@@ -187,6 +187,25 @@ describe("who may use the files of a group", () => {
     expect(getFakeFileStorageState().objects.size).toBe(1);
   });
 
+  it("never serves a file under another group's address, even to someone who is a member of that group", async () => {
+    const t = setup();
+    const owner = t.person("Asha");
+    const groupA = await t.makeGroup(owner);
+    const file = await uploadReady(t.as(owner), groupA);
+    // The same person owns a second group and asks for group A's file id under group B's address.
+    const groupB = await t.makeGroup(owner);
+    const deps = t.as(owner);
+    const notFound = { ok: false, notFound: true, formError: FILE_MESSAGES.notFound };
+    expect(await openFile(deps, groupB, file.resourceId, { download: false })).toBeNull();
+    expect(await openFile(deps, groupB, file.resourceId, { download: true })).toBeNull();
+    expect(await updateFile(deps, groupB, file.resourceId, { title: "x", subject: "", type: "notes" })).toEqual(notFound);
+    expect(await deleteFile(deps, groupB, file.resourceId)).toEqual(notFound);
+    expect(await completeUpload(deps, groupB, file.resourceId)).toEqual(notFound);
+    expect(await listFiles(deps, groupB)).toMatchObject({ items: [] });
+    // Under its own address it is still there and untouched.
+    expect(await listFiles(deps, groupA)).toMatchObject({ items: [{ id: file.resourceId, title: "Unit 1 notes" }] });
+  });
+
   it("answers a deleted group like a missing one", async () => {
     const t = setup();
     const owner = t.person("Asha");
@@ -220,7 +239,7 @@ describe("prepareUpload", () => {
     expect(made.headers).toEqual({ "Content-Type": "application/pdf" });
     const url = new URL(made.uploadUrl);
     expect(url.origin).toBe(SITE);
-    expect(decodeURIComponent(url.pathname)).toBe(`/api/test/storage/groups/${groupId}/${made.resourceId}/unit1.pdf`);
+    expect(decodeURIComponent(url.pathname)).toBe(`/api/test/storage/groups/${groupId}/${made.resourceId}.pdf`);
 
     const row = await t.resources.findById(groupId, made.resourceId);
     expect(row).toMatchObject({
@@ -232,7 +251,7 @@ describe("prepareUpload", () => {
       fileName: "unit1.pdf",
       contentType: "application/pdf",
       sizeBytes: PDF.length,
-      fileKey: `groups/${groupId}/${made.resourceId}/unit1.pdf`,
+      fileKey: `groups/${groupId}/${made.resourceId}.pdf`,
     });
   });
 
@@ -266,7 +285,7 @@ describe("prepareUpload", () => {
     const made = await prepared(t.as(owner), groupId, details({ fileName: "C:\\Users\\me\\..\\..\\Unit 1: #notes?.PDF" }));
     const row = await t.resources.findById(groupId, made.resourceId);
     expect(row?.fileName).toBe("Unit 1_ _notes_.pdf");
-    expect(row?.fileKey).toBe(`groups/${groupId}/${made.resourceId}/Unit 1_ _notes_.pdf`);
+    expect(row?.fileKey).toBe(`groups/${groupId}/${made.resourceId}.pdf`);
   });
 
   it("uses the canonical type when the browser sends no type or application/octet-stream", async () => {
@@ -327,13 +346,13 @@ describe("prepareUpload", () => {
     expect(await prepareUpload(t.as(owner), groupId, null)).toEqual({ ok: false, formError: FILE_MESSAGES.badForm });
   });
 
-  it("allows 30 a person an hour, then refuses with the too-many message until the hour is up", async () => {
+  it("allows 15 a person an hour, then refuses with the too-many message until the hour is up", async () => {
     const t = setup();
     const owner = t.person("Asha");
     const other = t.person("Ravi");
     const groupId = await t.makeGroup(owner);
     await t.groups.addMember(groupId, other.id);
-    for (let i = 0; i < 30; i++) expect((await prepareUpload(t.as(owner), groupId, details())).ok).toBe(true);
+    for (let i = 0; i < 15; i++) expect((await prepareUpload(t.as(owner), groupId, details())).ok).toBe(true);
     const refused = await prepareUpload(t.as(owner), groupId, details());
     expect(refused).toMatchObject({ ok: false, formError: FILE_MESSAGES.tooMany, retryAfterSeconds: expect.any(Number) });
     // Another person has their own budget.
@@ -507,7 +526,7 @@ describe("completeUpload", () => {
     const owner = t.person("Asha");
     const groupId = await t.makeGroup(owner);
     const made = await prepared(t.as(owner), groupId);
-    const key = `groups/${groupId}/${made.resourceId}/unit1.pdf`;
+    const key = `groups/${groupId}/${made.resourceId}.pdf`;
     await t.storage.put(key, bytes("%PDF-", filler(3)), "application/pdf");
     expect(await completeUpload(t.as(owner), groupId, made.resourceId)).toEqual({
       ok: false,
@@ -523,7 +542,7 @@ describe("completeUpload", () => {
     const groupId = await t.makeGroup(owner);
     const made = await prepared(t.as(owner), groupId, details({ sizeBytes: HTML.length }));
     expect(sendFile(made.uploadUrl, made.headers, HTML)).toBe(200);
-    const key = `groups/${groupId}/${made.resourceId}/unit1.pdf`;
+    const key = `groups/${groupId}/${made.resourceId}.pdf`;
     expect(await t.storage.head(key)).not.toBeNull();
 
     const result = await completeUpload(t.as(owner), groupId, made.resourceId);

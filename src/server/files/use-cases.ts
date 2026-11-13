@@ -89,7 +89,7 @@ export type FileResult<T = void> = ActionResult<T> | { ok: false; notFound: true
 
 export const FILE_PAGE_SIZE = 20;
 /** How long the browser has to send the file after prepareUpload. */
-export const UPLOAD_LINK_SECONDS = 600;
+export const UPLOAD_LINK_SECONDS = 300;
 /** How long a preview or download link works. */
 export const DOWNLOAD_LINK_SECONDS = 300;
 
@@ -175,7 +175,11 @@ export async function prepareUpload(
   if (refused) return refused;
 
   const resourceId = crypto.randomUUID();
-  const fileKey = `groups/${access.group.id}/${resourceId}/${fileName}`;
+  // Only ids and a plain extension in the key: file names can hold characters (Hindi, spaces, &, +)
+  // that a storage service may refuse in a key. The real name lives in the database and is used
+  // for the download name.
+  const extension = /\.([a-z0-9]{1,8})$/.exec(fileName)?.[1];
+  const fileKey = `groups/${access.group.id}/${resourceId}${extension ? `.${extension}` : ""}`;
   try {
     await deps.resources.createPending({
       id: resourceId,
