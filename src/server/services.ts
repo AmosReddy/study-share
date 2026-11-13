@@ -1,5 +1,6 @@
 import "server-only";
 import { cookies } from "next/headers";
+import { connection } from "next/server";
 import { createFakeAccountDirectory } from "@/server/adapters/fake-account-directory";
 import { createFakeAuthProvider, getFakeAuthStore } from "@/server/adapters/fake-auth-provider";
 import { createFakeGroupStore } from "@/server/adapters/fake-group-store";
@@ -73,6 +74,18 @@ export async function getAuthProvider(): Promise<AuthProvider> {
   // for a real request. Reading the settings before it would run (and fail) at build time,
   // where there are no settings. src/server/services.test.ts guards the order.
   const store = await cookies();
+  // Then connection(), BEFORE any Supabase client exists. Building the client reads the clock:
+  // createServerClient registers two onAuthStateChange listeners (its own and supabase-js's), and
+  // each one, a microtask later, loads the stored session from these cookies and checks its expiry
+  // with Date.now() (GoTrueClient.__loadSession). With a session cookie that runs right after
+  // construction, inside this render. Next.js refuses a clock read while it prerenders, and it does
+  // prerender a page's shell WITH the session cookies for a link's prefetch ("unstable value
+  // Date.now() while prerendering": the prefetch fails and the page can fall into a reload loop).
+  // connection() holds the render here until there is a real request. Do not move it below the
+  // client's creation, and do not create a cookie-bound client anywhere else during a render.
+  // In server actions and route handlers it does nothing. src/server/services.test.ts guards the
+  // order; supabase-auth-provider.test.ts shows the client reads the clock when it is made.
+  await connection();
   const env = getServerEnv();
 
   // Server Components may read cookies but not write them; the proxy and server

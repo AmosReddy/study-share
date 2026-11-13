@@ -4,7 +4,6 @@ import type { AuthUser } from "@/server/ports/auth-provider";
 import { authRedirectTarget, getCurrentUser, withDisplayName } from "./session";
 
 const { calls, getUser } = vi.hoisted(() => ({ calls: [] as string[], getUser: vi.fn() }));
-vi.mock("next/server", () => ({ connection: async () => void calls.push("connection") }));
 vi.mock("@/server/services", () => ({
   getAuthProvider: async () => {
     calls.push("getAuthProvider");
@@ -63,15 +62,15 @@ describe("withDisplayName", () => {
 });
 
 describe("getCurrentUser", () => {
-  it("waits for a real request (connection) before the provider reads the person, because that reads the clock", async () => {
-    // Next.js refuses Date.now() while prerendering a page, and a link's prefetch prerenders it with
-    // the session cookies: "unstable value Date.now() while prerendering". Cookies still come first.
+  it("asks the provider (which waits for a real request before it builds the client) and fills in the display name", async () => {
+    // The clock-safe order (cookies, connection, then the Supabase client) lives in getAuthProvider
+    // and is guarded in src/server/services.test.ts; this lookup must not build a client itself.
     getUser.mockImplementation(async () => {
       calls.push("getUser");
       return { id: "u1", email: "asha@x.com", displayName: "", termsVersion: null };
     });
     const found = await getCurrentUser();
-    expect(calls).toEqual(["getAuthProvider", "connection", "getUser"]);
+    expect(calls).toEqual(["getAuthProvider", "getUser"]);
     expect(found?.displayName).toBe("asha");
   });
 });

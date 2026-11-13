@@ -1,7 +1,6 @@
 import "server-only";
 import { cache } from "react";
 import { redirect } from "next/navigation";
-import { connection } from "next/server";
 import { getAuthProvider } from "@/server/services";
 import type { AuthUser } from "@/server/ports/auth-provider";
 import { TERMS_VERSION } from "@/shared/legal";
@@ -37,14 +36,12 @@ export function authRedirectTarget(
 
 /** The signed-in person, or null. Cached for one request so layouts and pages share one lookup. */
 export const getCurrentUser = cache(async (): Promise<AuthUser | null> => {
+  // Making the provider and reading the person both check the token's expiry against the clock
+  // (Date.now()), which Next.js refuses while it prerenders a page's shell with the session cookies
+  // for a link's prefetch. getAuthProvider waits for a real request (connection()) before it makes
+  // the Supabase client, so everything after it runs at request time. See the comment there. This
+  // is the one place every signed-in page and the login/sign-up pages go through.
   const auth = await getAuthProvider();
-  // Reading the person checks their token's expiry against the clock (Date.now()). Next.js refuses a
-  // clock read while it prerenders, and it does prerender a page with the session cookies for a
-  // link's prefetch, logging "unstable value Date.now() while prerendering" and failing the
-  // prefetch. connection() stops that prerender here, so the lookup only ever runs for a real
-  // request. After getAuthProvider: it reads the cookies first (src/server/services.test.ts).
-  // This is the one place every signed-in page and the login/sign-up pages go through.
-  await connection();
   const user = await auth.getUser();
   return user ? withDisplayName(user) : null;
 });
