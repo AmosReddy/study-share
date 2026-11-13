@@ -287,4 +287,34 @@ describe.skipIf(!url)("SQL group store", { timeout: 120_000 }, () => {
       // With the stuck transaction gone, joining works again.
       expect(await store.addMember(groupId, friend)).toBe("joined");
     }));
+
+  test("leave, remove, hand-over and delete also give up within seconds on a stuck group lock", () =>
+    withStore(async ({ store, client, newUser }) => {
+      const owner = await newUser("Owner");
+      const friend = await newUser("Friend");
+      const groupId = (await makeGroup(store, owner, "Stuck lock 1c")).id;
+      expect(await store.addMember(groupId, friend)).toBe("joined");
+      const actions: [string, () => Promise<unknown>][] = [
+        ["leave", () => store.leave(groupId, friend)],
+        ["removeMember", () => store.removeMember(groupId, friend)],
+        ["transferOwnership", () => store.transferOwnership(groupId, owner, friend)],
+        ["softDeleteGroup", () => store.softDeleteGroup(groupId)],
+      ];
+      const holder = await client.reserve();
+      try {
+        await holder`begin`;
+        await holder`select pg_advisory_xact_lock(hashtextextended(${`group-members:${groupId}`}, 0))`;
+        for (const [name, run] of actions) {
+          const started = Date.now();
+          await expect(run(), name).rejects.toThrow();
+          expect(Date.now() - started, name).toBeLessThan(8000);
+        }
+      } finally {
+        await holder`rollback`.catch(() => {});
+        holder.release();
+      }
+      // Nothing changed while the lock was held, and the group works again afterwards.
+      expect(await store.getMembership(groupId, friend)).toEqual({ role: "member", status: "active" });
+      expect(await store.removeMember(groupId, friend)).toBe(true);
+    }), 60_000);
 });

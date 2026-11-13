@@ -196,6 +196,7 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
     async leave(groupId, userId) {
       if (!isUuid(groupId) || !isUuid(userId)) return "not_member";
       return db.transaction(async (tx) => {
+        await guardTransaction(tx);
         // The group's lock first, so a leave cannot interleave with a join, a removal or a hand-over.
         await lockGroup(tx, groupId);
         // One statement: both parts see the row as it was, and the delete skips the owner and a
@@ -222,6 +223,7 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
     async removeMember(groupId, userId) {
       if (!isUuid(groupId) || !isUuid(userId)) return false;
       return db.transaction(async (tx) => {
+        await guardTransaction(tx);
         await lockGroup(tx, groupId);
         const rows = await tx.execute(sql`
           update public.group_members m set status = 'removed'
@@ -238,6 +240,7 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
       const from = isUuid(fromUserId) ? fromUserId : NO_ONE;
       const to = isUuid(toUserId) ? toUserId : NO_ONE;
       return db.transaction(async (tx) => {
+        await guardTransaction(tx);
         await lockGroup(tx, groupId);
         const [state] = await tx.execute<{ group_ok: boolean; from_owner: boolean; to_active: boolean }>(sql`
           select
@@ -265,6 +268,7 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
     async softDeleteGroup(groupId) {
       if (!isUuid(groupId)) return false;
       return db.transaction(async (tx) => {
+        await guardTransaction(tx);
         // Under the group's lock, so a join that already checked the group finishes first.
         await lockGroup(tx, groupId);
         const rows = await tx.execute(sql`
