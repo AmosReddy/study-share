@@ -24,6 +24,7 @@ const { getDb, createAccountDirectory } = vi.hoisted(() => ({
 }));
 const { createProfileStore } = vi.hoisted(() => ({ createProfileStore: vi.fn(() => ({ sqlProfiles: true })) }));
 const { createGroupStore } = vi.hoisted(() => ({ createGroupStore: vi.fn(() => ({ sqlGroups: true })) }));
+const { createResourceStore } = vi.hoisted(() => ({ createResourceStore: vi.fn(() => ({ sqlResources: true })) }));
 
 vi.mock("next/headers", () => ({ cookies }));
 vi.mock("next/server", () => ({ connection }));
@@ -33,10 +34,12 @@ vi.mock("@/server/db/client", () => ({ getDb }));
 vi.mock("@/server/db/account-directory", () => ({ createAccountDirectory }));
 vi.mock("@/server/db/profile-store", () => ({ createProfileStore }));
 vi.mock("@/server/db/group-store", () => ({ createGroupStore }));
+vi.mock("@/server/db/resource-store", () => ({ createResourceStore }));
 
 import { getFakeAuthStore, resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
 import { resetFakeGroupStore } from "@/server/adapters/fake-group-store";
-import { getAccountDirectory, getAuthProvider, getGroupStore, getProfileStore } from "./services";
+import { resetFakeResourceStore } from "@/server/adapters/fake-resource-store";
+import { getAccountDirectory, getAuthProvider, getGroupStore, getProfileStore, getResourceStore } from "./services";
 
 describe("getProfileStore", () => {
   beforeEach(() => {
@@ -112,6 +115,82 @@ describe("getGroupStore", () => {
       expect(getGroupStore()).toBe(getGroupStore());
       expect(createGroupStore).toHaveBeenCalledTimes(1);
       expect(createGroupStore).toHaveBeenCalledWith(getDb.mock.results[0].value);
+    } finally {
+      getServerEnv.mockReset();
+      getServerEnv.mockImplementation(() => {
+        throw new Error("settings were read before the request-reading call");
+      });
+    }
+  });
+});
+
+describe("getResourceStore", () => {
+  beforeEach(() => {
+    getDb.mockClear();
+    createResourceStore.mockClear();
+  });
+
+  it("in fake mode is the fake store, sharing its state between calls, and never opens the database", async () => {
+    getServerEnv.mockReturnValue({ SERVICES_MODE: "fake" } as never);
+    try {
+      resetFakeAuthStore();
+      resetFakeGroupStore();
+      resetFakeResourceStore();
+      const owner = "11111111-1111-4111-8111-111111111111";
+      getFakeAuthStore().users.set(owner, {
+        id: owner,
+        email: "ada@example.test",
+        password: null,
+        displayName: "Ada",
+        termsVersion: null,
+        confirmed: true,
+        identities: [],
+      });
+      const made = await getGroupStore().createGroup({
+        ownerId: owner,
+        name: "Maths",
+        description: "",
+        joinMode: "link",
+        passwordHash: null,
+        inviteToken: "token-1",
+        inviteCode: "ABCDEFGH",
+      });
+      if (!made.ok) throw new Error("createGroup failed");
+      const id = "22222222-2222-4222-8222-222222222222";
+      await getResourceStore().createPending({
+        id,
+        groupId: made.group.id,
+        uploaderId: owner,
+        title: "Notes",
+        subject: "",
+        type: "notes",
+        fileKey: "key-1",
+        fileName: "notes.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 10,
+      });
+      // A second call sees the same files, and the names come from the fake auth store.
+      expect((await getResourceStore().findById(made.group.id, id))?.uploaderName).toBe("Ada");
+      expect(getDb).not.toHaveBeenCalled();
+      expect(createResourceStore).not.toHaveBeenCalled();
+    } finally {
+      resetFakeResourceStore();
+      resetFakeGroupStore();
+      resetFakeAuthStore();
+      getServerEnv.mockReset();
+      getServerEnv.mockImplementation(() => {
+        throw new Error("settings were read before the request-reading call");
+      });
+    }
+  });
+
+  it("otherwise (every real deployment) is the SQL store over the database, made once", () => {
+    getServerEnv.mockReturnValue({ SERVICES_MODE: "real" } as never);
+    try {
+      expect(getResourceStore()).toEqual({ sqlResources: true });
+      expect(getResourceStore()).toBe(getResourceStore());
+      expect(createResourceStore).toHaveBeenCalledTimes(1);
+      expect(createResourceStore).toHaveBeenCalledWith(getDb.mock.results[0].value);
     } finally {
       getServerEnv.mockReset();
       getServerEnv.mockImplementation(() => {
