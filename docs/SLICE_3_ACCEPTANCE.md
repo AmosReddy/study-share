@@ -11,7 +11,7 @@ This guide walks you through trying out everything Slice 3 added: a **Chat** tab
 - **History.** Messages stay. Leave the page and come back, or open the chat on another day, and the conversation is still there. The newest 50 show first, and **Load earlier messages** at the top brings older ones.
 - **People who left.** A message from a person whose account no longer exists says **Former member**.
 
-**Important: the chat refreshes every few seconds. It is not instant.** There is no live connection: each device asks the site for news about every **2.5 seconds**, and only while the chat is open and the screen is on. So a message usually appears on the other device **within a few seconds**, not at the same moment. A deleted message can take up to about **15 seconds** to disappear on the other device. This is by design and keeps the chat simple and cheap. The chat is **English text only** for now (other languages and emoji are fine to type, there is just no translation of the page).
+**Important: the chat refreshes every few seconds. It is not instant.** There is no live connection: each device asks the site for news about every **2.5 seconds** while you are using the page, and only while the chat is open and the screen is on. If you leave the page alone for about **2 minutes** it slows down to every **10 seconds**, and after about **10 minutes** to every **30 seconds** (this saves the site's free allowance). Touching the page (moving the mouse, tapping, typing, scrolling) or coming back to the tab speeds it up again straight away. So a message usually appears on the other device **within a few seconds**, not at the same moment. A deleted message can take up to about **15 seconds** to disappear on the other device. This is by design and keeps the chat simple and cheap. The chat is **English text only** for now (other languages and emoji are fine to type, there is just no translation of the page).
 
 ## What you need to set up
 
@@ -81,6 +81,8 @@ Open the group's **Chat** on **both** devices (you on the desktop, Friend A on t
   - **You should see:** the box stops at **2000** letters and a counter such as **2000/2000** appears. The message sends, and a very long word without spaces **wraps inside the bubble**: you cannot scroll sideways.
 - [ ] **4.3** Send this exactly: `<b>bold?</b> <i>no</i> & "quotes"`
   - **You should see:** the message shows the characters **exactly as typed**, including the angle brackets. Nothing turns bold or italic, on either device.
+- [ ] **4.4** Try to send a message made only of spaces, or of invisible characters (for example copy a blank line from a document).
+  - **You should see:** **Send** stays greyed out. Messages must contain at least one visible character.
 
 ## Test 5: Delete your own message
 
@@ -127,6 +129,8 @@ Do these on the **phone** (a narrow screen of about 360 pixels is the hardest ca
   - **You should see:** the new message appears almost at once.
 - [ ] **8.6** Switch to the dark theme (the sun/moon button).
   - **You should see:** the bubbles and the box are easy to read in both themes. The bin buttons are easy to tap with a thumb.
+- [ ] **8.6a** (optional, patience needed) Leave the phone's chat open and untouched for 3 minutes with the screen on, have the other person send a message, and do not touch your phone.
+  - **You should see:** the message appears within about **10 seconds**, not instantly. Touch the screen: anything newer shows at once.
 - [ ] **8.7** Turn the phone's Wi-Fi and mobile data off for about 30 seconds, then back on.
   - **You should see:** a small grey note **Reconnecting…** while it is off, and it goes away by itself shortly after the connection returns. A message you try to send while offline shows **Not sent. Tap to retry** under it. Tap it once you are back online: it sends **once** (never twice).
 
@@ -148,6 +152,7 @@ Do this **last**, because it removes Friend A from the group.
 These are by design. They are not bugs.
 
 - **Not instant.** Messages arrive within a few seconds, and a deletion can take up to about 15 seconds to show on the other device.
+- **A tab left alone gets news more slowly.** After a couple of minutes without touching the page, new messages can take up to **10 seconds** to show, and after about ten minutes up to **30 seconds**, until you touch the page (then it catches up at once).
 - **Only while the chat is open.** Nothing is delivered to a phone with the screen off or the page closed, and there are **no notifications and no unread counters**. When you open the chat again, it catches up.
 - **Text only.** No pictures, files, links that open by themselves, editing, replies or reactions. To share a file, use the Library.
 - **At most 20 messages a minute** per person. Beyond that the message says it is sending too fast and can be retried a moment later.

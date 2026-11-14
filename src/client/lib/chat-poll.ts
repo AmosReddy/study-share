@@ -12,10 +12,33 @@ export const BACKOFF_MS = [5000, 10_000, 20_000] as const;
 /** Every this-many-th poll fetches the newest page. */
 export const LATEST_EVERY = 6;
 
+/** After this long with no input in the page the chat checks every IDLE_SLOW_DELAY_MS, after IDLE_SLOWER_AFTER_MS every IDLE_SLOWER_DELAY_MS. */
+export const IDLE_SLOW_AFTER_MS = 2 * 60 * 1000;
+export const IDLE_SLOW_DELAY_MS = 10_000;
+export const IDLE_SLOWER_AFTER_MS = 10 * 60 * 1000;
+export const IDLE_SLOWER_DELAY_MS = 30_000;
+
+/** A poll that has not answered in this long is given up as a failure (a half-open connection never answers). */
+export const REQUEST_TIMEOUT_MS = 15_000;
+/** When the tab comes back or the network returns, a request that has been in flight longer than this is abandoned for a fresh one. */
+export const STALE_REQUEST_MS = 5000;
+
 /** Wait before the next poll after `failures` failures in a row (0 means the last poll worked). */
 export function pollDelay(failures: number): number {
   if (failures <= 0) return POLL_INTERVAL_MS;
   return BACKOFF_MS[Math.min(failures, BACKOFF_MS.length) - 1];
+}
+
+/** The interval between polls for a page nobody has touched for `idleMs`: 2.5 s, then 10 s, then 30 s. */
+export function idleDelay(idleMs: number): number {
+  if (idleMs >= IDLE_SLOWER_AFTER_MS) return IDLE_SLOWER_DELAY_MS;
+  if (idleMs >= IDLE_SLOW_AFTER_MS) return IDLE_SLOW_DELAY_MS;
+  return POLL_INTERVAL_MS;
+}
+
+/** Wait before the next poll: the slower of the idle interval and the back-off after failures. */
+export function nextPollDelay(options: { failures: number; idleMs: number }): number {
+  return Math.max(pollDelay(options.failures), idleDelay(options.idleMs));
 }
 
 /**

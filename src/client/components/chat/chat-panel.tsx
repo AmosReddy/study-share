@@ -14,11 +14,20 @@ import {
   type UIEvent,
 } from "react";
 import { Button, buttonVariants } from "@/client/components/ui/button";
-import { chatItems, chatReducer, hasUnseen, initialChatState, newestSentAt } from "@/client/lib/chat-state";
+import {
+  chatItems,
+  chatReducer,
+  hasUnseen,
+  initialChatState,
+  newestSentAt,
+  type ChatAction,
+  type ChatState,
+} from "@/client/lib/chat-state";
 import { formatMessageTime, groupRows } from "@/client/lib/chat-format";
 import { fetchChatPage } from "@/client/lib/chat-poll";
 import { newClientId } from "@/client/lib/client-id";
 import { useNow } from "@/client/lib/use-now";
+import { hasVisibleCharacter } from "@/shared/message-schemas";
 import type { ChatPage, DeleteMessageResult, SendMessageResult } from "@/shared/chat-types";
 import type { FormAction } from "@/shared/form-state";
 import { ChatComposer } from "./chat-composer";
@@ -44,7 +53,15 @@ const NEAR_BOTTOM = 80;
  * unless they scrolled up, in which case a "New messages" button waits for them.
  */
 export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPanelProps) {
-  const [state, dispatch] = useReducer(chatReducer, initial, initialChatState);
+  const [state, dispatchToState] = useReducer(chatReducer, initial, initialChatState);
+  // The same state, kept up to date the moment an action is dispatched (not after the next render),
+  // so a poll that follows at once reads the new cursor and the ids held. The reducer is pure, so
+  // both copies always agree.
+  const mirrorRef = useRef<ChatState>(state);
+  const dispatch = useCallback((action: ChatAction) => {
+    mirrorRef.current = chatReducer(mirrorRef.current, action);
+    dispatchToState(action);
+  }, []);
   const [reconnecting, setReconnecting] = useState(false);
   const [stopped, setStopped] = useState<"gone" | "signed-out" | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -58,9 +75,7 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
 
   const panelRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const cursorRef = useRef<string | null>(state.cursor);
   const itemsRef = useRef(items);
-  const knownIdsRef = useRef<readonly string[]>(state.messages.map((m) => m.id));
   /** Whether the list is at its end: only then do new messages scroll into view by themselves. */
   const pinnedRef = useRef(true);
   /** Set when the viewer sends, so their own message scrolls into view even if they had scrolled up. */
@@ -68,16 +83,17 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
   const lastKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    cursorRef.current = state.cursor;
-    knownIdsRef.current = state.messages.map((message) => message.id);
     itemsRef.current = items;
   });
 
   useFillViewport(panelRef);
-  useChatPoll({
+  const getView = useCallback(
+    () => ({ cursor: mirrorRef.current.cursor, known: mirrorRef.current.messages.map((message) => message.id) }),
+    [],
+  );
+  const markActive = useChatPoll({
     groupId,
-    cursorRef,
-    knownIdsRef,
+    getView,
     dispatch,
     onReconnecting: setReconnecting,
     onGone: useCallback(() => setStopped("gone"), []),
@@ -142,14 +158,16 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
 
   function send(text: string) {
     const body = text.trim();
-    if (body === "") return;
+    if (!hasVisibleCharacter(body)) return;
     const clientId = newClientId();
+    markActive();
     stickRef.current = true;
     dispatch({ type: "queue", message: { clientId, body, createdAt: new Date().toISOString(), status: "sending" } });
     void deliver(clientId, body);
   }
 
   function retry(clientId: string, body: string) {
+    markActive();
     stickRef.current = true;
     dispatch({ type: "retry", clientId });
     // The same clientId: if the first try did reach the server, it answers with that message.

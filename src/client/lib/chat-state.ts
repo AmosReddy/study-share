@@ -41,7 +41,7 @@ export type ChatState = {
 };
 
 export type ChatAction =
-  /** `known`: the ids of the messages held when the request was made, to tell "deleted" from "arrived since" for ones newer than the page. */
+  /** `known`: the ids of the messages held when the request was made, to tell "deleted" from "added since": only a known message missing from the page is dropped. */
   | { type: "latest"; page: ChatPage; known?: readonly string[] }
   | { type: "after"; page: ChatPage }
   | { type: "before"; page: ChatPage }
@@ -111,34 +111,35 @@ function appendNewer(state: ChatState, page: ChatPage): ChatState {
 }
 
 function mergeLatest(state: ChatState, page: ChatPage, known?: readonly string[]): ChatState {
-  const knownIds = new Set(known);
+  // Only a message held when the request was made can have been deleted by the time the page was
+  // read; one added since (the viewer's own send, a poll) may simply not be in the page yet. When
+  // the caller does not say, everything held counts as known.
+  const knownIds = new Set(known ?? state.messages.map((message) => message.id));
   const removed = new Set(state.removed);
   const window = page.messages;
   const visible = window.filter((message) => !removed.has(message.id));
+  const inWindow = new Set(window.map((message) => message.id));
+  const first = window[0]?.createdAt;
 
   const older: MessageView[] = [];
-  const newer: MessageView[] = [];
-  // An empty window means an empty chat: every message held was deleted, so none is kept.
-  if (window.length > 0) {
-    const first = window[0].createdAt;
-    const last = window[window.length - 1].createdAt;
-    const inWindow = new Set(window.map((message) => message.id));
-    for (const held of state.messages) {
-      if (inWindow.has(held.id)) continue;
-      // At or after the newest of the window, yet absent from the newest page: either it arrived
-      // after the page was read (keep it), or it was deleted. It was held when the request was
-      // made, so it existed then and its absence means it was deleted.
-      if (held.createdAt >= last) {
-        if (!knownIds.has(held.id)) newer.push(held);
-      }
-      // Inside the window's range yet missing from it: deleted by someone else. When the window
-      // reaches the start of the chat (nothing older exists) everything before it is inside too.
-      else if (!page.hasMore || held.createdAt > first) continue;
-      else older.push(held);
+  const added: MessageView[] = [];
+  for (const held of state.messages) {
+    if (inWindow.has(held.id)) continue;
+    if (!knownIds.has(held.id)) {
+      // Not held when the request was made: keep it, in time order below.
+      added.push(held);
+    } else if (page.hasMore && first !== undefined && held.createdAt <= first) {
+      // Older than the page, which has still older messages beyond it: nothing says it is gone.
+      older.push(held);
     }
+    // Otherwise it was held before the request and the newest page, which would include it, does
+    // not: it was deleted (inside the page's range, newer than it, or before the start of a chat
+    // that the page reaches the start of, or the chat is empty).
   }
 
-  const messages = dedupe([...older, ...visible, ...newer]);
+  let messages = [...older, ...visible];
+  for (const held of added) messages = insertByTime(messages, held);
+  messages = dedupe(messages);
   return settle({
     ...state,
     messages,

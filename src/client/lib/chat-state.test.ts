@@ -134,7 +134,7 @@ describe("latest (the periodic look at the newest page)", () => {
   it("keeps messages newer than the window (they arrived after it was read)", () => {
     const [a, b] = [msg(1), msg(2)];
     const newest = msg(9, { mine: true });
-    const state = run(initialChatState(page([a, b, newest])), { type: "latest", page: page([a, b]) });
+    const state = run(initialChatState(page([a, b, newest])), { type: "latest", page: page([a, b]), known: [a.id, b.id] });
     expect(ids(state)).toEqual([a.id, b.id, newest.id]);
   });
 
@@ -151,6 +151,34 @@ describe("latest (the periodic look at the newest page)", () => {
     const arrived = msg(2, { mine: true });
     const state = run(initialChatState(page([a, arrived])), { type: "latest", page: page([a]), known: [a.id] });
     expect(ids(state)).toEqual([a.id, arrived.id]);
+  });
+
+  it("does not drop a held message that was not known when the request was made, wherever it falls", () => {
+    const [a, c, d] = [msg(1), msg(3), msg(4)];
+    const between = msg(2, { mine: true });
+    const older = msg(0, { mine: true });
+    const newer = msg(9, { mine: true });
+    const held = run(initialChatState(page([older, a, c, d])), { type: "sent", message: between }, { type: "sent", message: newer });
+    // The page was read before those two sends: they are not in it and must stay, in time order.
+    const state = run(held, { type: "latest", page: page([a, c, d], { hasMore: false }), known: [older.id, a.id, c.id, d.id] });
+    expect(ids(state)).toEqual([a.id, between.id, c.id, d.id, newer.id]);
+  });
+
+  it("keeps an unknown held message between the first and last of the page, in place", () => {
+    const [a, c] = [msg(1), msg(3)];
+    const b = msg(2, { mine: true });
+    const held = run(initialChatState(page([a, c])), { type: "sent", message: b });
+    const state = run(held, { type: "latest", page: page([a, c]), known: [a.id, c.id] });
+    expect(ids(state)).toEqual([a.id, b.id, c.id]);
+  });
+
+  it("does not let an empty page wipe a message that was not known when the request was made", () => {
+    const a = msg(1);
+    const mine = msg(2, { mine: true });
+    const held = run(initialChatState(page([a])), { type: "sent", message: mine });
+    const state = run(held, { type: "latest", page: page([]), known: [a.id] });
+    expect(ids(state)).toEqual([mine.id]);
+    expect(state.cursor).toBe(mine.cursor);
   });
 
   it("empties the list for an empty chat", () => {

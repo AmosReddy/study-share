@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CHAT_MESSAGES } from "./chat-messages";
-import { cleanMessageBody, sendMessageSchema } from "./message-schemas";
+import { cleanMessageBody, hasVisibleCharacter, sendMessageSchema } from "./message-schemas";
 import { CHAT_LIMITS } from "./messages";
 
 const clientId = "3f2b8f64-5717-4562-b3fc-2c963f66afa6";
@@ -15,8 +15,29 @@ describe("cleanMessageBody", () => {
     ["a\n\n\nb   c", "a\n\n\nb   c"],
     [" 　 hi  ", "hi"],
     ["‍नम", "‍नम"],
+    // Zero-width space, bidirectional controls, soft hyphen and byte-order mark are dropped.
+    ["a​b‮c⁦d­e﻿f", "abcdef"],
+    // The joiner and non-joiner stay: emoji sequences and Persian need them.
+    ["👨‍👩", "👨‍👩"],
+    ["می‌خواهم", "می‌خواهم"],
   ])("%j becomes %j", (input, expected) => {
     expect(cleanMessageBody(input)).toBe(expected);
+  });
+});
+
+describe("hasVisibleCharacter", () => {
+  it.each([
+    ["hi", true],
+    ["​x", true],
+    ["👨‍👩", true],
+    ["", false],
+    ["   \n\t ", false],
+    ["​", false],
+    ["⠀", false],
+    ["ㅤᅟᅠﾠ", false],
+    ["‌‍͏ 　", false],
+  ])("%j is %s", (input, expected) => {
+    expect(hasVisibleCharacter(input)).toBe(expected);
   });
 });
 
@@ -43,6 +64,19 @@ describe("sendMessageSchema", () => {
     expect(messages({ body: "hi", clientId: "nope" })).toEqual([CHAT_MESSAGES.badForm]);
     expect(messages({ body: 1, clientId })).toEqual([CHAT_MESSAGES.bodyRequired]);
     expect(messages({ body: "hi", clientId: 1 })).toEqual([CHAT_MESSAGES.badForm]);
+  });
+
+  it("refuses a body with nothing visible in it with the empty-message sentence", () => {
+    for (const body of ["​", "⠀", "​⠀ㅤ \n", "‮‏", "   "]) {
+      const result = sendMessageSchema.safeParse({ body, clientId });
+      expect(result.success, JSON.stringify(body)).toBe(false);
+      expect(result.success ? [] : result.error.issues.map((i) => i.message), JSON.stringify(body)).toEqual([CHAT_MESSAGES.bodyRequired]);
+    }
+  });
+
+  it("strips invisible characters from a normal message", () => {
+    const result = sendMessageSchema.safeParse({ body: "he​llo‮", clientId });
+    expect(result.success && result.data.body).toBe("hello");
   });
 
   it("drops fields it does not know", () => {

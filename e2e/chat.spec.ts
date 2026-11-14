@@ -87,6 +87,12 @@ test("an empty chat says so, the Chat tab is lit between Library and Members, an
   await expect(sendButton(page)).toBeDisabled();
   await box(page).fill("   \n  ");
   await expect(sendButton(page)).toBeDisabled();
+  // Invisible characters alone are not a message either.
+  await box(page).fill("​⠀ㅤ ​");
+  await expect(sendButton(page)).toBeDisabled();
+  // Invisible characters alone are not a message either.
+  await box(page).fill("​⠀ㅤ ​");
+  await expect(sendButton(page)).toBeDisabled();
   await box(page).fill("hi");
   await expect(sendButton(page)).toBeEnabled();
 

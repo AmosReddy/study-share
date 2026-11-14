@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BACKOFF_MS,
+  IDLE_SLOWER_AFTER_MS,
+  IDLE_SLOW_AFTER_MS,
+  REQUEST_TIMEOUT_MS,
+  STALE_REQUEST_MS,
+  idleDelay,
+  nextPollDelay,
   LATEST_EVERY,
   POLL_INTERVAL_MS,
   fetchChatPage,
@@ -15,6 +21,30 @@ describe("pollDelay", () => {
     expect(POLL_INTERVAL_MS).toBe(2500);
     expect([0, 1, 2, 3, 4, 10].map(pollDelay)).toEqual([2500, 5000, 10_000, 20_000, 20_000, 20_000]);
     expect(BACKOFF_MS).toEqual([5000, 10_000, 20_000]);
+  });
+});
+
+describe("idleDelay", () => {
+  it("is 2.5 s for two minutes, then 10 s, then 30 s after ten minutes", () => {
+    expect(IDLE_SLOW_AFTER_MS).toBe(120_000);
+    expect(IDLE_SLOWER_AFTER_MS).toBe(600_000);
+    expect([0, 1000, 119_999].map(idleDelay)).toEqual([2500, 2500, 2500]);
+    expect([120_000, 300_000, 599_999].map(idleDelay)).toEqual([10_000, 10_000, 10_000]);
+    expect([600_000, 3_600_000].map(idleDelay)).toEqual([30_000, 30_000]);
+  });
+
+  it("combines with the back-off: the slower of the two", () => {
+    expect(nextPollDelay({ failures: 0, idleMs: 0 })).toBe(2500);
+    expect(nextPollDelay({ failures: 1, idleMs: 0 })).toBe(5000);
+    expect(nextPollDelay({ failures: 3, idleMs: 0 })).toBe(20_000);
+    expect(nextPollDelay({ failures: 1, idleMs: 200_000 })).toBe(10_000);
+    expect(nextPollDelay({ failures: 3, idleMs: 200_000 })).toBe(20_000);
+    expect(nextPollDelay({ failures: 1, idleMs: 700_000 })).toBe(30_000);
+  });
+
+  it("gives up on a silent request after 15 s and abandons a stale one after 5 s", () => {
+    expect(REQUEST_TIMEOUT_MS).toBe(15_000);
+    expect(STALE_REQUEST_MS).toBe(5000);
   });
 });
 

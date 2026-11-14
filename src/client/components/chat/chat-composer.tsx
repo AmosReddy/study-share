@@ -3,6 +3,7 @@
 import { SendHorizontal } from "lucide-react";
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/client/components/ui/button";
+import { hasVisibleCharacter } from "@/shared/message-schemas";
 import { CHAT_LIMITS } from "@/shared/messages";
 
 /** The most lines the box grows to before it scrolls inside. */
@@ -23,7 +24,8 @@ export function ChatComposer({ onSend }: { onSend: (text: string) => void }) {
   const [text, setText] = useState("");
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const id = useId();
-  const empty = text.trim() === "";
+  // Spaces, zero-width characters and "blank" letters alone are not a message.
+  const empty = !hasVisibleCharacter(text);
 
   // Grow with the text (and shrink back when it is cleared), up to MAX_LINES.
   useLayoutEffect(() => {
