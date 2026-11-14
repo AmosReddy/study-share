@@ -27,7 +27,7 @@ type ConfirmSheetProps = {
     label: ReactNode;
     /** The opener's accessible name, when it needs to say more than its label (which person). */
     ariaLabel?: string;
-    variant?: "outline" | "destructive";
+    variant?: "outline" | "destructive" | "ghost";
     className?: string;
     disabled?: boolean;
   };

@@ -22,6 +22,9 @@ const groupActions = {
   "file.upload": ["owner", "member"],
   "file.view": ["owner", "member"],
   "file.delete.any": ["owner"],
+  "chat.view": ["owner", "member"],
+  "chat.send": ["owner", "member"],
+  "message.delete.any": ["owner"],
 } as const satisfies Record<Action, readonly Role[]>;
 
 describe("can(group and file actions)", () => {
@@ -54,7 +57,7 @@ describe("can(group and file actions)", () => {
   test("the table above lists every action the module knows", () => {
     // If an action is added to permissions without a row here, this line stops compiling.
     const listed: Record<Action, readonly Role[]> = groupActions;
-    expect(Object.keys(listed)).toHaveLength(13);
+    expect(Object.keys(listed)).toHaveLength(16);
   });
 
   test("an admin cannot upload or view files, since the role table does not list it (no admin exists yet)", () => {
@@ -65,6 +68,19 @@ describe("can(group and file actions)", () => {
   test("there is no action for editing a file: that is the uploader's right, decided by the use-case", () => {
     expect(can(user, "file.edit.own" as Action, member("active", "owner"))).toBe(false);
     expect(can(user, "file.delete.own" as Action, member("active", "member"))).toBe(false);
+  });
+
+  test("an admin cannot read or write the chat, since the role table does not list it (no admin exists yet)", () => {
+    expect(can(user, "chat.view", member("active", "admin"))).toBe(false);
+    expect(can(user, "chat.send", member("active", "admin"))).toBe(false);
+    expect(can(user, "message.delete.any", member("active", "admin"))).toBe(false);
+  });
+
+  test("only the owner may delete other people's messages, and there is no action for your own or for editing", () => {
+    expect(can(user, "message.delete.any", member("active", "owner"))).toBe(true);
+    expect(can(user, "message.delete.any", member("active", "member"))).toBe(false);
+    expect(can(user, "message.delete.own" as Action, member("active", "member"))).toBe(false);
+    expect(can(user, "message.edit" as Action, member("active", "owner"))).toBe(false);
   });
 
   test("unknown action is denied", () => {

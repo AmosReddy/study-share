@@ -8,6 +8,7 @@ vi.mock("next/server", async (importOriginal) => ({
 import { getFakeAuthStore, resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
 import { createFakeFileStorage, resetFakeFileStorage } from "@/server/adapters/fake-file-storage";
 import { createFakeGroupStore, resetFakeGroupStore } from "@/server/adapters/fake-group-store";
+import { createFakeMessageStore, resetFakeMessageStore } from "@/server/adapters/fake-message-store";
 import { createFakeResourceStore, resetFakeResourceStore } from "@/server/adapters/fake-resource-store";
 import { POST } from "./route";
 
@@ -41,6 +42,7 @@ describe("POST /api/test/reset", () => {
     resetFakeAuthStore();
     resetFakeGroupStore();
     resetFakeResourceStore();
+    resetFakeMessageStore();
     resetFakeFileStorage();
   });
   afterEach(() => {
@@ -105,5 +107,32 @@ describe("POST /api/test/reset", () => {
     // state itself is empty.
     expect(await resources.findById(group.id, made.id)).toBeNull();
     expect((globalThis as unknown as Record<string, { resources: Map<string, unknown> }>)["__studyShareFakeResourceStore"].resources.size).toBe(0);
+  });
+
+  test("in test mode it also clears the chat messages", async () => {
+    vi.stubEnv("SERVICES_MODE", "fake");
+    const { auth, groups } = await seed();
+    const group = (await groups.listGroupsFor("u1"))[0];
+    const messages = createFakeMessageStore(auth);
+    const sender = "55555555-5555-4555-8555-555555555555";
+    auth.users.set(sender, {
+      id: sender,
+      email: "cy@example.test",
+      password: null,
+      displayName: "Cy",
+      termsVersion: null,
+      confirmed: true,
+      identities: [],
+    });
+    const sent = await messages.send({
+      groupId: group.id,
+      senderId: sender,
+      clientId: "44444444-4444-4444-8444-444444444444",
+      body: "hello",
+    });
+    expect(await messages.findById(group.id, sent.message.id)).not.toBeNull();
+    expect((globalThis as unknown as Record<string, { messages: Map<string, unknown> }>)["__studyShareFakeMessageStore"].messages.size).toBe(1);
+    expect((await POST()).status).toBe(204);
+    expect((globalThis as unknown as Record<string, { messages: Map<string, unknown> }>)["__studyShareFakeMessageStore"].messages.size).toBe(0);
   });
 });

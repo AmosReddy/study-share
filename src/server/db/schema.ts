@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, check, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, check, index, integer, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { authUsers } from "drizzle-orm/supabase";
 
 /**
@@ -117,5 +117,31 @@ export const resources = pgTable(
     check("resources_title_length_check", sql`char_length(btrim(title)) between 1 and 120`),
     check("resources_subject_length_check", sql`char_length(subject) <= 60`),
     check("resources_file_name_length_check", sql`char_length(file_name) between 1 and 200`),
+  ],
+).enableRLS();
+
+/**
+ * Chat messages, one chat per group. sender_id is cleared (not the message) when the sender's
+ * account goes, so the message stays and shows "Former member". Deleting a message sets deleted_at.
+ * (group_id, client_id) is unique so a retried send is a no-op. The body check matches
+ * CHAT_LIMITS.maxBody in src/shared/messages.ts. See message-store.ts.
+ */
+export const messages = pgTable(
+  "messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    senderId: uuid("sender_id").references(() => authUsers.id, { onDelete: "set null" }),
+    body: text("body").notNull(),
+    clientId: uuid("client_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("messages_group_client_unique").on(t.groupId, t.clientId),
+    index("messages_group_created_idx").on(t.groupId, t.createdAt.desc(), t.id.desc()),
+    check("messages_body_length_check", sql`char_length(btrim(body)) between 1 and 2000`),
   ],
 ).enableRLS();
