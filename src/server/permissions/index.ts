@@ -10,6 +10,10 @@ export type MemberStatus = "active" | "pending" | "removed";
  * file use-cases (src/server/files/use-cases.ts) from the record's uploaderId, together with
  * `file.view` (an active member). Only the power over OTHER people's files, `file.delete.any`, is a
  * role. The owner can delete any file but cannot edit someone else's details.
+ *
+ * Chat works the same way: deleting your OWN message is decided in the chat use-cases
+ * (src/server/chat/use-cases.ts) from the message's senderId, together with `chat.view`; only the
+ * power over OTHER people's messages, `message.delete.any`, is a role. Nobody edits a message.
  */
 const allowedRoles = {
   "group.view": ["owner", "admin", "member"],
@@ -25,6 +29,9 @@ const allowedRoles = {
   "file.upload": ["owner", "member"],
   "file.view": ["owner", "member"],
   "file.delete.any": ["owner"],
+  "chat.view": ["owner", "member"],
+  "chat.send": ["owner", "member"],
+  "message.delete.any": ["owner"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Action = keyof typeof allowedRoles;
