@@ -38,6 +38,12 @@ export function resetFakeGroupStore(): void {
   state.deleted.clear();
 }
 
+/** True when the group exists and is not deleted. For the other fake stores, which hang files off a group. */
+export function isFakeGroupLive(groupId: string): boolean {
+  const state = getState();
+  return state.groups.has(groupId) && !state.deleted.has(groupId);
+}
+
 export function createFakeGroupStore(authStore: FakeAuthStore = getFakeAuthStore()): GroupStore {
   const state = getState();
 

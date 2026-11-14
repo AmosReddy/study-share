@@ -28,6 +28,32 @@ async function checkStorage(): Promise<void> {
       throw new Error("Downloaded content did not match what was uploaded");
     }
 
+    // Prove a browser-style upload through a signed link works: the app sends uploads straight from
+    // the browser to storage, from the site's address (CORS), with a real, non-empty body.
+    const uploadKey = `healthcheck/upload-${Date.now()}.txt`;
+    try {
+      const uploadBody = `upload ${uploadKey}`;
+      const { url: uploadUrl, headers } = await storage.createUploadUrl({
+        key: uploadKey,
+        contentType: "text/plain",
+        sizeBytes: uploadBody.length,
+        expiresInSeconds: 60,
+      });
+      const origin = "https://example.test";
+      const preflight = await fetch(uploadUrl, {
+        method: "OPTIONS",
+        headers: { Origin: origin, "Access-Control-Request-Method": "PUT", "Access-Control-Request-Headers": "content-type" },
+      });
+      if (!preflight.ok || !preflight.headers.get("access-control-allow-origin")) {
+        throw new Error(`Storage does not allow browser uploads (preflight ${preflight.status})`);
+      }
+      const put = await fetch(uploadUrl, { method: "PUT", headers: { ...headers, Origin: origin }, body: uploadBody });
+      if (!put.ok) throw new Error(`Signed upload failed (${put.status})`);
+      if ((await storage.head(uploadKey))?.sizeBytes !== uploadBody.length) throw new Error("Signed upload stored the wrong size");
+    } finally {
+      await storage.delete(uploadKey).catch(() => {});
+    }
+
     // Prove a signed download link works too, since the app hands these to browsers.
     const url = await storage.createDownloadUrl({ key, expiresInSeconds: 60 });
     const response = await fetch(url);

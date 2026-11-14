@@ -4,6 +4,7 @@ import { BookOpen, Settings, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/client/lib/utils";
+import { isTabActive } from "./active-tab";
 
 type GroupTabsProps = {
   groupId: string;
@@ -20,9 +21,9 @@ export function GroupTabs({ groupId, showSettings }: GroupTabsProps) {
   const pathname = usePathname();
   const base = `/groups/${groupId}`;
   const items = [
-    { href: base, label: "Library", Icon: BookOpen },
-    { href: `${base}/members`, label: "Members", Icon: Users },
-    ...(showSettings ? [{ href: `${base}/settings`, label: "Settings", Icon: Settings }] : []),
+    { href: base, tab: "library" as const, label: "Library", Icon: BookOpen },
+    { href: `${base}/members`, tab: "members" as const, label: "Members", Icon: Users },
+    ...(showSettings ? [{ href: `${base}/settings`, tab: "settings" as const, label: "Settings", Icon: Settings }] : []),
   ];
 
   return (
@@ -32,13 +33,13 @@ export function GroupTabs({ groupId, showSettings }: GroupTabsProps) {
       className="fixed inset-x-0 bottom-0 z-30 border-t bg-background lg:static lg:z-auto lg:border-t-0 lg:border-b lg:bg-transparent"
     >
       <ul className="flex lg:gap-1">
-        {items.map(({ href, label, Icon }) => {
-          const active = pathname === href;
+        {items.map(({ href, tab, label, Icon }) => {
+          const active = isTabActive(pathname, base, tab);
           return (
             <li key={href} className="min-w-0 flex-1 lg:flex-none">
               <Link
                 href={href}
-                aria-current={active ? "page" : undefined}
+                aria-current={active ? (pathname === href ? "page" : "true") : undefined}
                 className={cn(
                   "flex min-h-14 flex-col items-center justify-center gap-0.5 border-t-2 border-transparent px-2 text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
                   "lg:min-h-11 lg:flex-row lg:gap-2 lg:border-t-0 lg:border-b-2 lg:px-4",

@@ -7,7 +7,7 @@ const member = (status: MemberStatus, role: Role = "member") => ({ membership: {
 
 const everyRole = ["owner", "admin", "member"] as const satisfies readonly Role[];
 
-/** Each group action and exactly the roles that may do it. */
+/** Each action and exactly the roles that may do it. */
 const groupActions = {
   "group.view": ["owner", "admin", "member"],
   "group.members.view": ["owner", "admin", "member"],
@@ -19,9 +19,12 @@ const groupActions = {
   "group.members.remove": ["owner"],
   "group.transfer": ["owner"],
   "group.delete": ["owner"],
+  "file.upload": ["owner", "member"],
+  "file.view": ["owner", "member"],
+  "file.delete.any": ["owner"],
 } as const satisfies Record<Action, readonly Role[]>;
 
-describe("can(group actions)", () => {
+describe("can(group and file actions)", () => {
   describe.each(Object.keys(groupActions) as Action[])("%s", (action) => {
     const allowed: readonly Role[] = groupActions[action];
 
@@ -51,7 +54,17 @@ describe("can(group actions)", () => {
   test("the table above lists every action the module knows", () => {
     // If an action is added to permissions without a row here, this line stops compiling.
     const listed: Record<Action, readonly Role[]> = groupActions;
-    expect(Object.keys(listed)).toHaveLength(10);
+    expect(Object.keys(listed)).toHaveLength(13);
+  });
+
+  test("an admin cannot upload or view files, since the role table does not list it (no admin exists yet)", () => {
+    expect(can(user, "file.upload", member("active", "admin"))).toBe(false);
+    expect(can(user, "file.view", member("active", "admin"))).toBe(false);
+  });
+
+  test("there is no action for editing a file: that is the uploader's right, decided by the use-case", () => {
+    expect(can(user, "file.edit.own" as Action, member("active", "owner"))).toBe(false);
+    expect(can(user, "file.delete.own" as Action, member("active", "member"))).toBe(false);
   });
 
   test("unknown action is denied", () => {

@@ -37,6 +37,9 @@ describe("createS3FileStorage", () => {
       expiresInSeconds: 60,
     });
     expect(decodeURIComponent(new URL(url).searchParams.get("X-Amz-SignedHeaders") ?? "")).toContain("content-type");
+    expect(decodeURIComponent(new URL(url).searchParams.get("X-Amz-SignedHeaders") ?? "")).toContain("content-length");
+    // No checksum of an empty body in the link: it would make a real (non-empty) upload fail.
+    expect(url).not.toMatch(/x-amz-checksum|x-amz-sdk-checksum-algorithm/i);
   });
 
   test("download URL forces a download by default", async () => {
@@ -142,6 +145,34 @@ describe("createS3FileStorage", () => {
       },
     });
     expect(await missing.get("gone")).toBeNull();
+  });
+
+  describe("get", () => {
+    const stored = (bytes: number[]) => ({ transformToByteArray: async () => new Uint8Array(bytes) });
+
+    test("without a range asks for the whole file", async () => {
+      const sent: { input: Record<string, unknown> }[] = [];
+      const storage = createS3FileStorage(config, {
+        send: async (command) => {
+          sent.push(command as never);
+          return { Body: stored([1, 2, 3]) };
+        },
+      });
+      expect(await storage.get("k")).toEqual(new Uint8Array([1, 2, 3]));
+      expect(sent[0].input).toEqual({ Bucket: "test-bucket", Key: "k" });
+    });
+
+    test("with a range sends an inclusive Range header and returns only those bytes", async () => {
+      const sent: { input: Record<string, unknown> }[] = [];
+      const storage = createS3FileStorage(config, {
+        send: async (command) => {
+          sent.push(command as never);
+          return { Body: stored([37, 80]) };
+        },
+      });
+      expect(await storage.get("k", { range: { start: 0, endInclusive: 4095 } })).toEqual(new Uint8Array([37, 80]));
+      expect(sent[0].input).toEqual({ Bucket: "test-bucket", Key: "k", Range: "bytes=0-4095" });
+    });
   });
 
   test("other vendor errors are not hidden", async () => {

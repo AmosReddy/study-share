@@ -3,7 +3,14 @@ import "server-only";
 export type Role = "owner" | "admin" | "member";
 export type MemberStatus = "active" | "pending" | "removed";
 
-/** Later phases add actions here. Each action lists the roles allowed to do it. */
+/**
+ * Later phases add actions here. Each action lists the roles allowed to do it.
+ *
+ * Files: editing or deleting your OWN file is deliberately not an action here. It is decided in the
+ * file use-cases (src/server/files/use-cases.ts) from the record's uploaderId, together with
+ * `file.view` (an active member). Only the power over OTHER people's files, `file.delete.any`, is a
+ * role. The owner can delete any file but cannot edit someone else's details.
+ */
 const allowedRoles = {
   "group.view": ["owner", "admin", "member"],
   "group.members.view": ["owner", "admin", "member"],
@@ -15,6 +22,9 @@ const allowedRoles = {
   "group.members.remove": ["owner"],
   "group.transfer": ["owner"],
   "group.delete": ["owner"],
+  "file.upload": ["owner", "member"],
+  "file.view": ["owner", "member"],
+  "file.delete.any": ["owner"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Action = keyof typeof allowedRoles;

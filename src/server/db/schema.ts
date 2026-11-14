@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, check, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { authUsers } from "drizzle-orm/supabase";
 
 /**
@@ -80,5 +80,42 @@ export const groupMembers = pgTable(
     uniqueIndex("group_members_one_active_owner").on(t.groupId).where(sql`role = 'owner' and status = 'active'`),
     check("group_members_role_check", sql`role in ('owner', 'admin', 'member')`),
     check("group_members_status_check", sql`status in ('active', 'pending', 'removed')`),
+  ],
+).enableRLS();
+
+/**
+ * A file shared in a group. Created as 'uploading' when the browser is handed an upload link and
+ * 'ready' once the server has confirmed the stored file; only ready rows are listed. Deleting a
+ * file sets deleted_at. uploader_id is cleared (not the file) when the uploader's account goes, so
+ * the file stays and shows "Former member". The length checks match RESOURCE_LIMITS in
+ * src/shared/resources.ts. See resource-store.ts.
+ */
+export const resources = pgTable(
+  "resources",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    uploaderId: uuid("uploader_id").references(() => authUsers.id, { onDelete: "set null" }),
+    title: text("title").notNull(),
+    subject: text("subject").notNull().default(""),
+    type: text("type").notNull(),
+    fileKey: text("file_key").notNull().unique(),
+    fileName: text("file_name").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    status: text("status").notNull().default("uploading"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("resources_group_created_idx").on(t.groupId, t.createdAt.desc(), t.id),
+    check("resources_type_check", sql`type in ('notes', 'pyq', 'study_material', 'assignment', 'other')`),
+    check("resources_status_check", sql`status in ('uploading', 'ready')`),
+    check("resources_size_check", sql`size_bytes > 0`),
+    check("resources_title_length_check", sql`char_length(btrim(title)) between 1 and 120`),
+    check("resources_subject_length_check", sql`char_length(subject) <= 60`),
+    check("resources_file_name_length_check", sql`char_length(file_name) between 1 and 200`),
   ],
 ).enableRLS();

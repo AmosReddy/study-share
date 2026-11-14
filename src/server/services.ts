@@ -3,8 +3,10 @@ import { cookies } from "next/headers";
 import { connection } from "next/server";
 import { createFakeAccountDirectory } from "@/server/adapters/fake-account-directory";
 import { createFakeAuthProvider, getFakeAuthStore } from "@/server/adapters/fake-auth-provider";
+import { createFakeFileStorage } from "@/server/adapters/fake-file-storage";
 import { createFakeGroupStore } from "@/server/adapters/fake-group-store";
 import { createFakeProfileStore } from "@/server/adapters/fake-profile-store";
+import { createFakeResourceStore } from "@/server/adapters/fake-resource-store";
 import { createMemoryRateLimiter, type MemoryRateLimiter } from "@/server/adapters/memory-rate-limiter";
 import { emailSendKey, recoveryMintedKey } from "@/server/auth/rate-limit-policy";
 import { createSmtpEmailSenderFromConfig } from "@/server/adapters/smtp-email-sender";
@@ -15,7 +17,9 @@ import { getDb } from "@/server/db/client";
 import { createGroupStore } from "@/server/db/group-store";
 import { createPostgresRateLimiter } from "@/server/db/postgres-rate-limiter";
 import { createProfileStore } from "@/server/db/profile-store";
+import { createResourceStore } from "@/server/db/resource-store";
 import { getServerEnv } from "@/server/env";
+import { getSiteUrl } from "@/server/site-url";
 import type { AccountDirectory } from "@/server/ports/account-directory";
 import type { AuthProvider } from "@/server/ports/auth-provider";
 import type { EmailSender } from "@/server/ports/email-sender";
@@ -23,6 +27,7 @@ import type { FileStorage } from "@/server/ports/file-storage";
 import type { GroupStore } from "@/server/ports/group-store";
 import type { ProfileStore } from "@/server/ports/profile-store";
 import type { RateLimiter } from "@/server/ports/rate-limiter";
+import type { ResourceStore } from "@/server/ports/resource-store";
 
 /**
  * Composition root: the only place that decides which implementation backs
@@ -36,9 +41,15 @@ import type { RateLimiter } from "@/server/ports/rate-limiter";
 let storage: FileStorage | undefined;
 let email: EmailSender | undefined;
 
+/**
+ * File storage. In SERVICES_MODE=fake it is the in-memory fake (its objects are kept on
+ * globalThis, so each call can make a fresh wrapper); the app refuses fake mode on every real
+ * deployment (see env.ts), so a deployment always gets the S3 adapter.
+ */
 export function getFileStorage(): FileStorage {
+  const env = getServerEnv();
+  if (env.SERVICES_MODE === "fake") return createFakeFileStorage({ siteUrl: getSiteUrl() });
   if (!storage) {
-    const env = getServerEnv();
     storage = createS3FileStorage({
       endpoint: env.STORAGE_ENDPOINT,
       region: env.STORAGE_REGION,
@@ -124,6 +135,7 @@ let postgresLimiter: RateLimiter | undefined;
 let accountDirectory: AccountDirectory | undefined;
 let profileStore: ProfileStore | undefined;
 let groupStore: GroupStore | undefined;
+let resourceStore: ResourceStore | undefined;
 
 /** Test mode's one limiter. On globalThis, like the fake auth store, because Next.js can bundle
  * server actions and route handlers separately and each would get its own copy. */
@@ -168,6 +180,17 @@ export function getGroupStore(): GroupStore {
   if (getServerEnv().SERVICES_MODE === "fake") return createFakeGroupStore(getFakeAuthStore());
   groupStore ??= createGroupStore(getDb());
   return groupStore;
+}
+
+/**
+ * Files shared in groups: SQL on public.resources over the database connection. In
+ * SERVICES_MODE=fake it is the in-memory fake over the fake auth store and the fake group store
+ * (its state is kept on globalThis, so each call can make a fresh wrapper).
+ */
+export function getResourceStore(): ResourceStore {
+  if (getServerEnv().SERVICES_MODE === "fake") return createFakeResourceStore(getFakeAuthStore());
+  resourceStore ??= createResourceStore(getDb());
+  return resourceStore;
 }
 
 /**
