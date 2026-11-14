@@ -625,8 +625,10 @@ test("the chat fits the screen: composer above the tab bar and the keyboard area
   }
 
   if (isPhone(info)) {
+    // A phone profile: 360px (phone-360) or 412px (phone-412) wide, never a desktop width.
     const viewport = page.viewportSize();
-    expect(viewport?.width).toBe(360);
+    expect(viewport?.width).toBeGreaterThanOrEqual(360);
+    expect(viewport?.width).toBeLessThanOrEqual(412);
   }
   await expect(message(page, longWord)).toBeVisible();
   await auditPage(page);
