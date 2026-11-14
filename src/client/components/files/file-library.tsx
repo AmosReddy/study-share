@@ -1,9 +1,11 @@
-import { ChevronRight, FileText, Upload } from "lucide-react";
+import { ChevronRight, FileText, SearchX, Upload } from "lucide-react";
 import Link from "next/link";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { Button } from "@/client/components/ui/button";
 import { FILE_MESSAGES } from "@/shared/file-messages";
 import { formatBytes, formatFileDate } from "@/shared/format";
+import { libraryHref, type LibraryFilters } from "@/shared/library-query";
+import { LibraryFilterForm } from "./library-filters";
 
 /** One file as the page shows it (the server's FileView has at least these fields). */
 export type LibraryFile = {
@@ -25,13 +27,21 @@ type FileLibraryProps = {
   later: boolean;
   /** A message from the page that sent the person here (a file was shared or deleted). */
   notice?: "uploaded" | "deleted";
+  /** The search and filters the address asks for (already cleaned). */
+  filters: LibraryFilters;
+  /** Every subject the group's files use, for the Subject dropdown. */
+  subjects: string[];
+  /** True when any search or filter is on. */
+  filtered: boolean;
 };
 
 const badgeClass = "shrink-0 rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-foreground";
 
 /** The Library tab: the group's files, newest first, with the Upload button. */
-export function FileLibrary({ groupId, files, nextCursor, later, notice }: FileLibraryProps) {
+export function FileLibrary({ groupId, files, nextCursor, later, notice, filters, subjects, filtered }: FileLibraryProps) {
   const base = `/groups/${groupId}`;
+  // A group with no files at all (and nothing typed) has nothing to search yet.
+  const showFilters = files.length > 0 || filtered;
   return (
     <section aria-labelledby="library-heading" className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
@@ -43,7 +53,26 @@ export function FileLibrary({ groupId, files, nextCursor, later, notice }: FileL
 
       {notice ? <FormMessage tone="success" title={FILE_MESSAGES.notices[notice]} /> : null}
 
-      {files.length === 0 ? (
+      {showFilters ? <LibraryFilterForm base={base} filters={filters} subjects={subjects} active={filtered} /> : null}
+
+      {filtered && files.length > 0 ? (
+        <p role="status" data-testid="results-summary" className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
+          {summaryOf(files.length, filters, Boolean(nextCursor) || later, later)}
+        </p>
+      ) : null}
+
+      {files.length === 0 && filtered ? (
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-10 text-center">
+          <SearchX className="size-8 text-muted-foreground" aria-hidden="true" />
+          <h3 className="text-xl font-semibold">No files match</h3>
+          <p className="max-w-prose text-muted-foreground">
+            No files match your search. Try different words or clear the filters.
+          </p>
+          <Button asChild variant="outline" className="h-11 px-5 text-base">
+            <Link href={base}>Clear search and filters</Link>
+          </Button>
+        </div>
+      ) : files.length === 0 ? (
         <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-10 text-center">
           <FileText className="size-8 text-muted-foreground" aria-hidden="true" />
           <h3 className="text-xl font-semibold">No files yet</h3>
@@ -79,18 +108,32 @@ export function FileLibrary({ groupId, files, nextCursor, later, notice }: FileL
         <div className="flex flex-col gap-2 sm:flex-row">
           {nextCursor ? (
             <Button asChild variant="outline" className="h-11 w-full px-5 text-base sm:w-auto">
-              <Link href={`${base}?cursor=${encodeURIComponent(nextCursor)}`}>Show more</Link>
+              <Link href={libraryHref(base, filters, nextCursor)}>Show more</Link>
             </Button>
           ) : null}
           {later ? (
             <Button asChild variant="ghost" className="h-11 w-full px-5 text-base sm:w-auto">
-              <Link href={base}>Back to the newest files</Link>
+              <Link href={libraryHref(base, filters)}>Back to the newest files</Link>
             </Button>
           ) : null}
         </div>
       ) : null}
     </section>
   );
+}
+
+/**
+ * "3 files match "unit"", or, when there are more pages, only what this page holds ("Showing 20
+ * files that match ..."): there is no count query, so a total is never guessed.
+ */
+function summaryOf(count: number, filters: LibraryFilters, paged: boolean, later: boolean): string {
+  const files = count === 1 ? "file" : "files";
+  const what =
+    filters.q !== ""
+      ? `"${filters.q}"${filters.type !== "" || filters.subject !== "" ? " and your filters" : ""}`
+      : "your filters";
+  if (paged) return `Showing ${count}${later ? " more" : ""} ${files} that ${count === 1 ? "matches" : "match"} ${what}`;
+  return `${count} ${files} ${count === 1 ? "matches" : "match"} ${what}`;
 }
 
 function UploadButton({ href }: { href: string }) {
