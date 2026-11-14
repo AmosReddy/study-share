@@ -5,6 +5,7 @@ import { overLimit, parse, type ActionResult } from "@/server/use-case-kit";
 import { decodeResourceCursor } from "@/server/resource-cursor";
 import { actionContext, memberContext, type GroupDeps } from "@/server/groups/use-cases";
 import { CHAT_MESSAGES } from "@/shared/chat-messages";
+import type { ChatPage, MessageView } from "@/shared/chat-types";
 import { uuidSchema } from "@/shared/groups";
 import { sendMessageSchema } from "@/shared/message-schemas";
 import { CHAT_LIMITS } from "@/shared/messages";
@@ -35,41 +36,7 @@ export type ChatDeps = GroupDeps & {
   messages: MessageStore;
 };
 
-/** A message as the pages may see it: no account ids. */
-export type MessageView = {
-  id: string;
-  /** The id the sender's browser made for it, so a browser can match its own pending message. */
-  clientId: string;
-  body: string;
-  /** "Former member" when the sender's account is gone. */
-  senderName: string;
-  /** Sent by the caller. */
-  mine: boolean;
-  /** For the caller: the sender, or the owner. */
-  canDelete: boolean;
-  /** ISO 8601. */
-  createdAt: string;
-  /** This message's place in the chat: pass it as `after` (newer) or `before` (older). */
-  cursor: string;
-};
-
-export type ChatPage = {
-  /** Oldest first. */
-  messages: MessageView[];
-  /**
-   * Whether more messages exist beyond these in the direction asked: older ones for the latest
-   * page and for `before`; newer ones (ask again straight away) for `after`.
-   */
-  hasMore: boolean;
-  /**
-   * Where to poll from next: the newest message returned, or for `after` the cursor given when
-   * nothing is new. Null when the chat is empty and for `before` (an earlier page does not move
-   * the place the browser polls from).
-   */
-  cursor: string | null;
-  /** The caller may delete any message (the owner). */
-  canDeleteAny: boolean;
-};
+export type { ChatPage, MessageView };
 
 /** The address-bar query: at most one of these is used (`after` wins when both are given). */
 export type ChatQuery = { after?: string; before?: string };

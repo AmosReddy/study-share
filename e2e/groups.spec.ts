@@ -369,7 +369,7 @@ test("owner sees Library, Members, Settings; a member sees Library and Members o
   const group = await createAndOpen(page, { name: "Tabs Group", mode: "link" });
 
   const ownerTabs = tabs(page);
-  await expect(ownerTabs.getByRole("link")).toHaveText(["Library", "Members", "Settings"]);
+  await expect(ownerTabs.getByRole("link")).toHaveText(["Library", "Chat", "Members", "Settings"]);
   await expect(ownerTabs.getByRole("link", { name: "Library" })).toHaveAttribute("aria-current", "page");
 
   await ownerTabs.getByRole("link", { name: "Members" }).click();
@@ -386,7 +386,7 @@ test("owner sees Library, Members, Settings; a member sees Library and Members o
   expect((await joinWith(member, group.code)).ok).toBe(true);
   await member.goto(`/groups/${group.id}`);
   await expect(member.getByRole("heading", { level: 1, name: "Tabs Group" })).toBeVisible();
-  await expect(tabs(member).getByRole("link")).toHaveText(["Library", "Members"]);
+  await expect(tabs(member).getByRole("link")).toHaveText(["Library", "Chat", "Members"]);
 
   // Typing the Settings address is a plain not-found, with no invite or owner controls.
   await member.goto(`/groups/${group.id}/settings`);

@@ -144,7 +144,7 @@ test("a plain member sees no Remove buttons and no Settings, and the member list
   await expect(memberList(member).getByRole("listitem")).toHaveCount(3);
   await expect(member.getByRole("button", { name: /Remove/ })).toHaveCount(0);
   await expect(member.getByRole("button", { name: "Leave group" })).toBeVisible();
-  await expect(tabs(member).getByRole("link")).toHaveText(["Library", "Members"]);
+  await expect(tabs(member).getByRole("link")).toHaveText(["Library", "Chat", "Members"]);
   await notFoundAt(member, `${group.path}/settings`);
 
   // Ids are in the owner's page (so the check below is not vacuous) and not in a plain member's.
@@ -203,7 +203,7 @@ test("owner hands the group over, becomes a plain member, loses Settings, can le
   await expect(page).toHaveURL(group.path);
 
   // The previous owner is a plain member: no Settings tab (the address is a not-found page), no Remove, can leave.
-  await expect(tabs(page).getByRole("link")).toHaveText(["Library", "Members"]);
+  await expect(tabs(page).getByRole("link")).toHaveText(["Library", "Chat", "Members"]);
   await notFoundAt(page, `${group.path}/settings`);
   await page.goto(`${group.path}/members`);
   await expect(memberList(page).getByRole("listitem")).toHaveCount(3);
@@ -213,7 +213,7 @@ test("owner hands the group over, becomes a plain member, loses Settings, can le
 
   // The new owner has Settings, Remove buttons, and no Leave button (the hand-over link instead).
   await newOwner.goto(`${group.path}/members`);
-  await expect(tabs(newOwner).getByRole("link")).toHaveText(["Library", "Members", "Settings"]);
+  await expect(tabs(newOwner).getByRole("link")).toHaveText(["Library", "Chat", "Members", "Settings"]);
   await expect(newOwner.getByRole("button", { name: "Leave group" })).toHaveCount(0);
   await expect(newOwner.getByText(GROUP_MESSAGES.ownerCannotLeave)).toBeVisible();
   await expect(newOwner.getByRole("button", { name: `Remove ${OWNER}` })).toBeVisible();

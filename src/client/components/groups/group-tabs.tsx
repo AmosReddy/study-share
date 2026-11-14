@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, Settings, Users } from "lucide-react";
+import { BookOpen, MessageSquare, Settings, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/client/lib/utils";
@@ -22,6 +22,7 @@ export function GroupTabs({ groupId, showSettings }: GroupTabsProps) {
   const base = `/groups/${groupId}`;
   const items = [
     { href: base, tab: "library" as const, label: "Library", Icon: BookOpen },
+    { href: `${base}/chat`, tab: "chat" as const, label: "Chat", Icon: MessageSquare },
     { href: `${base}/members`, tab: "members" as const, label: "Members", Icon: Users },
     ...(showSettings ? [{ href: `${base}/settings`, tab: "settings" as const, label: "Settings", Icon: Settings }] : []),
   ];
