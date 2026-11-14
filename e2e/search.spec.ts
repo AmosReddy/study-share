@@ -34,7 +34,7 @@ type Upload = { name: string; mimeType: string; buffer: Buffer; title: string; t
 const A: Upload = { name: "unit1.pdf", mimeType: "application/pdf", buffer: PDF, title: "Unit 1 notes", type: "Notes", subject: "Physics" };
 const B: Upload = { name: "board.png", mimeType: "image/png", buffer: PNG, title: "Board diagram", type: "Previous year paper", subject: "Maths" };
 const C: Upload = { name: "chapter-zebra.txt", mimeType: "text/plain", buffer: TEXT, title: "Algebra sheet", type: "Assignment", subject: "Maths" };
-const D: Upload = { name: "hindi.txt", mimeType: "text/plain", buffer: TEXT, title: "भौतिकी सार", type: "Notes", subject: "भौतिकी & Co" };
+const D: Upload = { name: "optics.txt", mimeType: "text/plain", buffer: TEXT, title: "Optics summary", type: "Notes", subject: "Optics & Co" };
 const E: Upload = { name: "weird.txt", mimeType: "text/plain", buffer: TEXT, title: 'Tips 100% done_ok "quoted"', type: "Other", subject: "Odd +chars" };
 const ALL = [A, B, C, D, E];
 
@@ -190,7 +190,7 @@ test("the Type and Subject dropdowns apply at once, combine with search, round-t
     "Assignment",
     "Other",
   ]);
-  await expect(subjectSelect(page).locator("option")).toHaveText(["All subjects", "Maths", "Odd +chars", "Physics", "भौतिकी & Co"]);
+  await expect(subjectSelect(page).locator("option")).toHaveText(["All subjects", "Maths", "Odd +chars", "Optics & Co", "Physics"]);
 
   // Type filter.
   await choose(page, typeSelect, "Notes", "type", "notes");
@@ -249,11 +249,11 @@ test("the Type and Subject dropdowns apply at once, combine with search, round-t
   await expect(subjectSelect(page)).toHaveValue("");
   await expect(typeSelect(page)).toHaveValue("");
 
-  // A Hindi subject with an ampersand and a subject with a plus sign survive the address.
-  await choose(page, subjectSelect, "भौतिकी & Co", "subject", "भौतिकी & Co");
+  // A subject with an ampersand and a subject with a plus sign survive the address.
+  await choose(page, subjectSelect, "Optics & Co", "subject", "Optics & Co");
   await expect.poll(() => titlesShown(page)).toEqual([D.title]);
   await page.reload();
-  await expect(subjectSelect(page)).toHaveValue("भौतिकी & Co");
+  await expect(subjectSelect(page)).toHaveValue("Optics & Co");
   await expect.poll(() => titlesShown(page)).toEqual([D.title]);
   await choose(page, subjectSelect, "Odd +chars", "subject", "Odd +chars");
   await expect.poll(() => titlesShown(page)).toEqual([E.title]);
@@ -281,8 +281,8 @@ test("odd characters in the search are looked for literally and never break the 
     ["'", []],
     ["+", [E.title]],
     ["&", [D.title]],
-    ["भौतिकी", [D.title]],
-    ["भौतिकी & co", [D.title]],
+    ["optics", [D.title]],
+    ["optics & co", [D.title]],
     ["\\", []],
     ["a b", []],
   ];

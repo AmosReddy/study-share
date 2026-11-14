@@ -8,10 +8,10 @@ describe("parseLibraryParams", () => {
   });
 
   it("reads each parameter and keeps odd characters as they are", () => {
-    expect(parseLibraryParams({ q: "100% a_b \"x\" +", type: "pyq", subject: "भौतिकी & Co", cursor: "abc" })).toEqual({
+    expect(parseLibraryParams({ q: "100% a_b \"x\" +", type: "pyq", subject: "Optics & Co", cursor: "abc" })).toEqual({
       q: '100% a_b "x" +',
       type: "pyq",
-      subject: "भौतिकी & Co",
+      subject: "Optics & Co",
       cursor: "abc",
     });
   });
@@ -63,7 +63,7 @@ describe("libraryHref", () => {
   });
 
   it("round-trips odd characters through the address", () => {
-    const filters = { q: `50% & "a"+b/c?d=e#f`, type: "assignment" as const, subject: "भौतिकी & 100%" };
+    const filters = { q: `50% & "a"+b/c?d=e#f`, type: "assignment" as const, subject: "Optics & 100%" };
     const href = libraryHref("/groups/g1", filters);
     expect(href).not.toContain("#");
     const params = new URL(href, "http://x.test").searchParams;

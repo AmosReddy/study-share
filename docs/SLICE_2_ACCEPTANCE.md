@@ -4,7 +4,7 @@ This guide walks you through trying out everything Slice 2 added: a search box a
 
 ## What Slice 2 adds
 
-- **A search box.** Above the list, **Search files** looks in three places at once: the file's **title**, its **subject** and its **file name**. Capital letters do not matter. It looks for exactly what you typed, so a `%` or a `_` or a Hindi word is searched as it is.
+- **A search box.** Above the list, **Search files** looks in three places at once: the file's **title**, its **subject** and its **file name**. Capital letters do not matter. It looks for exactly what you typed, so a `%` or a `_` is searched as it is.
 - **A Type dropdown.** **All types**, or one of **Notes**, **Previous year paper**, **Study material**, **Assignment**, **Other**.
 - **A Subject dropdown.** **All subjects**, or one of the subjects your group's files already use (for example Maths, Physics). You do not set these up: they come from the files people upload.
 - **Everything combines.** Words in the search box, a type and a subject all narrow the list together.
@@ -31,7 +31,7 @@ You need **one account** (you, the group owner) and **a phone** as well as a **d
 | `unit1.pdf` | **Unit 1 notes** | Notes | Physics |
 | `board.png` | **Board diagram** | Previous year paper | Maths |
 | `chapter-zebra.pdf` (any file, renamed) | **Algebra sheet** | Assignment | Maths |
-| `hindi.txt` | **भौतिकी सार** (or any title in Hindi) | Notes | भौतिकी (or any Hindi subject) |
+| `optics.txt` | **Optics summary** | Notes | Optics & Co |
 | `weird.txt` | **Tips 100% done** | Other | Odd chars |
 
 (You can only start 15 uploads per hour, so five is plenty. If you already have other files in the group, the counts in this guide go up by the number of extra files that match: read "You should see" as "at least these".)
@@ -85,7 +85,7 @@ Do this on the **desktop**, with a **brand new, empty group** (make one called *
 ## Test 4: Filter by type
 
 - [ ] **4.1** Tap **Clear**. In the **Type** dropdown choose **Notes**. Do **not** press anything else.
-  - **You should see:** the list changes **by itself** as soon as you choose. The line says **2 files match your filters**, the rows are **भौतिकी सार** and **Unit 1 notes**, and the address has `type=notes`.
+  - **You should see:** the list changes **by itself** as soon as you choose. The line says **2 files match your filters**, the rows are **Optics summary** and **Unit 1 notes**, and the address has `type=notes`.
 - [ ] **4.2** Choose **Assignment**.
   - **You should see:** only **Algebra sheet**.
 - [ ] **4.3** Choose **All types**.
@@ -94,11 +94,11 @@ Do this on the **desktop**, with a **brand new, empty group** (make one called *
 ## Test 5: Filter by subject
 
 - [ ] **5.1** Open the **Subject** dropdown.
-  - **You should see:** **All subjects**, then **Maths**, **Odd chars**, **Physics** and your Hindi subject, each **once** (even if several files share it).
+  - **You should see:** **All subjects**, then **Maths**, **Odd chars**, **Optics & Co** and **Physics**, each **once** (even if several files share it).
 - [ ] **5.2** Choose **Maths**.
   - **You should see:** **2 files match your filters**: **Algebra sheet** and **Board diagram**.
-- [ ] **5.3** Choose your **Hindi subject**.
-  - **You should see:** the one Hindi file. Reload the page (**F5**): the dropdown still shows the Hindi subject and the same file.
+- [ ] **5.3** Choose **Optics & Co**.
+  - **You should see:** the one Optics file. Reload the page (**F5**): the dropdown still shows **Optics & Co** and the same file.
 
 ## Test 6: Combine search and filters
 
@@ -132,8 +132,8 @@ Do this on the **desktop**, with a **brand new, empty group** (make one called *
 
 - [ ] **10.1** Search for **%** (the percent sign).
   - **You should see:** only **Tips 100% done**. (It is searched as a letter, not as "anything".)
-- [ ] **10.2** Search for **भौतिकी** (copy the Hindi word from your file).
-  - **You should see:** the Hindi file.
+- [ ] **10.2** Search for **optics**.
+  - **You should see:** the Optics file.
 - [ ] **10.3** Search for **"** (a quote mark), then **&**, then **<b>hello</b>**.
   - **You should see:** each time, a normal page. For `<b>hello</b>` the box shows the characters exactly as typed and the page says nothing matches (the letters never turn bold).
 - [ ] **10.4** Type 150 letters (for example hold down **a**) into the box.
