@@ -2,6 +2,7 @@ import { connection } from "next/server";
 import { resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
 import { resetFakeFileStorage } from "@/server/adapters/fake-file-storage";
 import { resetFakeGroupStore } from "@/server/adapters/fake-group-store";
+import { resetFakeMessageStore } from "@/server/adapters/fake-message-store";
 import { resetFakeResourceStore } from "@/server/adapters/fake-resource-store";
 
 /**
@@ -18,6 +19,7 @@ export async function POST() {
   resetFakeAuthStore();
   resetFakeGroupStore();
   resetFakeResourceStore();
+  resetFakeMessageStore();
   resetFakeFileStorage();
   return new Response(null, { status: 204 });
 }

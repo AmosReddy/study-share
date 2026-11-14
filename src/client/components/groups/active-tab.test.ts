@@ -12,6 +12,19 @@ describe("isTabActive", () => {
     }
   });
 
+  it("lights Chat on its own address only, and no other tab with it", () => {
+    for (const path of [`${BASE}/chat`, `${BASE}/chat/`]) {
+      expect(isTabActive(path, BASE, "chat"), path).toBe(true);
+      expect(isTabActive(path, BASE, "library"), path).toBe(false);
+      expect(isTabActive(path, BASE, "members"), path).toBe(false);
+      expect(isTabActive(path, BASE, "settings"), path).toBe(false);
+    }
+    expect(isTabActive(BASE, BASE, "chat")).toBe(false);
+    expect(isTabActive(`${BASE}/members`, BASE, "chat")).toBe(false);
+    expect(isTabActive(`${BASE}/chats`, BASE, "chat")).toBe(false);
+    expect(isTabActive(`${BASE}/chat/messages`, BASE, "chat")).toBe(false);
+  });
+
   it("lights Members and Settings on their own address only", () => {
     expect(isTabActive(`${BASE}/members`, BASE, "members")).toBe(true);
     expect(isTabActive(`${BASE}/members`, BASE, "library")).toBe(false);

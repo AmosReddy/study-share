@@ -43,6 +43,13 @@
       "when": 1794594120148,
       "tag": "0005_resources",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794652789882,
+      "tag": "0006_messages",
+      "breakpoints": true
     }
   ]
 }
