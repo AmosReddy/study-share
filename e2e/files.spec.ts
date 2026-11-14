@@ -339,7 +339,8 @@ test("a member sees every file, edits and deletes only their own, and the owner 
   await member.getByRole("button", { name: "Save details" }).click();
   await expect(member.getByText(FILE_MESSAGES.titleRequired)).toBeVisible();
   await member.getByLabel("Title", { exact: true }).fill("Ravi's better picture");
-  await member.getByLabel("Type", { exact: true }).selectOption({ label: "Assignment" });
+  // Scoped to the form: the library page just before stays in the page, hidden, with its own Type filter.
+  await member.getByRole("region", { name: "Edit details" }).getByLabel("Type", { exact: true }).selectOption({ label: "Assignment" });
   await member.getByLabel("Subject (optional)").fill("Algebra");
   await member.getByRole("button", { name: "Save details" }).click();
   await expect(member.getByText(FILE_MESSAGES.saved, { exact: true })).toBeVisible();

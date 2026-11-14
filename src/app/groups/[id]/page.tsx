@@ -4,6 +4,7 @@ import { FileLibrary } from "@/client/components/files/file-library";
 import { Skeleton } from "@/client/components/ui/skeleton";
 import { requireFileDeps } from "@/server/files/request-deps";
 import { listFiles, type FileQuery } from "@/server/files/use-cases";
+import { hasActiveFilters, parseLibraryParams } from "@/shared/library-query";
 
 export default function LibraryPage({ params, searchParams }: PageProps<"/groups/[id]">) {
   return (
@@ -18,13 +19,15 @@ type SearchParams = Awaited<PageProps<"/groups/[id]">["searchParams"]>;
 /** The first value of an address parameter (`?a=1&a=2` gives "1"), or undefined. */
 const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
 
-/**
- * What the address asks of the list. Only the page cursor for now; the search box and the filters
- * of the next slice add their parameters here and nowhere else (listFiles already takes them).
- */
+/** What the address asks of the list: the search, the filters and the page cursor, already cleaned. */
 function queryFrom(params: SearchParams): FileQuery {
-  const cursor = first(params.cursor);
-  return cursor ? { cursor } : {};
+  const { q, type, subject, cursor } = parseLibraryParams(params);
+  return {
+    ...(q ? { search: q } : {}),
+    ...(type ? { type } : {}),
+    ...(subject ? { subject } : {}),
+    ...(cursor ? { cursor } : {}),
+  };
 }
 
 const NOTICES = ["uploaded", "deleted"] as const;
@@ -39,6 +42,7 @@ async function Library({ params, searchParams }: Pick<PageProps<"/groups/[id]">,
   const deps = await requireFileDeps(id);
   const list = await listFiles(deps, id, queryFrom(query));
   if (!list) notFound();
+  const { cursor, ...filters } = parseLibraryParams(query);
   const notice = NOTICES.find((name) => name === first(query.notice));
 
   return (
@@ -46,7 +50,10 @@ async function Library({ params, searchParams }: Pick<PageProps<"/groups/[id]">,
       groupId={id}
       files={list.items}
       nextCursor={list.nextCursor}
-      later={Boolean(first(query.cursor))}
+      later={Boolean(cursor)}
+      filters={filters}
+      subjects={list.subjects}
+      filtered={hasActiveFilters(filters)}
       {...(notice ? { notice } : {})}
     />
   );
