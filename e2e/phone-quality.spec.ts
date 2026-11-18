@@ -5,6 +5,7 @@ import {
   createGroupThroughForm,
   enterCode,
   forgetEmailCooldown,
+  forgetThemeChoice,
   isolateRateLimits,
   joinWith,
   lastEmailedCode,
@@ -12,6 +13,7 @@ import {
   requestResetCode,
   signUpAndConfirm,
   submitSignUp,
+  switchThemeLive,
   uniqueEmail,
 } from "./helpers";
 import { AUTH_MESSAGES } from "../src/shared/auth-messages";
@@ -48,13 +50,15 @@ const MODAL_LAYER = { skipAxeRules: ["aria-hidden-focus"] };
 
 /** Audits the sheet that is open, in the light theme and in the dark one. */
 async function auditSheetInBothThemes(page: Page) {
-  for (const colorScheme of ["light", "dark"] as const) {
-    await page.emulateMedia({ colorScheme });
-    await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? /dark/ : /^(?!.*dark)/);
+  for (const theme of ["light", "dark"] as const) {
+    // The sheet covers the toggle, so the theme is switched the way next-themes sees a change from another tab.
+    await switchThemeLive(page, theme);
     // Colours are audited at rest: not while the sheet slides in or the buttons fade to the new theme.
     await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))));
     await auditPage(page, MODAL_LAYER);
   }
+  await switchThemeLive(page, "light");
+  await forgetThemeChoice(page);
 }
 
 const NAME = "Asha Rao";
@@ -72,7 +76,8 @@ const accountMenu = (page: Page) => page.getByRole("banner").getByRole("button",
 const pitchSignUp = (page: Page) => page.getByRole("main").getByRole("link", { name: "Sign up", exact: true });
 
 const groupHeading = (name: string) => (page: Page) => page.getByRole("heading", { level: 1, name, exact: true });
-const inviteProblem = (page: Page) => page.getByText(GROUP_MESSAGES.invalidInvite, { exact: true });
+// In main only: while the page streams in, Next briefly holds a hidden copy of the message outside main.
+const inviteProblem = (page: Page) => page.getByRole("main").getByText(GROUP_MESSAGES.invalidInvite, { exact: true });
 const MADE_UP_KEY = "/invite/made-up-key-that-is-not-real";
 
 /** The Google button and the sentence under it, which sit on the log-in and sign-up pages. */

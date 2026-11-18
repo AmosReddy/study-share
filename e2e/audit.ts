@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { sidewaysOverflow } from "./helpers";
+import { forgetThemeChoice, saveDarkThemeBeforeLoad, sidewaysOverflow } from "./helpers";
 
 /*
   The phone quality bar (design spec section 8), as one reusable check for the page that is
@@ -205,18 +205,23 @@ export type PageExpectation = {
 /** Opens the page, proves it is the intended one, then audits it in the light theme and the dark one. */
 export async function auditInBothThemes(page: Page, expected: PageExpectation, options: AuditOptions = {}): Promise<void> {
   const timeout = expected.timeout ?? 5000;
-  for (const colorScheme of ["light", "dark"] as const) {
-    await test.step(`${expected.path} (${colorScheme})`, async () => {
-      await page.emulateMedia({ colorScheme });
-      const response = await page.goto(expected.path);
-      expect(response?.status() ?? 0, `${expected.path} answered with an error status`).toBeLessThan(400);
-      await expect(page, `${expected.path} ended up on the wrong address`).toHaveURL(expected.url, { timeout });
-      await expect(expected.landmark(page), `${expected.path} does not show its own landmark`).toBeVisible({ timeout });
-      if (expected.absent) await expect(expected.absent(page), `${expected.path} shows a look-alike page`).toHaveCount(0, { timeout });
-      // Next's own 404 page also renders inside the root layout, with a lang and a theme class.
-      await expect(page.getByText("This page could not be found")).toHaveCount(0);
-      await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? /dark/ : /^(?!.*dark)/);
-      await auditPage(page, options);
+  for (const theme of ["light", "dark"] as const) {
+    await test.step(`${expected.path} (${theme})`, async () => {
+      // Light is what everyone gets by default; dark is a saved choice, made here the way the toggle makes it.
+      if (theme === "dark") await saveDarkThemeBeforeLoad(page);
+      try {
+        const response = await page.goto(expected.path);
+        expect(response?.status() ?? 0, `${expected.path} answered with an error status`).toBeLessThan(400);
+        await expect(page, `${expected.path} ended up on the wrong address`).toHaveURL(expected.url, { timeout });
+        await expect(expected.landmark(page), `${expected.path} does not show its own landmark`).toBeVisible({ timeout });
+        if (expected.absent) await expect(expected.absent(page), `${expected.path} shows a look-alike page`).toHaveCount(0, { timeout });
+        // Next's own 404 page also renders inside the root layout, with a lang and a theme class.
+        await expect(page.getByText("This page could not be found")).toHaveCount(0);
+        await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /^(?!.*dark)/);
+        await auditPage(page, options);
+      } finally {
+        if (theme === "dark") await forgetThemeChoice(page);
+      }
     });
   }
 }
