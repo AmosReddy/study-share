@@ -21,11 +21,11 @@ const first = (value: string | string[] | undefined) => (Array.isArray(value) ? 
 
 /** What the address asks of the list: the search, the filters and the page cursor, already cleaned. */
 function queryFrom(params: SearchParams): FileQuery {
-  const { q, type, subject, cursor } = parseLibraryParams(params);
+  const { q, type, details, cursor } = parseLibraryParams(params);
   return {
-    ...(q ? { search: q } : {}),
-    ...(type ? { type } : {}),
-    ...(subject ? { subject } : {}),
+    ...(q ? { q } : {}),
+    ...(type ? { typeId: type } : {}),
+    details,
     ...(cursor ? { cursor } : {}),
   };
 }
@@ -52,8 +52,11 @@ async function Library({ params, searchParams }: Pick<PageProps<"/groups/[id]">,
       nextCursor={list.nextCursor}
       later={Boolean(cursor)}
       filters={filters}
-      subjects={list.subjects}
-      filtered={hasActiveFilters(filters)}
+      options={list.filters}
+      filtered={hasActiveFilters(
+        filters,
+        list.filters.fields.map((field) => field.id),
+      )}
       {...(notice ? { notice } : {})}
     />
   );

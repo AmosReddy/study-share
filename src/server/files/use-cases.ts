@@ -1,22 +1,27 @@
+import type { z } from "zod";
 import { can, type Action } from "@/server/permissions";
 import type { FileStorage } from "@/server/ports/file-storage";
 import type { GroupRecord, Membership } from "@/server/ports/group-store";
-import type { ResourceRecord, ResourceStore } from "@/server/ports/resource-store";
-import { overLimit, parse, type ActionResult } from "@/server/use-case-kit";
+import type { DetailFilter, ResourceRecord, ResourceStore } from "@/server/ports/resource-store";
+import { ANSWER_DB_LIMITS } from "@/server/resource-answers";
+import { overLimit, type ActionResult, type Failure } from "@/server/use-case-kit";
 import { actionContext, memberContext, type GroupDeps } from "@/server/groups/use-cases";
 import { FILE_MESSAGES } from "@/shared/file-messages";
-import { fileDetailsSchema, MAX_SEARCH_LENGTH, prepareUploadSchema } from "@/shared/resource-schemas";
 import {
-  FILE_CATEGORY_LABELS,
-  RESOURCE_LIMITS,
-  RESOURCE_TYPES,
-  RESOURCE_TYPE_VALUES,
-  classifyUpload,
-  isPreviewableType,
-  type ResourceType,
-} from "@/shared/resources";
+  detailDisplay,
+  FORM_LIMITS,
+  OTHER_TYPE_ID,
+  searchIdsFor,
+  typeLabel,
+  validateAnswers,
+  type Answers,
+  type FormConfig,
+  type FormField,
+} from "@/shared/form-config";
+import type { FilterOption, LibraryFilterOptions } from "@/shared/library-query";
+import { answersInputSchema, fileDetailsSchema, MAX_SEARCH_LENGTH, prepareUploadSchema } from "@/shared/resource-schemas";
+import { FILE_CATEGORY_LABELS, classifyUpload, isPreviewableType } from "@/shared/resources";
 import { uuidSchema } from "@/shared/groups";
-import { legacyTypeKey } from "@/server/resource-answers";
 import { FILE_PREPARE_USER_LIMIT } from "./rate-limit-policy";
 import { SNIFF_BYTES, contentMatchesType } from "./sniff";
 
@@ -48,9 +53,21 @@ export type FileDeps = GroupDeps & {
 export type FileView = {
   id: string;
   title: string;
-  subject: string;
-  type: ResourceType;
+  /** The file's type id: one of its group's types, or `other`. */
+  typeId: string;
+  /** What to show: the type's label, "Other: Lab manual" or "Other". A removed type still shows its label. */
   typeLabel: string;
+  /** True when the type was removed from the group's form (the file keeps it; it is not offered for new uploads). */
+  typeRemoved: boolean;
+  /** The "Other" text; empty unless the type is Other, and empty for an old Other file. */
+  typeOther: string;
+  /**
+   * The group's extra details, in the form's order: the ones this file has a value for (also those
+   * of a removed detail), and the form's current details it has no value for yet (`display` is "";
+   * the screen may show them blank or leave them out). `display` is the typed text or the label of
+   * the chosen choice, so a renamed or removed choice still reads right.
+   */
+  details: { fieldId: string; label: string; display: string; removed: boolean }[];
   fileName: string;
   sizeBytes: number;
   /** "Former member" when the uploader's account is gone. */
@@ -70,11 +87,14 @@ export type FileView = {
 export type FileList = {
   items: FileView[];
   nextCursor: string | null;
-  /** Every subject the group's files use, for the filter. */
-  subjects: string[];
+  filters: LibraryFilterOptions;
 };
 
-export type FileQuery = { search?: string; type?: string; subject?: string; cursor?: string };
+/**
+ * The Library's search and filters, as read from the address (see parseLibraryParams). Anything
+ * missing is "not set". Anything that makes no sense is ignored or matches nothing: see cleanQuery.
+ */
+export type FileQuery = { q?: string; typeId?: string; details?: Record<string, string>; cursor?: string };
 
 export type OpenedFile = {
   /** A short-lived link. It is made for this request after the membership check; never store it. */
@@ -131,23 +151,28 @@ async function readyFile(deps: FileDeps, groupId: string, resourceId: string): P
 
 const isUploader = (deps: FileDeps, record: ResourceRecord) => record.uploaderId !== null && record.uploaderId === deps.user.id;
 
-/**
- * TEMPORARY SHIM (custom upload form, Task 2): the file's answers on the old fixed form. The store
- * now holds `typeId`, `typeOther` and `details`; until Task 3 moves these use-cases onto the
- * group's form configuration, a type that is not one of the old keys shows as Other, and the
- * Subject is the detail with the id `subject`. Task 3 deletes this.
- */
-const legacyType = (record: ResourceRecord) => legacyTypeKey(record.typeId) as ResourceType;
-const legacySubject = (record: ResourceRecord) => (Object.hasOwn(record.details, "subject") ? record.details.subject : "");
+/** The file's details as the form's own list: see FileView.details. */
+function detailViews(config: FormConfig, record: ResourceRecord): FileView["details"] {
+  const views: FileView["details"] = [];
+  for (const field of config.fields) {
+    // Own keys only: a detail id like "constructor" must not read from the object's prototype.
+    const value = Object.hasOwn(record.details, field.id) ? record.details[field.id] : "";
+    if (value === "" && field.archived) continue;
+    views.push({ fieldId: field.id, label: field.label, display: detailDisplay(config, field, value), removed: Boolean(field.archived) });
+  }
+  return views;
+}
 
-function viewOf(deps: FileDeps, membership: Membership, record: ResourceRecord): FileView {
+function viewOf(deps: FileDeps, membership: Membership, config: FormConfig, record: ResourceRecord): FileView {
   const own = isUploader(deps, record);
   return {
     id: record.id,
     title: record.title,
-    subject: legacySubject(record),
-    type: legacyType(record),
-    typeLabel: RESOURCE_TYPES[legacyType(record)],
+    typeId: record.typeId,
+    typeLabel: typeLabel(config, record.typeId, record.typeOther),
+    typeRemoved: config.types.some((type) => type.id === record.typeId && type.archived === true),
+    typeOther: record.typeOther,
+    details: detailViews(config, record),
     fileName: record.fileName,
     sizeBytes: record.sizeBytes,
     uploaderName: record.uploaderName.trim() === "" ? FILE_MESSAGES.formerMember : record.uploaderName,
@@ -159,11 +184,57 @@ function viewOf(deps: FileDeps, membership: Membership, record: ResourceRecord):
   };
 }
 
+type FormCheck<T> = { ok: true; data: T; answers: Answers } | { ok: false; failure: Failure };
+
+/**
+ * Checks a form that holds a title or a file as well as the answers. The schema checks the shape
+ * and the title and file (its issues keep their field keys, except that the answers' keys are
+ * renamed to the form's: `typeId` becomes `type` and a detail `<id>` becomes `detail:<id>`);
+ * validateAnswers checks the type and details against the group's form. Both run, so a bad title
+ * and a missing required detail come back together. Pass `existing` on an edit.
+ */
+function checkForm<S extends z.ZodType>(schema: S, raw: unknown, config: FormConfig, existing?: Answers): FormCheck<z.output<S>> {
+  const parsed = schema.safeParse(raw);
+  const fieldErrors: Record<string, string> = {};
+  let formError: string | undefined;
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      const [head, second] = issue.path;
+      if (head === "typeId") fieldErrors.type ??= issue.message;
+      else if (head === "details" && typeof second === "string" && [...second].length <= ANSWER_DB_LIMITS.maxTypeIdLength) {
+        fieldErrors[`detail:${second}`] ??= issue.message;
+      } else if (typeof head === "string" && head !== "details") fieldErrors[head] ??= issue.message;
+      else formError ??= FILE_MESSAGES.badForm;
+    }
+  }
+
+  let answers: Answers | undefined;
+  const given = answersInputSchema.safeParse(raw);
+  if (given.success) {
+    const checked = validateAnswers(config, given.data, existing);
+    if (checked.ok) answers = checked.value;
+    else for (const [key, message] of Object.entries(checked.errors)) fieldErrors[key] ??= message;
+  }
+
+  if (parsed.success && answers && Object.keys(fieldErrors).length === 0) return { ok: true, data: parsed.data, answers };
+  const hasFieldErrors = Object.keys(fieldErrors).length > 0;
+  return {
+    ok: false,
+    failure: {
+      ok: false,
+      ...(hasFieldErrors ? { fieldErrors } : {}),
+      ...(formError || !hasFieldErrors ? { formError: formError ?? FILE_MESSAGES.badForm } : {}),
+    },
+  };
+}
+
 /**
  * Starts an upload: checks the details, records the file as "uploading" and hands back a
  * short-lived link the browser sends the file to. The file type and size are bound to the link.
- * Field errors are keyed title, subject, type, fileName (a kind of file we do not take) and
- * sizeBytes (empty or too big).
+ * The type and the extra details are checked against the group's form AS IT IS NOW, with every rule
+ * of a new upload (nothing is "unchanged"); completeUpload does not check them again, so a form
+ * change while someone uploads never makes them start over. Field errors are keyed title, type,
+ * typeOther, detail:<id>, fileName (a kind of file we do not take) and sizeBytes (empty or too big).
  */
 export async function prepareUpload(
   deps: FileDeps,
@@ -173,9 +244,10 @@ export async function prepareUpload(
   const access = await actionAccess(deps, groupId, "file.upload");
   if (!access.ok) return access;
 
-  const parsed = parse(prepareUploadSchema, raw, FILE_MESSAGES.badForm);
-  if ("failure" in parsed) return parsed.failure;
-  const { title, subject, type, fileName, contentType, sizeBytes } = parsed.data;
+  const checked = checkForm(prepareUploadSchema, raw, access.group.formConfig);
+  if (!checked.ok) return checked.failure;
+  const { title, fileName, contentType, sizeBytes } = checked.data;
+  const { typeId, typeOther, details } = checked.answers;
 
   const refused = await overLimit(
     deps.limiter,
@@ -196,10 +268,9 @@ export async function prepareUpload(
       groupId: access.group.id,
       uploaderId: deps.user.id,
       title,
-      // SHIM (Task 3 replaces it): the old form's type and subject as the new answers.
-      typeId: type,
-      typeOther: "",
-      details: subject === "" ? {} : { subject },
+      typeId,
+      typeOther,
+      details,
       fileKey,
       fileName,
       contentType,
@@ -257,7 +328,8 @@ async function inspectStoredFile(deps: FileDeps, record: ResourceRecord): Promis
  * must exist with exactly the recorded size, and its first bytes must fit the type (see
  * sniff.ts). A file that fails is deleted from storage and its row is marked deleted, with a
  * message saying why. A storage error (not a bad file) leaves everything as it was, so the call can
- * be repeated. Completing a file that is ready already answers ok.
+ * be repeated. Completing a file that is ready already answers ok. The answers are NOT checked
+ * again (see prepareUpload), so a form that changed since the upload started does not matter.
  */
 export async function completeUpload(deps: FileDeps, groupId: string, resourceId: string): Promise<FileResult<FileView>> {
   const access = await actionAccess(deps, groupId, "file.upload");
@@ -269,7 +341,7 @@ export async function completeUpload(deps: FileDeps, groupId: string, resourceId
     const record = await deps.resources.findById(access.group.id, id.data);
     // Someone else's file looks exactly like a missing one.
     if (!record || !isUploader(deps, record)) return NOT_FOUND;
-    if (record.status === "ready") return { ok: true, data: viewOf(deps, access.membership, record) };
+    if (record.status === "ready") return { ok: true, data: viewOf(deps, access.membership, access.group.formConfig, record) };
 
     const inspection = await inspectStoredFile(deps, record);
     if (inspection !== "ok") {
@@ -283,56 +355,147 @@ export async function completeUpload(deps: FileDeps, groupId: string, resourceId
     }
 
     const ready = await deps.resources.markReady(record.id, access.group.id);
-    return ready ? { ok: true, data: viewOf(deps, access.membership, ready) } : NOT_FOUND;
+    return ready ? { ok: true, data: viewOf(deps, access.membership, access.group.formConfig, ready) } : NOT_FOUND;
   } catch {
     console.error("Could not confirm an upload.");
     return COULD_NOT_SAVE;
   }
 }
 
-/** The filters as they arrive from the address bar, made safe for the store; null when no file can match. */
-function cleanQuery(raw: FileQuery): { search?: string; type?: ResourceType; subject?: string; cursor?: string } | null {
+/** Whitespace runs (and tabs, line breaks) become one space, then the ends are trimmed: how answers are stored. */
+const tidy = (text: string) => text.replace(/\s+/g, " ").trim();
+
+const hasControl = (text: string) => /\p{Cc}/u.test(text);
+
+/**
+ * The filters as they arrive from the address bar, made safe for the store; null when no file can
+ * match. Never throws, whatever is passed.
+ * - The search: control characters become spaces and it is cut to MAX_SEARCH_LENGTH (cut, not refused).
+ * - The type: any id up to 64 characters is passed on as it is, so a type the group does not have
+ *   (an old link, a typo) simply matches nothing, as a subject nobody used did before. One that is
+ *   too long or holds a control character cannot be any file's type: null.
+ * - The details: only the form's own detail ids count (removed ones too, so a removed detail stays
+ *   filterable); any other id is ignored, so `d_<unknown>=x` changes nothing and reads nothing.
+ *   The value is tidied like a stored answer; one over the answer limit or with a control character
+ *   can be no file's answer: null. A dropdown value is compared as a choice id, so it matches
+ *   nothing unless it is one.
+ */
+function cleanQuery(
+  config: FormConfig,
+  query: FileQuery | null,
+): { search?: string; typeId?: string; details: DetailFilter[]; cursor?: string } | null {
+  const raw: FileQuery = typeof query === "object" && query !== null ? query : {};
   const text = (value: unknown) => (typeof value === "string" ? value : "");
-  // Control characters (a NUL would make Postgres throw) become spaces; a search is cut, not refused.
-  const search = [...text(raw.search).replace(/\p{Cc}/gu, " ").trim()].slice(0, MAX_SEARCH_LENGTH).join("").trim();
-  const subject = text(raw.subject).trim();
-  // No file can have a subject that is too long or holds a control character: it matches nothing.
-  if ([...subject].length > RESOURCE_LIMITS.maxSubject || /\p{Cc}/u.test(subject)) return null;
-  const type = RESOURCE_TYPE_VALUES.find((value) => value === raw.type);
+  const search = [...text(raw.q).replace(/\p{Cc}/gu, " ").trim()].slice(0, MAX_SEARCH_LENGTH).join("").trim();
+
+  const typeId = text(raw.typeId).trim();
+  if ([...typeId].length > ANSWER_DB_LIMITS.maxTypeIdLength || hasControl(typeId)) return null;
+
+  const given: Record<string, unknown> =
+    typeof raw.details === "object" && raw.details !== null && !Array.isArray(raw.details) ? raw.details : {};
+  const details: DetailFilter[] = [];
+  for (const field of config.fields) {
+    if (!Object.hasOwn(given, field.id)) continue;
+    const value = tidy(text(given[field.id]));
+    if (value === "") continue;
+    if ([...value].length > FORM_LIMITS.maxAnswer || hasControl(value)) return null;
+    details.push({ fieldId: field.id, kind: field.kind, value });
+  }
+
   return {
     ...(search ? { search } : {}),
-    ...(type ? { type } : {}),
-    ...(subject ? { subject } : {}),
+    ...(typeId ? { typeId } : {}),
+    details,
     ...(typeof raw.cursor === "string" && raw.cursor ? { cursor: raw.cursor } : {}),
   };
+}
+
+type Used = Awaited<ReturnType<ResourceStore["usedOptionIds"]>>;
+
+/** What the Library's filters offer: see LibraryFilterOptions. */
+function filterOptions(config: FormConfig, used: Used, textValues: Map<string, string[]>): LibraryFilterOptions {
+  const usedTypes = new Set(used.typeIds);
+  const types: FilterOption[] = [
+    ...config.types
+      .filter((type) => !type.archived || usedTypes.has(type.id))
+      .map((type) => ({ id: type.id, label: type.label, removed: type.archived === true })),
+    { id: OTHER_TYPE_ID, label: typeLabel(config, OTHER_TYPE_ID, ""), removed: false },
+  ];
+
+  const fields: LibraryFilterOptions["fields"] = [];
+  for (const field of config.fields) {
+    const usedValues = Object.hasOwn(used.detailValues, field.id) ? used.detailValues[field.id] : [];
+    if (field.archived && usedValues.length === 0) continue;
+    const options: FilterOption[] =
+      field.kind === "text"
+        ? (textValues.get(field.id) ?? []).map((value) => ({ id: value, label: value, removed: false }))
+        : (field.options ?? [])
+            .filter((option) => (field.archived || option.archived ? usedValues.includes(option.id) : true))
+            .map((option) => ({ id: option.id, label: option.label, removed: option.archived === true }));
+    fields.push({ id: field.id, label: field.label, kind: field.kind, removed: field.archived === true, options });
+  }
+  return { types, fields };
 }
 
 /**
  * One page of the group's ready files, newest first, with the filter choices. Null for anyone who
  * may not see the library. A store failure throws.
+ *
+ * The search looks in the title, file name, "Other" text and text details, and also finds files by
+ * the label of their type or of a dropdown choice (the word is mapped to ids from the group's
+ * CURRENT labels, removed ones too, so a renamed choice is still found by its new name).
  */
 export async function listFiles(deps: FileDeps, groupId: string, query: FileQuery = {}): Promise<FileList | null> {
   const access = await readAccess(deps, groupId, "file.view");
   if (!access) return null;
-  const filters = cleanQuery(query);
-  const [page, subjects] = await Promise.all([
-    filters
-      ? deps.resources.list(access.group.id, {
-          // SHIM (Task 3 replaces it): the old form's search, type and subject as store queries.
-          ...(filters.search ? { search: { text: filters.search, typeIds: [], optionIds: [], textFieldIds: ["subject"] } } : {}),
-          ...(filters.type ? { typeId: filters.type } : {}),
-          ...(filters.subject ? { details: [{ fieldId: "subject", kind: "text" as const, value: filters.subject }] } : {}),
-          ...(filters.cursor ? { cursor: filters.cursor } : {}),
-          limit: FILE_PAGE_SIZE,
-        })
-      : { items: [], nextCursor: null },
-    deps.resources.listDetailValues(access.group.id, "subject"),
+  const config = access.group.formConfig;
+  const filters = cleanQuery(config, query);
+
+  const textFields = config.fields.filter((field) => field.kind === "text");
+  const searchFor = (text: string) => ({ text, ...searchIdsFor(config, text), textFieldIds: textFields.map((field) => field.id) });
+  const page = filters
+    ? deps.resources.list(access.group.id, {
+        ...(filters.search ? { search: searchFor(filters.search) } : {}),
+        ...(filters.typeId ? { typeId: filters.typeId } : {}),
+        ...(filters.details.length > 0 ? { details: filters.details } : {}),
+        ...(filters.cursor ? { cursor: filters.cursor } : {}),
+        limit: FILE_PAGE_SIZE,
+      })
+    : Promise.resolve({ items: [], nextCursor: null });
+
+  // The values a text detail's filter offers: always for the form's current details, and for a
+  // removed one only while a file still has a value for it.
+  const valuesOf = async (fields: FormField[]) =>
+    new Map(
+      await Promise.all(
+        fields.map(async (field) => [field.id, await deps.resources.listDetailValues(access.group.id, field.id)] as const),
+      ),
+    );
+  const [found, used, activeValues] = await Promise.all([
+    page,
+    deps.resources.usedOptionIds(access.group.id),
+    valuesOf(textFields.filter((field) => !field.archived)),
   ]);
+  const stillUsed = textFields.filter(
+    (field) => field.archived && Object.hasOwn(used.detailValues, field.id) && used.detailValues[field.id].length > 0,
+  );
+  const textValues = new Map([...activeValues, ...(await valuesOf(stillUsed))]);
+
   return {
-    items: page.items.map((record) => viewOf(deps, access.membership, record)),
-    nextCursor: page.nextCursor,
-    subjects,
+    items: found.items.map((record) => viewOf(deps, access.membership, config, record)),
+    nextCursor: found.nextCursor,
+    filters: filterOptions(config, used, textValues),
   };
+}
+
+/**
+ * The group's upload form, for the upload and edit screens: every active member may read it. Null
+ * for anyone else (a non-member, a removed member, an unknown or deleted group, a malformed id), as
+ * for the other reads. A store failure throws.
+ */
+export async function getFormForGroup(deps: FileDeps, groupId: string): Promise<{ formConfig: FormConfig } | null> {
+  const access = await readAccess(deps, groupId, "file.view");
+  return access ? { formConfig: access.group.formConfig } : null;
 }
 
 /**
@@ -343,7 +506,7 @@ export async function getFile(deps: FileDeps, groupId: string, resourceId: strin
   const access = await readAccess(deps, groupId, "file.view");
   if (!access) return null;
   const record = await readyFile(deps, access.group.id, resourceId);
-  return record ? viewOf(deps, access.membership, record) : null;
+  return record ? viewOf(deps, access.membership, access.group.formConfig, record) : null;
 }
 
 /**
@@ -380,7 +543,14 @@ export async function openFile(
   return { url, previewable, title: record.title, fileName: record.fileName, contentType: record.contentType };
 }
 
-/** Changes a file's title, subject and type. Only the uploader (the owner cannot edit other people's details). */
+/**
+ * Changes a file's title, type and details. Only the uploader (the owner cannot edit other people's
+ * details). The title keeps its rules. The type and details are checked against the group's form
+ * as it is now, but a value that is UNCHANGED from what the file holds always passes (a removed
+ * type or choice, an old Other file with no text, a detail that became required), and the stored
+ * value of a removed detail is kept, so no old file becomes uneditable. `details` is the whole
+ * form: an extra detail left out counts as emptied.
+ */
 export async function updateFile(deps: FileDeps, groupId: string, resourceId: string, raw: unknown): Promise<FileResult<FileView>> {
   const access = await actionAccess(deps, groupId, "file.view");
   if (!access.ok) return access;
@@ -389,20 +559,12 @@ export async function updateFile(deps: FileDeps, groupId: string, resourceId: st
     const record = await readyFile(deps, access.group.id, resourceId);
     if (!record || !isUploader(deps, record)) return NOT_FOUND;
 
-    const parsed = parse(fileDetailsSchema, raw, FILE_MESSAGES.badForm);
-    if ("failure" in parsed) return parsed.failure;
+    const existing: Answers = { typeId: record.typeId, typeOther: record.typeOther, details: record.details };
+    const checked = checkForm(fileDetailsSchema, raw, access.group.formConfig, existing);
+    if (!checked.ok) return checked.failure;
 
-    // SHIM (Task 3 replaces it): the old form's type and subject as the new answers. What the file
-    // holds beyond them (other details, the "Other" text of a file that stays Other) is kept.
-    const { subject, type, title } = parsed.data;
-    const otherDetails = Object.fromEntries(Object.entries(record.details).filter(([id]) => id !== "subject"));
-    const saved = await deps.resources.update(access.group.id, record.id, {
-      title,
-      typeId: type,
-      typeOther: type === "other" ? record.typeOther : "",
-      details: subject === "" ? otherDetails : { ...otherDetails, subject },
-    });
-    return saved ? { ok: true, data: viewOf(deps, access.membership, saved) } : NOT_FOUND;
+    const saved = await deps.resources.update(access.group.id, record.id, { title: checked.data.title, ...checked.answers });
+    return saved ? { ok: true, data: viewOf(deps, access.membership, access.group.formConfig, saved) } : NOT_FOUND;
   } catch {
     console.error("Could not save a file's details.");
     return COULD_NOT_SAVE;

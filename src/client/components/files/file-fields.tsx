@@ -3,20 +3,21 @@
 import { useId, type ChangeEvent } from "react";
 import { describedBy, FieldError, inputClassName, TextField } from "@/client/components/auth/text-field";
 import { cn } from "@/client/lib/utils";
-import { RESOURCE_TYPES, RESOURCE_TYPE_VALUES } from "@/shared/resources";
+import type { TypeChoice } from "./type-choices";
 
 type TypeSelectProps = {
   id: string;
   /** The form field's name (the upload form is not a native form post, so it may leave this out). */
   name?: string;
+  types: TypeChoice[];
   value?: string;
   defaultValue?: string;
   onChange?: (event: ChangeEvent<HTMLSelectElement>) => void;
   error?: string;
 };
 
-/** "Type": the five kinds of file, as a native select (phones show their own picker). */
-export function TypeSelect({ id, name = "type", value, defaultValue, onChange, error }: TypeSelectProps) {
+/** "Type": the group's kinds of file, as a native select (phones show their own picker). */
+export function TypeSelect({ id, name = "type", types, value, defaultValue, onChange, error }: TypeSelectProps) {
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={id} className="text-sm font-medium">
@@ -25,20 +26,43 @@ export function TypeSelect({ id, name = "type", value, defaultValue, onChange, e
       <select
         id={id}
         name={name}
-        {...(value !== undefined ? { value } : { defaultValue: defaultValue ?? RESOURCE_TYPE_VALUES[0] })}
+        {...(value !== undefined ? { value } : { defaultValue: defaultValue ?? types[0]?.id })}
         onChange={onChange}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy(id, undefined, error)}
         className={cn(inputClassName, "pr-8")}
       >
-        {RESOURCE_TYPE_VALUES.map((type) => (
-          <option key={type} value={type}>
-            {RESOURCE_TYPES[type]}
+        {types.map((type) => (
+          <option key={type.id} value={type.id}>
+            {type.label}
           </option>
         ))}
       </select>
       {error ? <FieldError id={`${id}-error`}>{error}</FieldError> : null}
     </div>
+  );
+}
+
+type OtherTextFieldProps = {
+  id: string;
+  value?: string;
+  defaultValue?: string;
+  onChange?: (event: ChangeEvent<HTMLInputElement>) => void;
+  error?: string;
+};
+
+/** "What kind of file is it?": shown when the Type is Other. */
+export function OtherTextField({ id, value, defaultValue, onChange, error }: OtherTextFieldProps) {
+  return (
+    <TextField
+      label="What kind of file is it?"
+      name="typeOther"
+      id={id}
+      autoComplete="off"
+      {...(value !== undefined ? { value } : { defaultValue: defaultValue ?? "" })}
+      onChange={onChange}
+      error={error}
+    />
   );
 }
 

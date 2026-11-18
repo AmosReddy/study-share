@@ -1,4 +1,4 @@
-import { DEFAULT_FORM_CONFIG } from "@/shared/form-config";
+import { DEFAULT_FORM_CONFIG, parseFormConfig, type FormConfig } from "@/shared/form-config";
 import { GROUP_LIMITS, type GroupRole, type MemberStatus } from "@/shared/groups";
 import type { GroupRecord, GroupStore, MemberRow } from "../ports/group-store";
 import { getFakeAuthStore, type FakeAuthStore } from "./fake-auth-provider";
@@ -43,6 +43,19 @@ export function resetFakeGroupStore(): void {
 export function isFakeGroupLive(groupId: string): boolean {
   const state = getState();
   return state.groups.has(groupId) && !state.deleted.has(groupId);
+}
+
+/**
+ * TEST ONLY: gives a group its own upload form, as its owner will be able to later (there is no
+ * editor yet). The configuration is read the way the database store reads one (parseFormConfig),
+ * so an invalid one becomes the default. False for an unknown or deleted group. Used by the unit
+ * tests and, in test mode, by the e2e set-up route.
+ */
+export function setFakeGroupFormConfig(groupId: string, config: FormConfig): boolean {
+  const group = getState().groups.get(groupId);
+  if (!group || getState().deleted.has(groupId)) return false;
+  group.formConfig = parseFormConfig(config);
+  return true;
 }
 
 export function createFakeGroupStore(authStore: FakeAuthStore = getFakeAuthStore()): GroupStore {

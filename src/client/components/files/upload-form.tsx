@@ -9,9 +9,11 @@ import { putFile } from "@/client/lib/upload-file";
 import { cn } from "@/client/lib/utils";
 import { AUTH_MESSAGES } from "@/shared/auth-messages";
 import { FILE_MESSAGES } from "@/shared/file-messages";
-import { RESOURCE_LIMITS, type ResourceType } from "@/shared/resources";
+import { OTHER_TYPE_ID } from "@/shared/form-config";
+import { RESOURCE_LIMITS } from "@/shared/resources";
 import { checkChosenFile, titleFromFileName, uploadContentType, UPLOAD_ACCEPT } from "@/shared/upload-checks";
-import { SubjectField, TypeSelect } from "./file-fields";
+import { OtherTextField, SubjectField, TypeSelect } from "./file-fields";
+import type { TypeChoice } from "./type-choices";
 
 /** What the two upload actions answer (plain data, no storage key). */
 type Failure = { ok: false; fieldErrors?: Record<string, string>; formError?: string };
@@ -25,6 +27,8 @@ export type CompleteUpload = (groupId: string, resourceId: string) => Promise<An
 
 type UploadFormProps = {
   groupId: string;
+  /** What the Type select offers (see typeChoices). */
+  types: TypeChoice[];
   /** Subjects the group already uses, offered while typing. */
   subjects: string[];
   prepareAction: PrepareUpload;
@@ -47,8 +51,11 @@ function isNextControlFlow(error: unknown): boolean {
  * steps: the server prepares a short-lived link, the browser PUTs the file to it with a progress
  * bar, and the server confirms what arrived. Any failure shows a message and leaves the form as it
  * was; choosing Upload again starts over from step 1, so nothing needs cleaning up by hand.
+ *
+ * TEMPORARY (custom upload form, Task 3): still the default form's fields only (Title, Type, the
+ * Other text and Subject); Task 4 builds the fields from the group's form.
  */
-export function UploadForm({ groupId, subjects, prepareAction, completeAction }: UploadFormProps) {
+export function UploadForm({ groupId, types, subjects, prepareAction, completeAction }: UploadFormProps) {
   const router = useRouter();
   const uid = useId();
   const formRef = useRef<HTMLFormElement>(null);
@@ -58,7 +65,8 @@ export function UploadForm({ groupId, subjects, prepareAction, completeAction }:
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const titleTouched = useRef(false);
-  const [type, setType] = useState<ResourceType>("notes");
+  const [typeId, setTypeId] = useState(types[0]?.id ?? "");
+  const [typeOther, setTypeOther] = useState("");
   const [subject, setSubject] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | undefined>();
@@ -129,8 +137,9 @@ export function UploadForm({ groupId, subjects, prepareAction, completeAction }:
     try {
       const prepared = await prepareAction(groupId, {
         title,
-        subject,
-        type,
+        typeId,
+        typeOther: typeId === OTHER_TYPE_ID ? typeOther : "",
+        details: subject.trim() === "" ? {} : { subject },
         fileName: file.name,
         contentType: uploadContentType(file.name),
         sizeBytes: file.size,
@@ -235,13 +244,21 @@ export function UploadForm({ groupId, subjects, prepareAction, completeAction }:
           }}
           error={errors.title}
         />
-        <TypeSelect id={`${uid}-type`} value={type} onChange={(event) => setType(event.target.value as ResourceType)} error={errors.type} />
+        <TypeSelect id={`${uid}-type`} types={types} value={typeId} onChange={(event) => setTypeId(event.target.value)} error={errors.type} />
+        {typeId === OTHER_TYPE_ID ? (
+          <OtherTextField
+            id={`${uid}-other`}
+            value={typeOther}
+            onChange={(event) => setTypeOther(event.target.value)}
+            error={errors.typeOther}
+          />
+        ) : null}
         <SubjectField
           id={`${uid}-subject`}
           suggestions={subjects}
           value={subject}
           onChange={(event) => setSubject(event.target.value)}
-          error={errors.subject}
+          error={errors["detail:subject"]}
         />
       </fieldset>
 

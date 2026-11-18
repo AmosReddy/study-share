@@ -124,11 +124,37 @@ describe("safeFileName", () => {
 });
 
 describe("prepareUploadSchema", () => {
-  const good = { title: " Notes ", subject: "", type: "notes", fileName: "a b.PDF", contentType: "", sizeBytes: 10 };
+  const good = { title: " Notes ", typeId: "notes", typeOther: "", details: {}, fileName: "a b.PDF", contentType: "", sizeBytes: 10 };
 
   it("cleans the name, tidies the text and replaces the type with the canonical one", () => {
     const result = prepareUploadSchema.safeParse(good);
     expect(result.success && result.data).toMatchObject({ title: "Notes", fileName: "a b.pdf", contentType: "application/pdf" });
+  });
+
+  it("takes the type and the details as sent (the group's form checks them) and a missing Other text or details as empty", () => {
+    const sent = { ...good, typeId: "pyq", typeOther: " Lab manual ", details: { subject: " Maths ", semester: "c1" } };
+    expect(prepareUploadSchema.safeParse(sent).data).toMatchObject({ typeId: "pyq", typeOther: " Lab manual ", details: sent.details });
+    const bare = Object.fromEntries(Object.entries(good).filter(([key]) => key !== "typeOther" && key !== "details"));
+    expect(prepareUploadSchema.safeParse(bare).data).toMatchObject({ typeOther: "", details: {} });
+  });
+
+  it("refuses a type or details of the wrong shape or an absurd size, with the answer's own key", () => {
+    const issues = (change: Record<string, unknown>) => {
+      const result = prepareUploadSchema.safeParse({ ...good, ...change });
+      return !result.success && result.error.issues.map((i) => i.path[0]);
+    };
+    expect(issues({ typeId: "" })).toEqual(["typeId"]);
+    expect(issues({ typeId: undefined })).toEqual(["typeId"]);
+    expect(issues({ typeId: 5 })).toEqual(["typeId"]);
+    expect(issues({ typeId: "x".repeat(65) })).toEqual(["typeId"]);
+    expect(issues({ typeOther: "x".repeat(1001) })).toEqual(["typeOther"]);
+    expect(issues({ typeOther: 5 })).toEqual(["typeOther"]);
+    expect(issues({ details: "subject" })).toEqual(["details"]);
+    expect(issues({ details: [] })).toEqual(["details"]);
+    expect(issues({ details: { subject: 5 } })).toEqual(["details"]);
+    expect(issues({ details: { subject: "x".repeat(1001) } })).toEqual(["details"]);
+    expect(issues({ details: { ["k".repeat(65)]: "x" } })).toEqual(["details"]);
+    expect(issues({ details: Object.fromEntries(Array.from({ length: 41 }, (_, i) => [`f${i}`, "v"])) })).toEqual(["details"]);
   });
 
   it("reports the file kind on fileName, with the friendly message", () => {

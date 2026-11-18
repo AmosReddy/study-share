@@ -4,15 +4,16 @@ import { FormMessage } from "@/client/components/auth/form-message";
 import { Button } from "@/client/components/ui/button";
 import { FILE_MESSAGES } from "@/shared/file-messages";
 import { formatBytes, formatFileDate } from "@/shared/format";
-import { libraryHref, type LibraryFilters } from "@/shared/library-query";
+import { libraryHref, type LibraryFilterOptions, type LibraryFilters } from "@/shared/library-query";
 import { LibraryFilterForm } from "./library-filters";
 
 /** One file as the page shows it (the server's FileView has at least these fields). */
 export type LibraryFile = {
   id: string;
   title: string;
-  subject: string;
   typeLabel: string;
+  /** The file's details; the ones with nothing to show are left out of the row. */
+  details: { fieldId: string; display: string }[];
   sizeBytes: number;
   uploaderName: string;
   uploadedAt: string;
@@ -29,8 +30,8 @@ type FileLibraryProps = {
   notice?: "uploaded" | "deleted";
   /** The search and filters the address asks for (already cleaned). */
   filters: LibraryFilters;
-  /** Every subject the group's files use, for the Subject dropdown. */
-  subjects: string[];
+  /** What the filters offer (the group's types and details, and the values its files use). */
+  options: LibraryFilterOptions;
   /** True when any search or filter is on. */
   filtered: boolean;
 };
@@ -38,7 +39,7 @@ type FileLibraryProps = {
 const badgeClass = "shrink-0 rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-foreground";
 
 /** The Library tab: the group's files, newest first, with the Upload button. */
-export function FileLibrary({ groupId, files, nextCursor, later, notice, filters, subjects, filtered }: FileLibraryProps) {
+export function FileLibrary({ groupId, files, nextCursor, later, notice, filters, options, filtered }: FileLibraryProps) {
   const base = `/groups/${groupId}`;
   // A group with no files at all (and nothing typed) has nothing to search yet.
   const showFilters = files.length > 0 || filtered;
@@ -53,7 +54,7 @@ export function FileLibrary({ groupId, files, nextCursor, later, notice, filters
 
       {notice ? <FormMessage tone="success" title={FILE_MESSAGES.notices[notice]} /> : null}
 
-      {showFilters ? <LibraryFilterForm base={base} filters={filters} subjects={subjects} active={filtered} /> : null}
+      {showFilters ? <LibraryFilterForm base={base} filters={filters} options={options} active={filtered} /> : null}
 
       {filtered && files.length > 0 ? (
         <p role="status" data-testid="results-summary" className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
@@ -91,7 +92,13 @@ export function FileLibrary({ groupId, files, nextCursor, later, notice, filters
                   <span className="font-medium [overflow-wrap:anywhere]">{file.title}</span>
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
                     <span className={badgeClass}>{file.typeLabel}</span>
-                    {file.subject ? <span className="[overflow-wrap:anywhere]">{file.subject}</span> : null}
+                    {file.details.map((detail) =>
+                      detail.display ? (
+                        <span key={detail.fieldId} className="[overflow-wrap:anywhere]">
+                          {detail.display}
+                        </span>
+                      ) : null,
+                    )}
                     <span className="[overflow-wrap:anywhere]">{file.uploaderName}</span>
                     <span>{formatBytes(file.sizeBytes)}</span>
                     <span>{formatFileDate(file.uploadedAt)}</span>
@@ -130,7 +137,7 @@ function summaryOf(count: number, filters: LibraryFilters, paged: boolean, later
   const files = count === 1 ? "file" : "files";
   const what =
     filters.q !== ""
-      ? `"${filters.q}"${filters.type !== "" || filters.subject !== "" ? " and your filters" : ""}`
+      ? `"${filters.q}"${filters.type !== "" || Object.keys(filters.details).length > 0 ? " and your filters" : ""}`
       : "your filters";
   if (paged) return `Showing ${count}${later ? " more" : ""} ${files} that ${count === 1 ? "matches" : "match"} ${what}`;
   return `${count} ${files} ${count === 1 ? "matches" : "match"} ${what}`;

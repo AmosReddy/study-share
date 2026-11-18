@@ -8,8 +8,9 @@ import { formatBytes, formatFileDate } from "@/shared/format";
 export type FileInfo = {
   id: string;
   title: string;
-  subject: string;
   typeLabel: string;
+  /** The file's details; the ones with nothing to show are left out. */
+  details: { fieldId: string; display: string }[];
   fileName: string;
   sizeBytes: number;
   uploaderName: string;
@@ -53,7 +54,13 @@ export function FileDetail({ groupId, file, children }: FileDetailProps) {
           <span className="shrink-0 rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
             {file.typeLabel}
           </span>
-          {file.subject ? <span className="[overflow-wrap:anywhere]">{file.subject}</span> : null}
+          {file.details.map((detail) =>
+            detail.display ? (
+              <span key={detail.fieldId} className="[overflow-wrap:anywhere]">
+                {detail.display}
+              </span>
+            ) : null,
+          )}
           <span className="[overflow-wrap:anywhere]">Shared by {file.uploaderName}</span>
           <span>{formatBytes(file.sizeBytes)}</span>
           <span>{formatFileDate(file.uploadedAt)}</span>

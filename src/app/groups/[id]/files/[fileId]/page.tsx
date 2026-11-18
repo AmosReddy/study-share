@@ -3,9 +3,10 @@ import { Suspense } from "react";
 import { DeleteFile } from "@/client/components/files/delete-file";
 import { EditFileForm } from "@/client/components/files/edit-file-form";
 import { FileDetail } from "@/client/components/files/file-detail";
+import { typeChoices } from "@/client/components/files/type-choices";
 import { Skeleton } from "@/client/components/ui/skeleton";
 import { requireFileDeps } from "@/server/files/request-deps";
-import { getFile, listFiles } from "@/server/files/use-cases";
+import { getFile, getFormForGroup, listFiles } from "@/server/files/use-cases";
 import { deleteFileAction, updateFileAction } from "../../../file-actions";
 
 export default function FilePage({ params }: PageProps<"/groups/[id]/files/[fileId]">) {
@@ -27,12 +28,17 @@ async function FileContent({ params }: Pick<PageProps<"/groups/[id]/files/[fileI
   const deps = await requireFileDeps(id);
   const file = await getFile(deps, id, fileId);
   if (!file) notFound();
-  // The subjects the group uses are suggestions in the edit form, so only the uploader needs them.
-  const subjects = file.canEdit ? ((await listFiles(deps, id))?.subjects ?? []) : [];
+  // TEMPORARY (Task 3): the edit form is still the default form's fields; Task 4 builds them from the form.
+  // The form and the subjects the group uses are only needed by the uploader, who edits.
+  const form = file.canEdit ? await getFormForGroup(deps, id) : null;
+  const subjects = form
+    ? ((await listFiles(deps, id))?.filters.fields.find((field) => field.id === "subject")?.options.map((option) => option.label) ?? [])
+    : [];
+  const subject = file.details.find((detail) => detail.fieldId === "subject")?.display ?? "";
 
   return (
     <FileDetail groupId={id} file={file}>
-      {file.canEdit ? (
+      {file.canEdit && form ? (
         <section aria-labelledby="edit-heading" className="flex flex-col gap-4">
           <h2 id="edit-heading" className={sectionHeading}>
             Edit details
@@ -41,8 +47,10 @@ async function FileContent({ params }: Pick<PageProps<"/groups/[id]/files/[fileI
             groupId={id}
             fileId={file.id}
             title={file.title}
-            subject={file.subject}
-            type={file.type}
+            subject={subject}
+            typeId={file.typeId}
+            typeOther={file.typeOther}
+            types={typeChoices(form.formConfig, file.typeId)}
             subjects={subjects}
             action={updateFileAction}
           />

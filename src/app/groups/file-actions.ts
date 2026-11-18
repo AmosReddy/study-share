@@ -41,13 +41,23 @@ export async function completeUploadAction(groupId: string, resourceId: string):
   return { ok: true, data: { id: result.data.id } };
 }
 
-/** Saves a file's title, type and subject (its uploader only). */
+/**
+ * Saves a file's title, type and details (its uploader only).
+ * TEMPORARY (custom upload form, Task 3): reads the default form's fields (Type, the Other text and
+ * Subject); Task 4 reads every field of the group's form.
+ */
 export async function updateFileAction(_state: FormState, form: FormData): Promise<FormState> {
   const groupId = text(form, "groupId");
   const fileId = text(form, "fileId");
   const deps = await requireFileDeps(groupId);
-  const values = { title: text(form, "title"), subject: text(form, "subject"), type: text(form, "type") };
-  const result = await updateFile(deps, groupId, fileId, values);
+  const values = { title: text(form, "title"), subject: text(form, "subject"), type: text(form, "type"), typeOther: text(form, "typeOther") };
+  const subject = values.subject.trim();
+  const result = await updateFile(deps, groupId, fileId, {
+    title: values.title,
+    typeId: values.type,
+    typeOther: values.typeOther,
+    details: subject === "" ? {} : { subject },
+  });
   if (!result.ok) return failed(result, values);
 
   revalidatePath("/", "layout");
@@ -55,7 +65,12 @@ export async function updateFileAction(_state: FormState, form: FormData): Promi
   return {
     status: "done",
     notice: "Saved.",
-    values: { title: saved.title, subject: saved.subject, type: saved.type },
+    values: {
+      title: saved.title,
+      subject: saved.details.find((detail) => detail.fieldId === "subject")?.display ?? "",
+      type: saved.typeId,
+      typeOther: saved.typeOther,
+    },
   };
 }
 
