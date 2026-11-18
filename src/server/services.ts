@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { connection } from "next/server";
 import { createFakeAccountDirectory } from "@/server/adapters/fake-account-directory";
 import { createFakeAuthProvider, getFakeAuthStore } from "@/server/adapters/fake-auth-provider";
+import { createFakeDirectChatStore } from "@/server/adapters/fake-direct-chat-store";
 import { createFakeFileStorage } from "@/server/adapters/fake-file-storage";
 import { createFakeGroupStore } from "@/server/adapters/fake-group-store";
 import { createFakeMessageStore } from "@/server/adapters/fake-message-store";
@@ -15,6 +16,7 @@ import { createS3FileStorage } from "@/server/adapters/s3-file-storage";
 import { createSupabaseAuthProvider } from "@/server/adapters/supabase-auth-provider";
 import { createAccountDirectory } from "@/server/db/account-directory";
 import { getDb } from "@/server/db/client";
+import { createDirectChatStore } from "@/server/db/direct-chat-store";
 import { createGroupStore } from "@/server/db/group-store";
 import { createMessageStore } from "@/server/db/message-store";
 import { createPostgresRateLimiter } from "@/server/db/postgres-rate-limiter";
@@ -24,6 +26,7 @@ import { getServerEnv } from "@/server/env";
 import { getSiteUrl } from "@/server/site-url";
 import type { AccountDirectory } from "@/server/ports/account-directory";
 import type { AuthProvider } from "@/server/ports/auth-provider";
+import type { DirectChatStore } from "@/server/ports/direct-chat-store";
 import type { EmailSender } from "@/server/ports/email-sender";
 import type { FileStorage } from "@/server/ports/file-storage";
 import type { GroupStore } from "@/server/ports/group-store";
@@ -140,6 +143,7 @@ let profileStore: ProfileStore | undefined;
 let groupStore: GroupStore | undefined;
 let resourceStore: ResourceStore | undefined;
 let messageStore: MessageStore | undefined;
+let directChatStore: DirectChatStore | undefined;
 
 /** Test mode's one limiter. On globalThis, like the fake auth store, because Next.js can bundle
  * server actions and route handlers separately and each would get its own copy. */
@@ -206,6 +210,18 @@ export function getMessageStore(): MessageStore {
   if (getServerEnv().SERVICES_MODE === "fake") return createFakeMessageStore(getFakeAuthStore());
   messageStore ??= createMessageStore(getDb());
   return messageStore;
+}
+
+/**
+ * Private chats between two group members: SQL on public.direct_chats, direct_messages and
+ * direct_reads over the database connection. In SERVICES_MODE=fake it is the in-memory fake over
+ * the fake auth store and the fake group store (its state is kept on globalThis, so each call can
+ * make a fresh wrapper). Apart from the group chat's store: neither reads the other's tables.
+ */
+export function getDirectChatStore(): DirectChatStore {
+  if (getServerEnv().SERVICES_MODE === "fake") return createFakeDirectChatStore(getFakeAuthStore());
+  directChatStore ??= createDirectChatStore(getDb());
+  return directChatStore;
 }
 
 /**

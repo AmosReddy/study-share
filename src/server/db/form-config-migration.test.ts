@@ -81,11 +81,11 @@ describe("migration 0007_form_config", () => {
     expect(migration).not.toMatch(/DROP TABLE|TRUNCATE|DELETE FROM/i);
   });
 
-  it("is in the journal after 0006, and the snapshot has the new columns", () => {
+  it("is in the journal after 0006 (entry 7), and the snapshot has the new columns", () => {
     const journal = JSON.parse(readFileSync(fileURLToPath(new URL("meta/_journal.json", root)), "utf8")) as {
       entries: { idx: number; tag: string }[];
     };
-    expect(journal.entries.at(-1)).toMatchObject({ idx: 7, tag: "0007_form_config" });
+    expect(journal.entries[7]).toMatchObject({ idx: 7, tag: "0007_form_config" });
     const snapshot = JSON.parse(readFileSync(fileURLToPath(new URL("meta/0007_snapshot.json", root)), "utf8")) as {
       tables: Record<string, { columns: Record<string, { notNull: boolean }> }>;
     };

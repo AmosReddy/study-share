@@ -162,3 +162,78 @@ export const messages = pgTable(
     check("messages_body_length_check", sql`char_length(btrim(body)) between 1 and 2000`),
   ],
 ).enableRLS();
+
+/**
+ * Private chats: one per pair of group members. The pair is stored in a fixed order (user_low is
+ * the smaller id, a check makes it so), so a pair has exactly one chat per group. Both participant
+ * links cascade: deleting an account deletes its private chats and their messages. Nothing here is
+ * ever read by a group-chat query (the `messages` table) and the other way round. See
+ * direct-chat-store.ts.
+ */
+export const directChats = pgTable(
+  "direct_chats",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+    userLow: uuid("user_low")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    userHigh: uuid("user_high")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("direct_chats_pair_unique").on(t.groupId, t.userLow, t.userHigh),
+    index("direct_chats_group_low_idx").on(t.groupId, t.userLow),
+    index("direct_chats_group_high_idx").on(t.groupId, t.userHigh),
+    check("direct_chats_pair_order_check", sql`user_low < user_high`),
+  ],
+).enableRLS();
+
+/**
+ * Messages of a private chat. Like `messages`: sender_id is cleared when the account goes (which
+ * cannot outlive the chat, as both participant links cascade), deleting sets deleted_at, and
+ * (chat_id, client_id) is unique so a retried send is a no-op. The body check matches
+ * CHAT_LIMITS.maxBody in src/shared/messages.ts.
+ */
+export const directMessages = pgTable(
+  "direct_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    chatId: uuid("chat_id")
+      .notNull()
+      .references(() => directChats.id, { onDelete: "cascade" }),
+    senderId: uuid("sender_id").references(() => authUsers.id, { onDelete: "set null" }),
+    body: text("body").notNull(),
+    clientId: uuid("client_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("direct_messages_chat_client_unique").on(t.chatId, t.clientId),
+    index("direct_messages_chat_created_idx").on(t.chatId, t.createdAt.desc(), t.id.desc()),
+    check("direct_messages_body_length_check", sql`char_length(btrim(body)) between 1 and 2000`),
+  ],
+).enableRLS();
+
+/**
+ * How far each participant has read a private chat: the position (creation time and id) of the
+ * newest message they have been shown. It only moves forward. Drives the unread dots.
+ */
+export const directReads = pgTable(
+  "direct_reads",
+  {
+    chatId: uuid("chat_id")
+      .notNull()
+      .references(() => directChats.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    readCreatedAt: timestamp("read_created_at", { withTimezone: true }).notNull(),
+    readMessageId: uuid("read_message_id").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.chatId, t.userId] })],
+).enableRLS();
