@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireFileDeps } from "@/server/files/request-deps";
 import { completeUpload, deleteFile, prepareUpload, updateFile, type FileResult } from "@/server/files/use-cases";
+import { FILE_MESSAGES } from "@/shared/file-messages";
 import type { FormState } from "@/shared/form-state";
 import { failed, text } from "../(auth)/form-data";
 
@@ -41,21 +42,58 @@ export async function completeUploadAction(groupId: string, resourceId: string):
   return { ok: true, data: { id: result.data.id } };
 }
 
-/** Saves a file's title, type and subject (its uploader only). */
+/** The form field names of a detail are `d_<detail id>`, like the Library's address. */
+const DETAIL_FIELD_PREFIX = "d_";
+/** More than the form could ever hold (the use-case refuses over 40): a hand-made post cannot make this loop long. */
+const MAX_DETAIL_FIELDS = 100;
+
+/** Every `d_<id>` field of the form, as detail id to its text. Entries, not property writes: an id like "__proto__" stays plain data. */
+function detailFields(form: FormData): [string, string][] {
+  const entries: [string, string][] = [];
+  for (const name of new Set(form.keys())) {
+    if (entries.length >= MAX_DETAIL_FIELDS) break;
+    if (name.startsWith(DETAIL_FIELD_PREFIX) && name.length > DETAIL_FIELD_PREFIX.length) {
+      entries.push([name.slice(DETAIL_FIELD_PREFIX.length), text(form, name)]);
+    }
+  }
+  return entries;
+}
+
+/**
+ * Saves a file's title, type and details (its uploader only). The details are the form's `d_<id>`
+ * fields; the use-case checks them against the group's form. What was typed comes back in `values`
+ * after an error, so the fields keep it.
+ */
 export async function updateFileAction(_state: FormState, form: FormData): Promise<FormState> {
   const groupId = text(form, "groupId");
   const fileId = text(form, "fileId");
   const deps = await requireFileDeps(groupId);
-  const values = { title: text(form, "title"), subject: text(form, "subject"), type: text(form, "type") };
-  const result = await updateFile(deps, groupId, fileId, values);
+  const details = detailFields(form);
+  const values = {
+    title: text(form, "title"),
+    type: text(form, "type"),
+    typeOther: text(form, "typeOther"),
+    ...Object.fromEntries(details.map(([id, value]) => [`${DETAIL_FIELD_PREFIX}${id}`, value])),
+  };
+  const result = await updateFile(deps, groupId, fileId, {
+    title: values.title,
+    typeId: values.type,
+    typeOther: values.typeOther,
+    details: Object.fromEntries(details),
+  });
   if (!result.ok) return failed(result, values);
 
   revalidatePath("/", "layout");
   const saved = result.data;
   return {
     status: "done",
-    notice: "Saved.",
-    values: { title: saved.title, subject: saved.subject, type: saved.type },
+    notice: FILE_MESSAGES.saved,
+    values: {
+      title: saved.title,
+      type: saved.typeId,
+      typeOther: saved.typeOther,
+      ...Object.fromEntries(saved.details.map((detail) => [`${DETAIL_FIELD_PREFIX}${detail.fieldId}`, detail.value])),
+    },
   };
 }
 

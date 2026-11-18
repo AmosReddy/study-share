@@ -2,14 +2,13 @@ import { RESOURCE_LIMITS } from "./resources";
 
 /**
  * Every sentence the file use-cases show, in one place so the owner can change the wording.
- * None of them names a person, a storage key or anything from the database.
+ * None of them names a person, a storage key or anything from the database. The sentences about
+ * the type and the extra details come from the group's form: see FORM_MESSAGES in form-config.ts.
  */
 export const FILE_MESSAGES = {
   titleRequired: "Give the file a title.",
   titleTooLong: `Use ${RESOURCE_LIMITS.maxTitle} characters or fewer.`,
-  subjectTooLong: `Use ${RESOURCE_LIMITS.maxSubject} characters or fewer.`,
   oddCharacter: "Remove the unusual character and try again.",
-  chooseType: "Choose what kind of file this is.",
   chooseFile: "Choose a file to upload.",
   fileEmpty: "That file is empty.",
   fileTooBig: `That file is larger than ${RESOURCE_LIMITS.maxFileBytes / (1024 * 1024)} MB. Choose a smaller one.`,
@@ -31,4 +30,6 @@ export const FILE_MESSAGES = {
   /** Shown on the library after a successful upload or delete (the `notice` in the address). */
   notices: { uploaded: "Your file is shared with the group.", deleted: "The file was deleted." },
   saved: "Saved.",
+  /** The owner changed the group's form while the person was filling it in (a detail they filled in is gone). */
+  formChanged: "This group's upload form was just changed. Reload the page to see the latest form, then try again.",
 } as const;

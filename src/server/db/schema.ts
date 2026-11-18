@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
-import { bigint, check, index, integer, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, check, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { authUsers } from "drizzle-orm/supabase";
+// Relative, not "@/...": drizzle-kit loads this file without the app's path aliases.
+import { DEFAULT_FORM_CONFIG, type FormConfig } from "../../shared/form-config";
 
 /**
  * Row Level Security is switched on for every table and no policies grant
@@ -35,7 +37,9 @@ export const rateLimits = pgTable(
 /**
  * A study group. Deleting a group sets deleted_at (the row and its invite keys stay, so an old
  * link never finds a new group); every read of the store skips deleted groups. See group-store.ts.
- * The invite token and code are unique across all groups, deleted ones included.
+ * The invite token and code are unique across all groups, deleted ones included. form_config is
+ * the group's upload form (see src/shared/form-config.ts); its column default is the default
+ * configuration, so a group made by code that does not know the column still gets a form.
  */
 export const groups = pgTable(
   "groups",
@@ -47,6 +51,7 @@ export const groups = pgTable(
     passwordHash: text("password_hash"),
     inviteToken: text("invite_token").notNull().unique(),
     inviteCode: text("invite_code").notNull().unique(),
+    formConfig: jsonb("form_config").$type<FormConfig>().notNull().default(DEFAULT_FORM_CONFIG),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
@@ -89,6 +94,13 @@ export const groupMembers = pgTable(
  * file sets deleted_at. uploader_id is cleared (not the file) when the uploader's account goes, so
  * the file stays and shows "Former member". The length checks match RESOURCE_LIMITS in
  * src/shared/resources.ts. See resource-store.ts.
+ *
+ * What a file answers on its group's form: type_id (a type id of the group's form_config, or
+ * `other`), type_other (the "Other" text, empty unless type_id is `other`) and details (detail id
+ * to the typed text or the chosen choice id). The old `type` and `subject` columns stay for now:
+ * new code writes `type` as the legacy key (`other` for a custom type) and leaves `subject` empty,
+ * so code from before the form existed keeps working. A before-insert trigger (migration 0007)
+ * fills type_id and details for rows that old code inserts.
  */
 export const resources = pgTable(
   "resources",
@@ -101,6 +113,9 @@ export const resources = pgTable(
     title: text("title").notNull(),
     subject: text("subject").notNull().default(""),
     type: text("type").notNull(),
+    typeId: text("type_id").notNull(),
+    typeOther: text("type_other").notNull().default(""),
+    details: jsonb("details").$type<Record<string, string>>().notNull().default({}),
     fileKey: text("file_key").notNull().unique(),
     fileName: text("file_name").notNull(),
     contentType: text("content_type").notNull(),
@@ -111,7 +126,9 @@ export const resources = pgTable(
   },
   (t) => [
     index("resources_group_created_idx").on(t.groupId, t.createdAt.desc(), t.id),
-    check("resources_type_check", sql`type in ('notes', 'pyq', 'study_material', 'assignment', 'other')`),
+    check("resources_type_id_length_check", sql`char_length(type_id) between 1 and 64`),
+    check("resources_type_other_length_check", sql`char_length(type_other) <= 40`),
+    check("resources_details_object_check", sql`jsonb_typeof(details) = 'object'`),
     check("resources_status_check", sql`status in ('uploading', 'ready')`),
     check("resources_size_check", sql`size_bytes > 0`),
     check("resources_title_length_check", sql`char_length(btrim(title)) between 1 and 120`),

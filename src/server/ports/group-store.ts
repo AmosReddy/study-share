@@ -1,3 +1,4 @@
+import type { FormConfig } from "@/shared/form-config";
 import type { GroupRole, JoinMode, MemberStatus } from "@/shared/groups";
 
 export type GroupRecord = {
@@ -8,6 +9,8 @@ export type GroupRecord = {
   passwordHash: string | null;
   inviteToken: string;
   inviteCode: string;
+  /** The group's upload form. A new group has DEFAULT_FORM_CONFIG; a stored value that is not a valid form reads as that default. */
+  formConfig: FormConfig;
   createdAt: Date;
 };
 

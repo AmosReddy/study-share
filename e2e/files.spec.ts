@@ -118,7 +118,7 @@ test("an empty library offers Upload; PDF, PNG and text files appear in the list
   await expect(items.nth(1)).toContainText(`${PNG.length} B`);
   await expect(items.nth(2)).toContainText("Unit 1 notes");
   await expect(items.nth(2)).toContainText("Notes");
-  await expect(items.nth(2)).toContainText("Physics");
+  await expect(items.nth(2)).toContainText("Subject: Physics");
   await expect(items.nth(2)).toContainText(/\d{1,2} [A-Z][a-z]{2} \d{4}/);
   // No storage key or address anywhere in the page.
   const html = await page.content();
@@ -346,7 +346,7 @@ test("a member sees every file, edits and deletes only their own, and the owner 
   await expect(member.getByText(FILE_MESSAGES.saved, { exact: true })).toBeVisible();
   await expect(member.getByRole("heading", { level: 1, name: "Ravi's better picture" })).toBeVisible();
   await expect(member.getByTestId("file-meta")).toContainText("Assignment");
-  await expect(member.getByTestId("file-meta")).toContainText("Algebra");
+  await expect(member.getByTestId("file-meta")).toContainText("Subject: Algebra");
   const raviFilePath = new URL(member.url()).pathname;
   await member.goto(group.path);
   await expect(fileLink(member, /Ravi's better picture/)).toContainText("Algebra");

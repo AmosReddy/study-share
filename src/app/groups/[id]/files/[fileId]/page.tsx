@@ -5,7 +5,8 @@ import { EditFileForm } from "@/client/components/files/edit-file-form";
 import { FileDetail } from "@/client/components/files/file-detail";
 import { Skeleton } from "@/client/components/ui/skeleton";
 import { requireFileDeps } from "@/server/files/request-deps";
-import { getFile, listFiles } from "@/server/files/use-cases";
+import { getFile, getFormForGroup, listFiles } from "@/server/files/use-cases";
+import { suggestionsFrom } from "@/shared/library-query";
 import { deleteFileAction, updateFileAction } from "../../../file-actions";
 
 export default function FilePage({ params }: PageProps<"/groups/[id]/files/[fileId]">) {
@@ -27,12 +28,13 @@ async function FileContent({ params }: Pick<PageProps<"/groups/[id]/files/[fileI
   const deps = await requireFileDeps(id);
   const file = await getFile(deps, id, fileId);
   if (!file) notFound();
-  // The subjects the group uses are suggestions in the edit form, so only the uploader needs them.
-  const subjects = file.canEdit ? ((await listFiles(deps, id))?.subjects ?? []) : [];
+  // The form and the values the group already uses are only needed by the uploader, who edits.
+  const form = file.canEdit ? await getFormForGroup(deps, id) : null;
+  const suggestions = form ? suggestionsFrom((await listFiles(deps, id))?.filters) : {};
 
   return (
     <FileDetail groupId={id} file={file}>
-      {file.canEdit ? (
+      {file.canEdit && form ? (
         <section aria-labelledby="edit-heading" className="flex flex-col gap-4">
           <h2 id="edit-heading" className={sectionHeading}>
             Edit details
@@ -41,9 +43,11 @@ async function FileContent({ params }: Pick<PageProps<"/groups/[id]/files/[fileI
             groupId={id}
             fileId={file.id}
             title={file.title}
-            subject={file.subject}
-            type={file.type}
-            subjects={subjects}
+            typeId={file.typeId}
+            typeOther={file.typeOther}
+            details={file.details.map(({ fieldId, value }) => ({ fieldId, value }))}
+            config={form.formConfig}
+            suggestions={suggestions}
             action={updateFileAction}
           />
         </section>

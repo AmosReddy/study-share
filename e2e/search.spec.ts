@@ -4,7 +4,7 @@ import { auditPage } from "./audit";
 import { createGroupThroughForm, isolateRateLimits, joinWith, newPersonContext, sidewaysOverflow, signUpAndConfirm } from "./helpers";
 
 /*
-  Slice 2, search and filters in the Library, as real people in real browsers (fake services mode,
+  Slice 2, search and filters in the Library (on the default upload form; custom forms are in upload-form.spec.ts), as real people in real browsers (fake services mode,
   same style as files.spec.ts). The owner is the test's own browser; a second uploader is only
   made for the paging test, because one person may start only 15 uploads an hour. Files are tiny
   buffers made in memory. Never resets the shared fake store.
@@ -29,13 +29,22 @@ const PNG = Buffer.from(
 );
 const TEXT = Buffer.from("Some plain notes.\n");
 
-type Upload = { name: string; mimeType: string; buffer: Buffer; title: string; type: string; subject: string };
+type Upload = {
+  name: string;
+  mimeType: string;
+  buffer: Buffer;
+  title: string;
+  type: string;
+  /** Only for the type Other: what kind of file it is (the form needs it). */
+  other?: string;
+  subject: string;
+};
 
 const A: Upload = { name: "unit1.pdf", mimeType: "application/pdf", buffer: PDF, title: "Unit 1 notes", type: "Notes", subject: "Physics" };
 const B: Upload = { name: "board.png", mimeType: "image/png", buffer: PNG, title: "Board diagram", type: "Previous year paper", subject: "Maths" };
 const C: Upload = { name: "chapter-zebra.txt", mimeType: "text/plain", buffer: TEXT, title: "Algebra sheet", type: "Assignment", subject: "Maths" };
 const D: Upload = { name: "optics.txt", mimeType: "text/plain", buffer: TEXT, title: "Optics summary", type: "Notes", subject: "Optics & Co" };
-const E: Upload = { name: "weird.txt", mimeType: "text/plain", buffer: TEXT, title: 'Tips 100% done_ok "quoted"', type: "Other", subject: "Odd +chars" };
+const E: Upload = { name: "weird.txt", mimeType: "text/plain", buffer: TEXT, title: 'Tips 100% done_ok "quoted"', type: "Other", other: "Pamphlet", subject: "Odd +chars" };
 const ALL = [A, B, C, D, E];
 
 let extraContexts: BrowserContext[] = [];
@@ -76,6 +85,7 @@ async function upload(page: Page, groupPath: string, file: Upload) {
   await page.getByLabel("File", { exact: true }).setInputFiles({ name: file.name, mimeType: file.mimeType, buffer: file.buffer });
   await page.getByLabel("Title", { exact: true }).fill(file.title);
   await page.getByLabel("Type", { exact: true }).selectOption({ label: file.type });
+  if (file.other) await page.getByLabel("What kind of file is it?", { exact: true }).fill(file.other);
   await page.getByLabel("Subject (optional)").fill(file.subject);
   await page.getByRole("button", { name: "Upload", exact: true }).click();
   await expect(page).toHaveURL(`${groupPath}?notice=uploaded`);
@@ -125,7 +135,7 @@ test("an empty library has no search or filters; with files, search finds title,
   await expect(searchBox(page)).toBeVisible();
   await expect(searchBox(page)).toHaveAttribute("type", "search");
   await expect(searchBox(page)).toHaveAttribute("maxlength", "100");
-  await expect(searchBox(page)).toHaveAttribute("placeholder", "Search by title, subject or file name");
+  await expect(searchBox(page)).toHaveAttribute("placeholder", "Search by title, details or file name");
   await expect(searchButton(page)).toBeVisible();
   await expect(clearLink(page)).toHaveCount(0);
   await expect(summary(page)).toHaveCount(0);
@@ -190,7 +200,7 @@ test("the Type and Subject dropdowns apply at once, combine with search, round-t
     "Assignment",
     "Other",
   ]);
-  await expect(subjectSelect(page).locator("option")).toHaveText(["All subjects", "Maths", "Odd +chars", "Optics & Co", "Physics"]);
+  await expect(subjectSelect(page).locator("option")).toHaveText(["Any subject", "Maths", "Odd +chars", "Optics & Co", "Physics"]);
 
   // Type filter.
   await choose(page, typeSelect, "Notes", "type", "notes");
@@ -200,8 +210,8 @@ test("the Type and Subject dropdowns apply at once, combine with search, round-t
   await expect(clearLink(page)).toBeVisible();
 
   // Subject filter on top of it: Notes and Maths is empty, and says so in friendly words.
-  await choose(page, subjectSelect, "Maths", "subject", "Maths");
-  expect(params(page)).toEqual({ type: "notes", subject: "Maths" });
+  await choose(page, subjectSelect, "Maths", "d_subject", "Maths");
+  expect(params(page)).toEqual({ type: "notes", d_subject: "Maths" });
   await expect(noMatch(page)).toBeVisible();
   await expect(library(page).getByRole("heading", { name: "No files yet" })).toHaveCount(0);
   await expect(library(page).getByRole("link", { name: "Clear search and filters" })).toHaveAttribute("href", group.path);
@@ -221,11 +231,11 @@ test("the Type and Subject dropdowns apply at once, combine with search, round-t
 
   // Search, type and subject together; the typed text rides along with a dropdown change.
   await choose(page, typeSelect, "All types", "type", "");
-  expect(params(page)).toEqual({ subject: "Maths" });
+  expect(params(page)).toEqual({ d_subject: "Maths" });
   await expect(summary(page)).toHaveText("2 files match your filters");
   await searchBox(page).fill("board");
   await choose(page, typeSelect, "Previous year paper", "type", "pyq");
-  expect(params(page)).toEqual({ q: "board", type: "pyq", subject: "Maths" });
+  expect(params(page)).toEqual({ q: "board", type: "pyq", d_subject: "Maths" });
   await expect(summary(page)).toHaveText('1 file matches "board" and your filters');
   await expect.poll(() => titlesShown(page)).toEqual([B.title]);
   await search(page, "algebra");
@@ -241,7 +251,7 @@ test("the Type and Subject dropdowns apply at once, combine with search, round-t
   await expect(subjectSelect(page)).toHaveValue("Maths");
 
   // Clear from a combined state.
-  await page.goto(`${group.path}?q=board&type=pyq&subject=Maths`);
+  await page.goto(`${group.path}?q=board&type=pyq&d_subject=Maths`);
   await expect(items(page)).toHaveCount(1);
   await clearLink(page).click();
   await expect(page).toHaveURL(group.path);
@@ -250,21 +260,30 @@ test("the Type and Subject dropdowns apply at once, combine with search, round-t
   await expect(typeSelect(page)).toHaveValue("");
 
   // A subject with an ampersand and a subject with a plus sign survive the address.
-  await choose(page, subjectSelect, "Optics & Co", "subject", "Optics & Co");
+  await choose(page, subjectSelect, "Optics & Co", "d_subject", "Optics & Co");
   await expect.poll(() => titlesShown(page)).toEqual([D.title]);
   await page.reload();
   await expect(subjectSelect(page)).toHaveValue("Optics & Co");
   await expect.poll(() => titlesShown(page)).toEqual([D.title]);
-  await choose(page, subjectSelect, "Odd +chars", "subject", "Odd +chars");
+  await choose(page, subjectSelect, "Odd +chars", "d_subject", "Odd +chars");
   await expect.poll(() => titlesShown(page)).toEqual([E.title]);
   await page.reload();
   await expect(subjectSelect(page)).toHaveValue("Odd +chars");
   await expect.poll(() => titlesShown(page)).toEqual([E.title]);
 
   // The subject is matched without regard to case, and shown with the group's own spelling.
-  await page.goto(`${group.path}?subject=MATHS`);
+  await page.goto(`${group.path}?d_subject=MATHS`);
   await expect.poll(() => titlesShown(page)).toEqual([C.title, B.title]);
   await expect(subjectSelect(page)).toHaveValue("Maths");
+
+  // An address from before forms could change (`subject=`) still filters, and the next filter the
+  // person picks is written the new way.
+  await page.goto(`${group.path}?subject=Maths`);
+  await expect.poll(() => titlesShown(page)).toEqual([C.title, B.title]);
+  await expect(subjectSelect(page)).toHaveValue("Maths");
+  await choose(page, typeSelect, "Assignment", "type", "assignment");
+  expect(params(page)).toEqual({ type: "assignment", d_subject: "Maths" });
+  await expect.poll(() => titlesShown(page)).toEqual([C.title]);
 });
 
 test("odd characters in the search are looked for literally and never break the page", async ({ page }) => {
@@ -320,32 +339,39 @@ test("odd or hostile addresses are answered with the library, never an error", a
   const base = group.path;
 
   // A repeated parameter counts once (the first value).
-  await page.goto(`${base}?q=unit&q=board&type=notes&type=pyq&subject=Physics&subject=Maths`);
+  await page.goto(`${base}?q=unit&q=board&type=notes&type=pyq&d_subject=Physics&d_subject=Maths`);
   await expect.poll(() => titlesShown(page)).toEqual([A.title]);
   await expect(searchBox(page)).toHaveValue("unit");
   await expect(typeSelect(page)).toHaveValue("notes");
   await expect(subjectSelect(page)).toHaveValue("Physics");
 
-  // An unknown type is ignored and is no filter at all (no Clear, no summary).
+  // An unknown type (an old link, a typo) matches nothing; the dropdown still shows that something filters, never the raw word.
   await page.goto(`${base}?type=videos`);
+  await expect(noMatch(page)).toBeVisible();
+  await expect(typeSelect(page)).toHaveValue("videos");
+  await expect(typeSelect(page).locator("option:checked")).toHaveText("Unknown type");
+  await expect(clearLink(page)).toBeVisible();
+
+  // An unknown detail is ignored and is no filter at all (no Clear, no summary), even with a value.
+  await page.goto(`${base}?d_nope=x&d_also_nope=y`);
   await expect(items(page)).toHaveCount(2);
   await expect(clearLink(page)).toHaveCount(0);
-  await expect(typeSelect(page)).toHaveValue("");
+  await expect(summary(page)).toHaveCount(0);
 
   // An unknown subject matches nothing, and the dropdown still shows what is filtering.
-  await page.goto(`${base}?subject=Nope`);
+  await page.goto(`${base}?d_subject=Nope`);
   await expect(noMatch(page)).toBeVisible();
   await expect(subjectSelect(page)).toHaveValue("Nope");
   await expect(clearLink(page)).toBeVisible();
 
   // A very long search is cut, a very long subject matches nothing, and a garbage cursor is no cursor.
-  const response = await page.goto(`${base}?q=${"x".repeat(6000)}&subject=${"s".repeat(6000)}`);
+  const response = await page.goto(`${base}?q=${"x".repeat(3000)}&d_subject=${"s".repeat(3000)}&type=${"t".repeat(3000)}&d_${"i".repeat(3000)}=1`);
   expect(response?.status()).toBe(200);
   await expect(noMatch(page)).toBeVisible();
   expect(await searchBox(page).inputValue()).toHaveLength(100);
   expect((await page.goto(`${base}?cursor=garbage&q=unit`))?.status()).toBe(200);
   await expect(items(page)).toHaveCount(1);
-  expect((await page.goto(`${base}?q=%00%01&type=%00&subject=%00`))?.status()).toBe(200);
+  expect((await page.goto(`${base}?q=%00%01&type=%00&d_subject=%00`))?.status()).toBe(200);
   await expect(library(page)).toBeVisible();
   expect((await page.goto(`${base}?q[]=a&q[x]=b`))?.status()).toBe(200);
   await expect(library(page)).toBeVisible();
@@ -358,10 +384,10 @@ test("odd or hostile addresses are answered with the library, never an error", a
   await searchBox(page).fill("board");
   await typeSelect(page).selectOption({ label: "Previous year paper" });
   // Choosing the type already went to the results through the router; now send the form the plain
-  // way. Only a real form post adds the empty "subject=" to the address.
+  // way. Only a real form post adds the empty "d_subject=" to the address.
   await expect.poll(() => params(page)).toEqual({ q: "board", type: "pyq" });
   await form.evaluate((node) => HTMLFormElement.prototype.submit.call(node));
-  await expect(page).toHaveURL(/[?&]subject=(&|$)/);
+  await expect(page).toHaveURL(/[?&]d_subject=(&|$)/);
   await page.waitForLoadState("load");
   expect(params(page)).toEqual({ q: "board", type: "pyq" });
   await expect.poll(() => titlesShown(page)).toEqual([B.title]);
@@ -386,7 +412,7 @@ test("Show more and Back to the newest files keep the search and filters, and a 
     });
   }
 
-  await page.goto(`${group.path}?q=file&type=notes&subject=Maths`);
+  await page.goto(`${group.path}?q=file&type=notes&d_subject=Maths`);
   await expect(items(page)).toHaveCount(20);
   await expect(summary(page)).toHaveText('Showing 20 files that match "file" and your filters');
   const more = library(page).getByRole("link", { name: "Show more" });
@@ -394,7 +420,7 @@ test("Show more and Back to the newest files keep the search and filters, and a 
   const target = new URL(href, "http://x.test");
   expect(target.searchParams.get("q")).toBe("file");
   expect(target.searchParams.get("type")).toBe("notes");
-  expect(target.searchParams.get("subject")).toBe("Maths");
+  expect(target.searchParams.get("d_subject")).toBe("Maths");
   expect(target.searchParams.get("cursor")).toBeTruthy();
   expect(href).not.toContain("notice");
 
@@ -402,27 +428,27 @@ test("Show more and Back to the newest files keep the search and filters, and a 
   await expect(items(page)).toHaveCount(1);
   await expect.poll(() => titlesShown(page)).toEqual(["File 01"]);
   await expect(summary(page)).toHaveText('Showing 1 more file that matches "file" and your filters');
-  expect(params(page)).toMatchObject({ q: "file", type: "notes", subject: "Maths" });
+  expect(params(page)).toMatchObject({ q: "file", type: "notes", d_subject: "Maths" });
   await expect(searchBox(page)).toHaveValue("file");
   await expect(library(page).getByRole("link", { name: "Show more" })).toHaveCount(0);
 
   // A new search from a later page starts at the first page again.
   await search(page, "file 0");
-  await expect.poll(() => params(page)).toEqual({ q: "file 0", type: "notes", subject: "Maths" });
+  await expect.poll(() => params(page)).toEqual({ q: "file 0", type: "notes", d_subject: "Maths" });
   await expect(items(page)).toHaveCount(9);
   await expect(library(page).getByRole("link", { name: "Back to the newest files" })).toHaveCount(0);
 
   // Back to the newest files keeps the filters.
   await page.goto(href);
   await library(page).getByRole("link", { name: "Back to the newest files" }).click();
-  await expect.poll(() => params(page)).toEqual({ q: "file", type: "notes", subject: "Maths" });
+  await expect.poll(() => params(page)).toEqual({ q: "file", type: "notes", d_subject: "Maths" });
   await expect(items(page)).toHaveCount(20);
 
   // Changing a dropdown from a later page drops the cursor too.
   await page.goto(href);
   await expect(items(page)).toHaveCount(1);
   await choose(page, typeSelect, "Assignment", "type", "assignment");
-  expect(params(page)).toEqual({ q: "file", type: "assignment", subject: "Maths" });
+  expect(params(page)).toEqual({ q: "file", type: "assignment", d_subject: "Maths" });
   await expect(items(page)).toHaveCount(1);
   await expect.poll(() => titlesShown(page)).toEqual(["File 22"]);
 });
@@ -435,9 +461,10 @@ test("the Library with search and filters fits the screen and meets the phone qu
 
   const states = [
     group.path,
-    `${group.path}?q=very&type=notes&subject=${encodeURIComponent(longSubject)}`,
+    `${group.path}?q=very&type=notes&d_subject=${encodeURIComponent(longSubject)}`,
     `${group.path}?q=${"w".repeat(100)}`,
-    `${group.path}?subject=${encodeURIComponent("n".repeat(61))}`,
+    `${group.path}?d_subject=${encodeURIComponent("n".repeat(101))}`,
+    `${group.path}?type=${"t".repeat(80)}`,
     `${group.path}?type=assignment`,
   ];
   for (const state of states) {

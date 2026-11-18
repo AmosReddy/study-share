@@ -51,7 +51,7 @@ export type InvitePreview =
  * The group as the pages may see it: no password hash, and no invite token or code. `invite` is
  * present only for those allowed to see it (the owner).
  */
-export type VisibleGroup = Omit<GroupRecord, "passwordHash" | "inviteToken" | "inviteCode"> & {
+export type VisibleGroup = Omit<GroupRecord, "passwordHash" | "inviteToken" | "inviteCode" | "formConfig"> & {
   invite?: { url: string; code: string };
 };
 
