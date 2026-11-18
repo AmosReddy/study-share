@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatPage, MessageView } from "@/shared/chat-types";
 import {
+  canDeleteItem,
   chatItems,
   chatReducer,
   dedupe,
@@ -329,5 +330,27 @@ describe("new-message tracking", () => {
     });
     expect(hasUnseen(chatItems(state), "")).toBe(false);
     expect(newestSentAt(chatItems(state))).toBe(mine.createdAt);
+  });
+});
+
+describe("canDeleteItem", () => {
+  const mine = { mine: true, canDelete: false };
+  const theirs = { mine: false, canDelete: false };
+
+  it("follows the server's answer in the group chat", () => {
+    expect(canDeleteItem({ mine: true, canDelete: true }, { canSend: true, ownDeletable: false })).toBe(true);
+    expect(canDeleteItem(mine, { canSend: true, ownDeletable: false })).toBe(false);
+    expect(canDeleteItem({ mine: false, canDelete: true }, { canSend: true, ownDeletable: false })).toBe(true);
+  });
+
+  it("in a private chat the viewer's own messages are deletable as soon as replying is possible again, even if the server said no while the other person was gone", () => {
+    expect(canDeleteItem(mine, { canSend: false, ownDeletable: true })).toBe(false);
+    expect(canDeleteItem(mine, { canSend: true, ownDeletable: true })).toBe(true);
+    // The other person's messages never become deletable.
+    expect(canDeleteItem(theirs, { canSend: true, ownDeletable: true })).toBe(false);
+  });
+
+  it("nothing is deletable while the chat is read-only", () => {
+    expect(canDeleteItem({ mine: true, canDelete: true }, { canSend: false, ownDeletable: true })).toBe(false);
   });
 });

@@ -1,8 +1,7 @@
 import "server-only";
 import { connection } from "next/server";
 import { requireDirectChatDeps } from "@/server/chat/direct-request-deps";
-import { listPrivateChats, privateUnread } from "@/server/chat/direct-use-cases";
-import type { PrivateSummary } from "@/shared/direct-chat-types";
+import { loadPrivateSummary } from "@/server/chat/direct-use-cases";
 
 /*
   What the private summary route (GET /groups/<id>/chat/private/summary) does. The Private list
@@ -25,16 +24,14 @@ export async function servePrivateSummary(params: Promise<{ id: string }>): Prom
   const { id } = await params;
   const deps = await requireDirectChatDeps(id);
 
-  let list;
+  let summary;
   try {
-    list = await listPrivateChats(deps, id);
+    summary = await loadPrivateSummary(deps, id);
   } catch {
     // A store outage, not "not found". Nothing from the error is shown.
     console.error("Could not load the private chats.");
     return new Response("Please try again in a moment.", { status: 503, headers: { ...TEXT, "Retry-After": "5" } });
   }
-  if (!list) return new Response("Not found", { status: 404, headers: TEXT });
-
-  const summary: PrivateSummary = { chats: list.chats, unread: await privateUnread(deps, id) };
+  if (!summary) return new Response("Not found", { status: 404, headers: TEXT });
   return Response.json(summary, { headers: NO_STORE });
 }

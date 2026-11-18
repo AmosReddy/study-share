@@ -316,6 +316,8 @@ describe("getDirectChatStore", () => {
         inviteCode: "ABCDEFGH",
       });
       if (!made.ok) throw new Error("createGroup failed");
+      // A message needs both people to be active members.
+      expect(await getGroupStore().addMember(made.group.id, friend)).toBe("joined");
       const { chatId } = await getDirectChatStore().openChat(made.group.id, owner, friend);
       await getDirectChatStore().send({
         chatId,

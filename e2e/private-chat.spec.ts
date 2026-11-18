@@ -455,6 +455,11 @@ test("a member who leaves loses the chat, the one who stays reads it, and rejoin
   await expect(ravi.getByText(readOnlyNote(MEERA))).toBeVisible(POLLED);
   await expect(box(ravi)).toHaveCount(0);
   await expect(message(ravi, "Before leaving")).toBeVisible();
+  // A fresh page while she is gone: the server says nothing of Ravi's is deletable now.
+  await ravi.reload();
+  await expect(ravi.getByText(readOnlyNote(MEERA))).toBeVisible();
+  await expect(message(ravi, "Before leaving")).toBeVisible();
+  await expect(ravi.getByRole("button", { name: /^Delete message/ })).toHaveCount(0);
 
   // Meera joins again with the same account: the same conversation, and Ravi can reply again.
   expect((await joinWith(meera, group.code)).ok).toBe(true);
@@ -467,6 +472,9 @@ test("a member who leaves loses the chat, the one who stays reads it, and rejoin
   await expect(box(meera)).toBeVisible();
   await expect(ravi.getByText(readOnlyNote(MEERA))).toHaveCount(0, POLLED);
   await expect(box(ravi)).toBeVisible();
+  // His own earlier message can be deleted again at once, without a reload (and Meera's never can).
+  await expect(message(ravi, "Before leaving").getByRole("button", { name: /^Delete message/ })).toBeVisible();
+  await expect(ravi.getByRole("button", { name: /^Delete message/ })).toHaveCount(1);
   await say(ravi, info, "Welcome back");
   await expect(message(meera, "Welcome back")).toBeVisible(POLLED);
   await say(meera, info, "Thanks");

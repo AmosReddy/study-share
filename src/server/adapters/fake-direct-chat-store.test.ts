@@ -49,6 +49,12 @@ runDirectChatStoreContract(async (run) => {
       deleteUser: async (userId) => {
         auth.users.delete(userId);
       },
+      join: async (groupId, userId) => {
+        await groups.addMember(groupId, userId);
+      },
+      removeMember: async (groupId, userId) => {
+        if (!(await groups.removeMember(groupId, userId))) throw new Error("removeMember refused");
+      },
     });
   } finally {
     resetFakeDirectChatStore();

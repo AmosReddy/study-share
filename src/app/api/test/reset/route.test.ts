@@ -152,6 +152,9 @@ describe("POST /api/test/reset", () => {
     ]) {
       auth.users.set(id, { id, email: `${displayName}@example.test`, password: null, displayName, termsVersion: null, confirmed: true, identities: [] });
     }
+    // A message needs both people to be active members of the group.
+    expect(await groups.addMember(group.id, sender)).toBe("joined");
+    expect(await groups.addMember(group.id, friend)).toBe("joined");
     const { chatId } = await direct.openChat(group.id, sender, friend);
     const sent = await direct.send({ chatId, senderId: sender, clientId: "44444444-4444-4444-8444-444444444444", body: "hello" });
     await direct.markRead(chatId, friend, sent.message.cursor);

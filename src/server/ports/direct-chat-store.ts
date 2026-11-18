@@ -55,10 +55,17 @@ export interface DirectChatStore {
    * The chat between two people in a group, made when it does not exist yet (safe to repeat and
    * to run at the same instant: one chat comes back). The pair is stored in a fixed order
    * (`user_low` < `user_high`, compared as lower-case text), so (x, y) and (y, x) are one chat.
+   * `created` is true for the one call that made the pair's chat and false for every other (a
+   * repeat, or the loser of two at the same instant), so callers can count only new conversations.
    * Throws when the group does not exist or is deleted, an id is not a uuid, the two ids are the
    * same person, or a person has no account.
    */
-  openChat(groupId: string, userX: string, userY: string): Promise<{ chatId: string }>;
+  openChat(groupId: string, userX: string, userY: string): Promise<{ chatId: string; created: boolean }>;
+  /**
+   * The chat of this pair in this group when it exists already, without making one (the same
+   * ordering and letter-case rules as openChat). Null for none, a deleted group, or ids that are not uuids.
+   */
+  findPairChat(groupId: string, userX: string, userY: string): Promise<{ chatId: string } | null>;
   /**
    * The chat and its two people (low first), only when it belongs to THIS group and the group is
    * live. Null for a malformed id, an unknown chat, another group's chat and a deleted group.

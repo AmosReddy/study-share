@@ -11,8 +11,8 @@ type ChatMessageProps = {
   groupId: string;
   /** The message's time as text, in the viewer's time zone; "" until the browser has taken over. */
   timeText: string;
-  /** False when nobody may delete here any more (a private chat whose other person has left): the delete button goes. */
-  allowDelete: boolean;
+  /** The viewer may delete this message (see canDeleteItem); the delete button shows only then. */
+  canDelete: boolean;
   /** What the delete sheet says for the viewer's own message. */
   deleteOwnDescription: string;
   /** The viewer is the group's owner (the delete sheet says so for other people's messages). */
@@ -35,7 +35,7 @@ const preview = (body: string) => {
  * message the viewer may delete a trash button beside it. Own messages sit on the right in the
  * primary colour. A message still being sent says so; one that failed offers retry and discard.
  */
-export function ChatMessage({ row, groupId, allowDelete, deleteOwnDescription, timeText, canDeleteAny, deleteAction, onDeleted, onRetry, onDiscard }: ChatMessageProps) {
+export function ChatMessage({ row, groupId, canDelete, deleteOwnDescription, timeText, canDeleteAny, deleteAction, onDeleted, onRetry, onDiscard }: ChatMessageProps) {
   const { item, startsGroup } = row;
   const showName = startsGroup && !item.mine;
   const id = item.id;
@@ -68,7 +68,7 @@ export function ChatMessage({ row, groupId, allowDelete, deleteOwnDescription, t
             </time>
           ) : null}
         </div>
-        {id && item.canDelete && allowDelete ? (
+        {id && canDelete ? (
           <ConfirmSheet
             action={deleteAction}
             fields={{ groupId, messageId: id }}

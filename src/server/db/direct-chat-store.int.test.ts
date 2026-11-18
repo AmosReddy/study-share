@@ -74,6 +74,12 @@ async function withStore(run: (ctx: Ctx) => Promise<void>): Promise<void> {
       deleteUser: async (userId) => {
         await client`delete from auth.users where id = ${userId}`;
       },
+      join: async (groupId, userId) => {
+        await groups.addMember(groupId, userId);
+      },
+      removeMember: async (groupId, userId) => {
+        if (!(await groups.removeMember(groupId, userId))) throw new Error("removeMember refused");
+      },
       client,
     });
   } finally {

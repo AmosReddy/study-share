@@ -10,6 +10,7 @@ import { setPrivateUnread } from "@/client/lib/private-unread-store";
 import { useNow } from "@/client/lib/use-now";
 import { DIRECT_CHAT_MESSAGES } from "@/shared/direct-chat-messages";
 import type { PrivateSummary } from "@/shared/direct-chat-types";
+import { useViewer } from "./private-unread-scope";
 import { UnreadDot } from "./unread-dot";
 import { useBrowserPoller } from "./use-chat-poll";
 
@@ -25,6 +26,7 @@ export function PrivateChatList({ groupId, initial }: { groupId: string; initial
   const [reconnecting, setReconnecting] = useState(false);
   const [stopped, setStopped] = useState<"gone" | "signed-out" | null>(null);
   const now = useNow();
+  const viewer = useViewer();
 
   useBrowserPoller(
     () =>
@@ -36,7 +38,7 @@ export function PrivateChatList({ groupId, initial }: { groupId: string; initial
         now: () => Date.now(),
         onPage: (_kind, page) => {
           setSummary(page);
-          setPrivateUnread(groupId, page.unread.any);
+          setPrivateUnread(viewer, groupId, page.unread.any);
         },
         onReconnecting: setReconnecting,
         onGone: () => setStopped("gone"),

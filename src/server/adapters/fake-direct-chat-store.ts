@@ -7,7 +7,7 @@ import type {
 } from "../ports/direct-chat-store";
 import { clampResourceLimit, decodeResourceCursor, encodeResourceCursor } from "../resource-cursor";
 import { getFakeAuthStore, type FakeAuthStore } from "./fake-auth-provider";
-import { isFakeGroupLive } from "./fake-group-store";
+import { isFakeGroupLive, isFakeGroupMember } from "./fake-group-store";
 
 /*
   Test-mode DirectChatStore, in memory. Every method is one synchronous section, so each is atomic.
@@ -152,10 +152,21 @@ export function createFakeDirectChatStore(authStore: FakeAuthStore = getFakeAuth
       if (!isFakeGroupLive(gid)) throw new Error("openChat: the group does not exist or is deleted.");
       if (!authStore.users.has(x) || !authStore.users.has(y)) throw new Error("openChat: a person has no account.");
       const [low, high] = x < y ? [x, y] : [y, x];
-      for (const c of state.chats.values()) if (c.groupId === gid && c.low === low && c.high === high) return { chatId: c.id };
+      for (const c of state.chats.values()) if (c.groupId === gid && c.low === low && c.high === high) return { chatId: c.id, created: false };
       const chat: Chat = { id: crypto.randomUUID(), groupId: gid, low, high };
       state.chats.set(chat.id, chat);
-      return { chatId: chat.id };
+      return { chatId: chat.id, created: true };
+    },
+
+    async findPairChat(groupId, userX, userY) {
+      if (!UUID.test(groupId) || !UUID.test(userX) || !UUID.test(userY)) return null;
+      const gid = groupId.toLowerCase();
+      const x = userX.toLowerCase();
+      const y = userY.toLowerCase();
+      if (x === y) return null;
+      const [low, high] = x < y ? [x, y] : [y, x];
+      for (const c of state.chats.values()) if (c.groupId === gid && c.low === low && c.high === high && liveChat(c.id)) return { chatId: c.id };
+      return null;
     },
 
     async findChat(groupId, chatId) {
@@ -196,6 +207,10 @@ export function createFakeDirectChatStore(authStore: FakeAuthStore = getFakeAuth
       if (!chat) throw new Error("send: the chat does not exist or its group is deleted.");
       const senderId = input.senderId.toLowerCase();
       if (!isParticipant(chat, senderId)) throw new Error("send: the sender is not in this chat.");
+      // As in the database, decided together with the save: both people must still be active members.
+      if (!isFakeGroupMember(chat.groupId, chat.low) || !isFakeGroupMember(chat.groupId, chat.high)) {
+        throw new Error("send: a person of this chat is not an active member of the group.");
+      }
       // Postgres cannot store a NUL character in text.
       if (input.body.includes("\u0000")) throw new Error("send: text cannot hold a NUL character.");
       const bodyLength = length(trimSpaces(input.body));

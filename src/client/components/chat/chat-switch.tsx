@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { usePrivateUnread } from "@/client/components/chat/private-unread-scope";
 import { UnreadDot } from "@/client/components/chat/unread-dot";
-import { usePrivateUnread } from "@/client/lib/private-unread-store";
 import { cn } from "@/client/lib/utils";
 
 type ChatSwitchProps = {

@@ -142,6 +142,6 @@ These are by design. They are not bugs.
 - **The group owner has no power over private chats.** They cannot read, find or delete anything in them.
 - **Text only.** No pictures or files, no editing, no replies, and no "seen" marks or typing signs.
 - **A chat nobody has written in is not listed**, for either person.
-- **Limits:** at most **20 private messages a minute** per person, and at most **30 new private chats an hour** per person. A message is up to 2000 characters, like the group chat.
+- **Limits:** at most **20 private messages a minute** per person, and at most **30 new private chats an hour** per person (tapping **Message** to go into a chat you already have is free and not counted). A message is up to 2000 characters, like the group chat.
 - **Leaving or removal keeps the messages.** The person who stays can read them for as long as the account exists. If a member who left joins again they get the conversation back.
 - **A database change is needed** (migration 0008), so going back to the Slice 5 version of the site after the migration is harmless (the new tables are simply unused).

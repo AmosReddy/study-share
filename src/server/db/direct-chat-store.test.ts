@@ -52,6 +52,7 @@ describe("the private chat store's statements", () => {
     const { db, statements } = recorder();
     const store = createDirectChatStore(db);
     await attempt(() => store.openChat(GROUP, ADA, RAVI));
+    await store.findPairChat(GROUP, ADA, RAVI);
     await store.findChat(GROUP, CHAT);
     await store.listChatsFor(GROUP, ADA);
     await attempt(() => store.send({ chatId: CHAT, senderId: ADA, clientId: CLIENT, body: BODY }));
@@ -66,7 +67,7 @@ describe("the private chat store's statements", () => {
   }
 
   it("sends statements for every method", async () => {
-    expect((await everyStatement()).length).toBeGreaterThanOrEqual(11);
+    expect((await everyStatement()).length).toBeGreaterThanOrEqual(12);
   });
 
   it("never touches the group chat's messages table", async () => {

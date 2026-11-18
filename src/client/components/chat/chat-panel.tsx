@@ -15,6 +15,7 @@ import {
 } from "react";
 import { Button, buttonVariants } from "@/client/components/ui/button";
 import {
+  canDeleteItem,
   chatItems,
   chatReducer,
   hasUnseen,
@@ -73,6 +74,8 @@ type ChatPanelProps = {
   /** Where "Log in again" leads. Defaults to the group's chat. */
   resumeHref?: string;
   copy?: ChatCopy;
+  /** Private chats: the viewer's own messages can be deleted whenever replying is possible, whatever an older page said. */
+  ownDeletable?: boolean;
   /** Private chats: the person may reply. When false the message box is replaced by the read-only note; polls keep it current. */
   canSend?: boolean;
 };
@@ -96,6 +99,7 @@ export function ChatPanel({
   resumeHref = `/groups/${encodeURIComponent(groupId)}/chat`,
   copy = GROUP_COPY,
   canSend: initialCanSend = true,
+  ownDeletable = false,
 }: ChatPanelProps) {
   const [state, dispatchToState] = useReducer(chatReducer, initial, initialChatState);
   // The same state, kept up to date the moment an action is dispatched (not after the next render),
@@ -305,7 +309,7 @@ export function ChatPanel({
                   key={row.item.key}
                   row={row}
                   groupId={groupId}
-                  allowDelete={canSend}
+                  canDelete={canDeleteItem(row.item, { canSend, ownDeletable })}
                   deleteOwnDescription={copy.deleteOwn}
                   timeText={now ? formatMessageTime(row.item.createdAt, now) : ""}
                   canDeleteAny={state.canDeleteAny}

@@ -95,7 +95,8 @@ describe("GET /groups/[id]/chat/private/[chatId]/messages", () => {
     expect(body).toMatchObject({
       hasMore: false,
       canSend: true,
-      otherName: "Ravi",
+      // The poll does not look the name up (it would cost the whole member list).
+      otherName: "",
       otherGone: false,
       messages: [{ body: "hello", senderName: "Ravi", mine: false, canDelete: false }],
     });
@@ -170,7 +171,7 @@ describe("GET /groups/[id]/chat/private/[chatId]/messages", () => {
     await t.groups.removeMember(groupId, ravi.id);
     expect((await get(t.as(ravi), groupId, chatId, `?after=${message.cursor}`)).status).toBe(404);
     const stayer = await (await get(t.as(mina), groupId, chatId)).json();
-    expect(stayer).toMatchObject({ canSend: false, otherGone: true, otherName: "Ravi" });
+    expect(stayer).toMatchObject({ canSend: false, otherGone: true, otherName: "" });
   });
 
   it("does not let the signed-in person's redirect be swallowed: a signed-out visitor is sent on by requireDirectChatDeps", async () => {

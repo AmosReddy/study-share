@@ -45,7 +45,7 @@ export async function serveDirectMessages(
 
   let page;
   try {
-    page = await loadDirectChat(deps, id, chatId, { after, before });
+    page = await loadDirectChat(deps, id, chatId, { after, before }, { withName: false });
   } catch {
     // A store outage, not "not found". Nothing from the error is shown.
     console.error("Could not load the private chat.");

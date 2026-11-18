@@ -82,9 +82,10 @@ export function MemberList({
         <ul aria-label="Members" className="flex flex-col divide-y rounded-xl border">
           {members.map((member, index) => (
             // The owner's rows carry a user id, which is stable when the list changes (a removal): the
-            // Remove sheet's open state must stay with its person, never slide to the next row. Rows
-            // without an id (plain members' view) have no state to keep.
-            <li key={member.userId ?? `row-${index}`} className="flex min-h-14 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
+            // Remove sheet's open state must stay with its person, never slide to the next row. A plain
+            // member's rows carry the person's chat key instead (a one-way code, stable the same way), so
+            // a Message button's own state (its error) stays with its person after a refresh too.
+            <li key={member.userId ?? member.chatKey ?? (member.isYou ? "you" : `row-${index}`)} className="flex min-h-14 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
               <span className="min-w-0 flex-1 font-medium [overflow-wrap:anywhere]">
                 {member.name}
                 {member.unread ? <UnreadDot className="mx-2 align-middle" /> : null}

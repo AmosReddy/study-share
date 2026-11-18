@@ -8,7 +8,7 @@ import { actionContext, memberContext, type GroupDeps, type MemberEntry } from "
 import { CHAT_MESSAGES } from "@/shared/chat-messages";
 import type { MessageView } from "@/shared/chat-types";
 import { DIRECT_CHAT_MESSAGES } from "@/shared/direct-chat-messages";
-import type { DirectChatPage, PrivateChatRow, PrivateUnread } from "@/shared/direct-chat-types";
+import type { DirectChatPage, PrivateChatRow, PrivateSummary, PrivateUnread } from "@/shared/direct-chat-types";
 import { uuidSchema } from "@/shared/groups";
 import { sendMessageSchema } from "@/shared/message-schemas";
 import { CHAT_LIMITS } from "@/shared/messages";
@@ -48,7 +48,7 @@ export type DirectChatDeps = GroupDeps & {
   secret: string;
 };
 
-export type { DirectChatPage, PrivateChatRow, PrivateUnread };
+export type { DirectChatPage, PrivateChatRow, PrivateSummary, PrivateUnread };
 
 /** A private chat action's answer: the usual result, `notFound` for everything that must look missing, or `readOnly` for a chat the person may read but not write to. */
 export type DirectResult<T = void> = ChatResult<T> | { ok: false; readOnly: true; formError: string };
@@ -79,7 +79,13 @@ type Access = {
  * Null for everyone who fails it. A store failure THROWS: reads let it through, and actions catch
  * it (see `guarded`), so an outage never turns into "not found".
  */
-async function directAccess(deps: DirectChatDeps, groupId: string, chatId: string, action: Action): Promise<Access | null> {
+async function directAccess(
+  deps: DirectChatDeps,
+  groupId: string,
+  chatId: string,
+  action: Action,
+  withName = false,
+): Promise<Access | null> {
   const context = await memberContext(deps, groupId);
   if (!context?.membership || !can(deps.user, action, { membership: context.membership })) return null;
   const id = uuidSchema.safeParse(chatId);
@@ -92,20 +98,28 @@ async function directAccess(deps: DirectChatDeps, groupId: string, chatId: strin
   if (me !== low && me !== high) return null;
   const otherId = me === low ? high : low;
 
-  const members = await deps.groups.listMembers(context.group.id);
-  const other = members.find((m) => m.userId.toLowerCase() === otherId);
-  let otherName = other?.displayName ?? "";
-  if (!other) {
-    // Someone who has left: their name is on the chat's list entry (which exists once they have written or been written to).
-    const summaries = await deps.direct.listChatsFor(context.group.id, me);
-    otherName = summaries.find((s) => s.chatId === chat.id)?.otherName ?? "";
+  // Whether the other person is still in the group takes one membership lookup. Their NAME needs the
+  // member list (or, for someone who has left, their entry in this person's chat list), so it is only
+  // fetched when the caller shows it (the page, not the poll, a send or a delete).
+  const otherMembership = await deps.groups.getMembership(context.group.id, otherId);
+  const otherActive = otherMembership?.status === "active";
+  let otherName = "";
+  if (withName) {
+    const members = await deps.groups.listMembers(context.group.id);
+    const other = members.find((m) => m.userId.toLowerCase() === otherId);
+    otherName = other?.displayName ?? "";
+    if (!other) {
+      // Someone who has left: their name is on the chat's list entry (which exists once they have written or been written to).
+      const summaries = await deps.direct.listChatsFor(context.group.id, me);
+      otherName = summaries.find((s) => s.chatId === chat.id)?.otherName ?? "";
+    }
   }
   return {
     group: context.group,
     membership: context.membership,
     chat: { id: chat.id, participants: chat.participants },
     otherId,
-    otherActive: other !== undefined,
+    otherActive,
     otherName: nameOrFormer(otherName),
   };
 }
@@ -148,7 +162,8 @@ function viewOf(deps: DirectChatDeps, canWrite: boolean, record: DirectMessageRe
  * Opens (makes, when it is new) the person's private chat with the member that `chatKey` names,
  * and answers its id. Needs an active member of a live group; the key must name ANOTHER ACTIVE
  * member of THIS group (a garbled key, your own, another group's, someone who left or was removed,
- * a stranger's: all `notFound`). At most 30 openings an hour per person. Nothing is visible to the
+ * a stranger's: all `notFound`). Going to a conversation that exists is free; MAKING a new one is
+ * limited to 30 an hour per person (a refused one is not made). Nothing is visible to the
  * other person until a message is written (empty chats are not listed).
  */
 export async function openDirectChat(deps: DirectChatDeps, groupId: string, chatKey: unknown): Promise<ChatResult<{ chatId: string }>> {
@@ -156,13 +171,6 @@ export async function openDirectChat(deps: DirectChatDeps, groupId: string, chat
   if (found.failed) return COULD_NOT_SAVE;
   const context = found.context;
   if (!context?.membership || !can(deps.user, "chat.send", { membership: context.membership })) return NOT_FOUND;
-
-  const refused = await overLimit(
-    deps.limiter,
-    [{ key: directOpenKey(deps.user.id), limit: DIRECT_OPEN_USER_LIMIT }],
-    DIRECT_CHAT_MESSAGES.tooManyChats,
-  );
-  if (refused) return refused;
 
   try {
     const members = await deps.groups.listMembers(context.group.id);
@@ -173,6 +181,17 @@ export async function openDirectChat(deps: DirectChatDeps, groupId: string, chat
       typeof chatKey === "string" ? chatKey : "",
     );
     if (target === null || target.toLowerCase() === deps.user.id.toLowerCase()) return NOT_FOUND;
+
+    // Tapping into a conversation that exists is free: only a NEW conversation counts against the
+    // hourly limit, and one that is refused is not made.
+    const existing = await deps.direct.findPairChat(context.group.id, deps.user.id, target);
+    if (existing) return { ok: true, data: { chatId: existing.chatId } };
+    const refused = await overLimit(
+      deps.limiter,
+      [{ key: directOpenKey(deps.user.id), limit: DIRECT_OPEN_USER_LIMIT }],
+      DIRECT_CHAT_MESSAGES.tooManyChats,
+    );
+    if (refused) return refused;
     const { chatId } = await deps.direct.openChat(context.group.id, deps.user.id, target);
     return { ok: true, data: { chatId } };
   } catch {
@@ -182,11 +201,15 @@ export async function openDirectChat(deps: DirectChatDeps, groupId: string, chat
 }
 
 /**
- * The person's private chats in the group, newest first: only chats with a message that is not
- * deleted, and chats whose other person has left stay (read-only). Null for anyone who may not
- * use the group's chat. A store failure throws.
+ * The person's private chats in the group, newest first, and the unread dots, from one look at the
+ * group, one at its members and one at the person's chats (what the Private list shows and polls).
+ * Only chats with a message that is not deleted are listed, and chats whose other person has left
+ * stay (read-only). `unread` is worked out from those same rows: a listed chat is unread when the
+ * other person's message is newer than this person's read position, which is exactly what
+ * privateUnread asks the store, and a chat from someone who has left has no key. Null for anyone
+ * who may not use the group's chat. A store failure throws.
  */
-export async function listPrivateChats(deps: DirectChatDeps, groupId: string): Promise<{ chats: PrivateChatRow[] } | null> {
+export async function loadPrivateSummary(deps: DirectChatDeps, groupId: string): Promise<PrivateSummary | null> {
   const context = await memberContext(deps, groupId);
   if (!context?.membership || !can(deps.user, "chat.view", { membership: context.membership })) return null;
   const [summaries, members] = await Promise.all([
@@ -194,17 +217,32 @@ export async function listPrivateChats(deps: DirectChatDeps, groupId: string): P
     deps.groups.listMembers(context.group.id),
   ]);
   const active = new Set(members.map((m) => m.userId.toLowerCase()));
-  return {
-    chats: summaries.map((s) => ({
-      chatId: s.chatId,
-      name: nameOrFormer(s.otherName),
-      otherGone: !active.has(s.otherUserId.toLowerCase()),
-      // One line: breaks and runs of spaces in the message become single spaces.
-      preview: s.lastBody.replace(/\s+/g, " ").trim(),
-      lastAt: s.lastAt.toISOString(),
-      unread: s.unread,
-    })),
-  };
+  const chats = summaries.map((s) => ({
+    chatId: s.chatId,
+    name: nameOrFormer(s.otherName),
+    otherGone: !active.has(s.otherUserId.toLowerCase()),
+    // One line: breaks and runs of spaces in the message become single spaces.
+    preview: s.lastBody.replace(/\s+/g, " ").trim(),
+    lastAt: s.lastAt.toISOString(),
+    unread: s.unread,
+  }));
+  const fromChatKeys = [
+    ...new Set(
+      summaries
+        .filter((s) => s.unread && active.has(s.otherUserId.toLowerCase()))
+        .map((s) => chatKeyFor(deps.secret, context.group.id, s.otherUserId)),
+    ),
+  ];
+  return { chats, unread: { any: summaries.some((s) => s.unread), fromChatKeys } };
+}
+
+/**
+ * Just the person's private chats (the list part of loadPrivateSummary). Null for anyone who may
+ * not use the group's chat. A store failure throws.
+ */
+export async function listPrivateChats(deps: DirectChatDeps, groupId: string): Promise<{ chats: PrivateChatRow[] } | null> {
+  const summary = await loadPrivateSummary(deps, groupId);
+  return summary ? { chats: summary.chats } : null;
 }
 
 /** A query value that is a non-empty string, or undefined. */
@@ -217,15 +255,18 @@ const cursorText = (value: unknown) => (typeof value === "string" && value !== "
  * NEWEST messages (the latest page, or a poll with news) the caller's read position moves up to
  * the newest of them (forward only; an earlier page never moves it). Null for anyone who is not
  * a participant of this chat in this group. A store failure throws, except that a failure to
- * record the read position is only logged.
+ * record the read position is only logged. `withName: false` (the poll) skips looking up the other
+ * person's name, which needs the whole member list, and answers `otherName` as "".
  */
 export async function loadDirectChat(
   deps: DirectChatDeps,
   groupId: string,
   chatId: string,
   query: ChatQuery = {},
+  options: { withName?: boolean } = {},
 ): Promise<DirectChatPage | null> {
-  const access = await directAccess(deps, groupId, chatId, "chat.view");
+  const withName = options.withName ?? true;
+  const access = await directAccess(deps, groupId, chatId, "chat.view", withName);
   if (!access) return null;
 
   const after = cursorText(query.after);
@@ -258,7 +299,8 @@ export async function loadDirectChat(
     hasMore: page.hasMore,
     cursor,
     canSend: access.otherActive,
-    otherName: access.otherName,
+    // The poll does not ask for the name (it costs the member list), so it is empty there.
+    otherName: withName ? access.otherName : "",
     otherGone: !access.otherActive,
   };
 }

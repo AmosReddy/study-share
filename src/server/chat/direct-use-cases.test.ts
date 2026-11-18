@@ -17,6 +17,7 @@ import {
   listMembersWithChatKeys,
   listPrivateChats,
   loadDirectChat,
+  loadPrivateSummary,
   openDirectChat,
   privateUnread,
   sendDirectMessage,
@@ -227,7 +228,7 @@ describe("who may open a private chat", () => {
     expect(await openDirectChat(t.as(ravi), groupId, keyOf(groupId, mina))).toEqual(NOT_FOUND);
   });
 
-  it("limits openings to 30 an hour per person, apart from the group chat's limit", async () => {
+  it("limits NEW conversations to 30 an hour per person, apart from the group chat's limit; going into an existing one is free", async () => {
     const { t, asha, ravi, groupId } = await crowd();
     const keys: string[] = [];
     const limiter: RateLimiter = {
@@ -239,14 +240,32 @@ describe("who may open a private chat", () => {
     };
     const deps = { ...t.as(asha), limiter };
     expect(DIRECT_OPEN_USER_LIMIT).toEqual({ limit: 30, windowSeconds: 3600 });
-    for (let n = 0; n < 30; n++) expect((await openDirectChat(deps, groupId, keyOf(groupId, ravi))).ok).toBe(true);
-    const refused = await openDirectChat(deps, groupId, keyOf(groupId, ravi));
+
+    // 40 taps into the same, existing conversation never refuse and never use up the limit.
+    const first = await openDirectChat(deps, groupId, keyOf(groupId, ravi));
+    expect(first.ok).toBe(true);
+    for (let n = 0; n < 40; n++) expect(await openDirectChat(deps, groupId, keyOf(groupId, ravi))).toEqual(first);
+    expect(keys).toEqual([`dm-open:user:${asha.id}`]);
+
+    // 29 more new conversations make 30; the 31st is refused, and is not made.
+    const others = [];
+    for (let n = 0; n < 30; n++) {
+      const other = t.person(`Member ${n}`);
+      await t.join(groupId, other);
+      others.push(other);
+    }
+    for (const other of others.slice(0, 29)) expect((await openDirectChat(deps, groupId, keyOf(groupId, other))).ok).toBe(true);
+    const refused = await openDirectChat(deps, groupId, keyOf(groupId, others[29]));
     expect(refused).toMatchObject({ ok: false, formError: DIRECT_CHAT_MESSAGES.tooManyChats, retryAfterSeconds: expect.any(Number) });
+    expect(await t.direct.findPairChat(groupId, asha.id, others[29].id)).toBeNull();
     expect(new Set(keys)).toEqual(new Set([`dm-open:user:${asha.id}`]));
+    // Existing conversations still open while the limit is used up.
+    expect(await openDirectChat(deps, groupId, keyOf(groupId, ravi))).toEqual(first);
+    expect((await openDirectChat(deps, groupId, keyOf(groupId, others[0]))).ok).toBe(true);
     // Someone else is not affected, and the hour passing frees the person.
     expect((await openDirectChat(t.as(ravi), groupId, keyOf(groupId, asha))).ok).toBe(true);
     t.advance(3601);
-    expect((await openDirectChat(deps, groupId, keyOf(groupId, ravi))).ok).toBe(true);
+    expect((await openDirectChat(deps, groupId, keyOf(groupId, others[29]))).ok).toBe(true);
   });
 
   it("a limiter that fails lets the request through with one fixed warning", async () => {
@@ -723,7 +742,7 @@ describe("sendDirectMessage", () => {
       { direct: { ...t.direct, send: () => failing("send") } },
       { direct: { ...t.direct, findChat: () => failing("find") } },
       { groups: { ...t.groups, findById: () => failing("group") } },
-      { groups: { ...t.groups, listMembers: () => failing("members") } },
+      { groups: { ...t.groups, getMembership: () => failing("membership") } },
     ]) {
       expect(await sendDirectMessage({ ...t.as(mina), ...broken }, groupId, chatId, say("hi"))).toEqual(COULD_NOT_SAVE);
     }
@@ -929,5 +948,80 @@ describe("private chats and the group chat stay apart", () => {
     expect(bodies((await loadGroupChat(groupDeps, groupId))!.messages)).toEqual(["shout"]);
     // Private use-cases do not even have the group chat's store.
     expect("messages" in t.as(mina)).toBe(false);
+  });
+});
+
+describe("store calls: the same answers with fewer lookups", () => {
+  /** The person's deps with the group store's lookups counted. */
+  function counting(t: World, who: Person) {
+    const calls = { findById: 0, getMembership: 0, listMembers: 0, listChatsFor: 0, unreadSummary: 0 };
+    const deps = t.as(who);
+    const groups = { ...t.groups };
+    const direct = { ...t.direct };
+    for (const name of ["findById", "getMembership", "listMembers"] as const) {
+      const original = t.groups[name].bind(t.groups) as (...args: unknown[]) => Promise<unknown>;
+      (groups as Record<string, unknown>)[name] = (...args: unknown[]) => {
+        calls[name] += 1;
+        return original(...args);
+      };
+    }
+    for (const name of ["listChatsFor", "unreadSummary"] as const) {
+      const original = t.direct[name].bind(t.direct) as (...args: unknown[]) => Promise<unknown>;
+      (direct as Record<string, unknown>)[name] = (...args: unknown[]) => {
+        calls[name] += 1;
+        return original(...args);
+      };
+    }
+    return { deps: { ...deps, groups, direct } as DirectChatDeps, calls };
+  }
+
+  it("the Private list's summary is the list plus the dots, from one look at the group, one at the members and one at the chats", async () => {
+    const { t, asha, ravi, mina, groupId } = await crowd();
+    const withRavi = await open(t, groupId, ravi, asha);
+    const withMina = await open(t, groupId, mina, asha);
+    await sent(t, groupId, withRavi, ravi, "from ravi");
+    await sent(t, groupId, withMina, mina, "from mina");
+    await read(t, groupId, withMina, asha); // Mina's is read
+    await t.groups.removeMember(groupId, ravi.id); // Ravi's is unread and from someone who left: no key
+
+    const expected = { chats: (await listPrivateChats(t.as(asha), groupId))!.chats, unread: await privateUnread(t.as(asha), groupId) };
+    expect(expected.unread).toEqual({ any: true, fromChatKeys: [] });
+    const { deps, calls } = counting(t, asha);
+    expect(await loadPrivateSummary(deps, groupId)).toEqual(expected);
+    expect(calls).toEqual({ findById: 1, getMembership: 1, listMembers: 1, listChatsFor: 1, unreadSummary: 0 });
+
+    // And with an unread message from someone who is still here, the key is theirs.
+    await sent(t, groupId, withMina, mina, "again");
+    const summary = (await loadPrivateSummary(t.as(asha), groupId))!;
+    expect(summary.unread).toEqual({ any: true, fromChatKeys: [keyOf(groupId, mina)] });
+    expect(summary.unread).toEqual(await privateUnread(t.as(asha), groupId));
+    // Nothing for a person who may not use the chat.
+    const zed = t.person("Zed");
+    expect(await loadPrivateSummary(t.as(zed), groupId)).toBeNull();
+    expect(await loadPrivateSummary(t.as(ravi), groupId)).toBeNull();
+  });
+
+  it("a poll (no name wanted) and a send need one membership lookup for the other person, never the member list", async () => {
+    const { t, ravi, mina, groupId } = await crowd();
+    const chatId = await open(t, groupId, ravi, mina);
+    const { deps, calls } = counting(t, mina);
+    const poll = await loadDirectChat(deps, groupId, chatId, {}, { withName: false });
+    expect(poll).toMatchObject({ canSend: true, otherGone: false, otherName: "" });
+    expect(calls.listMembers).toBe(0);
+    expect(calls.getMembership).toBe(2);
+    expect(calls.listChatsFor).toBe(0);
+    expect((await sendDirectMessage(deps, groupId, chatId, say("hello"))).ok).toBe(true);
+    expect(calls.listMembers).toBe(0);
+
+    // The page asks for the name, and has it; the answers are otherwise the same.
+    const page = await loadDirectChat(deps, groupId, chatId);
+    expect(page).toMatchObject({ canSend: true, otherName: "Ravi" });
+    expect(calls.listMembers).toBe(1);
+
+    // Read-only is the same answer by either route.
+    await t.groups.removeMember(groupId, ravi.id);
+    expect(await loadDirectChat(deps, groupId, chatId, {}, { withName: false })).toMatchObject({ canSend: false, otherGone: true });
+    expect(await loadDirectChat(deps, groupId, chatId)).toMatchObject({ canSend: false, otherGone: true, otherName: "Ravi" });
+    expect(await sendDirectMessage(deps, groupId, chatId, say("late"))).toEqual(READ_ONLY);
   });
 });

@@ -3,8 +3,8 @@
 import { BookOpen, MessageSquare, Settings, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { usePrivateUnread } from "@/client/components/chat/private-unread-scope";
 import { UnreadDot } from "@/client/components/chat/unread-dot";
-import { usePrivateUnread } from "@/client/lib/private-unread-store";
 import { cn } from "@/client/lib/utils";
 import { isTabActive } from "./active-tab";
 
@@ -12,8 +12,6 @@ type GroupTabsProps = {
   groupId: string;
   /** Only the owner gets the Settings tab. */
   showSettings: boolean;
-  /** The person has private messages they have not read, as the server saw it when it drew this page. Newer news comes from the browser's own store. */
-  privateUnread: boolean;
 };
 
 /**
@@ -21,9 +19,9 @@ type GroupTabsProps = {
  * safe area (the iPhone home bar); the group layout gives the content above it matching bottom
  * padding. From 1024px a row of tabs at the top of the group.
  */
-export function GroupTabs({ groupId, showSettings, privateUnread }: GroupTabsProps) {
+export function GroupTabs({ groupId, showSettings }: GroupTabsProps) {
   const pathname = usePathname();
-  const unread = usePrivateUnread(groupId, privateUnread);
+  const unread = usePrivateUnread(groupId, false);
   const base = `/groups/${groupId}`;
   const items = [
     { href: base, tab: "library" as const, label: "Library", Icon: BookOpen },

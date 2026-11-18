@@ -48,3 +48,13 @@ export function findMemberByChatKey(secret: string, groupId: string, activeUserI
   }
   return match;
 }
+
+/**
+ * A short opaque tag for the signed-in person, sent to their browser so a store of "what this
+ * person has already been told" is never shared between two accounts used in one tab. It is a
+ * different code from every chat key (its own label), so it opens nothing. Stable for a person.
+ */
+export function viewerTokenFor(secret: string, userId: string): string {
+  if (secret === "") throw new Error("Viewer tokens need a secret.");
+  return createHmac("sha256", secret).update(`unread-viewer:${userId.toLowerCase()}`).digest("base64url").slice(0, 22);
+}

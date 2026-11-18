@@ -12,6 +12,10 @@ export type DirectChatStoreContext = {
   deleteGroup(groupId: string): Promise<void>;
   /** Removes the person's account, as deleting a user does (the database cascades their private chats). */
   deleteUser(userId: string): Promise<void>;
+  /** Makes the person an active member of the group (nothing happens for one who is already). */
+  join(groupId: string, userId: string): Promise<void>;
+  /** Removes the person from the group, as the owner does (their membership row is kept as removed). */
+  removeMember(groupId: string, userId: string): Promise<void>;
 };
 
 type WithStore = (run: (ctx: DirectChatStoreContext) => Promise<void>) => Promise<void>;
@@ -33,12 +37,19 @@ const EMPTY = { messages: [], hasMore: false };
  * Calling this registers tests, so call it only from a test file.
  */
 export function runDirectChatStoreContract(withStore: WithStore): void {
-  /** Two people, a group and their chat. */
+  /** Makes both people members of the group (a message needs it), then opens their chat. */
+  async function openFor(ctx: DirectChatStoreContext, groupId: string, userX: string, userY: string) {
+    await ctx.join(groupId, userX);
+    await ctx.join(groupId, userY);
+    return ctx.store.openChat(groupId, userX, userY);
+  }
+
+  /** Two people (Ada owns the group, Ravi has joined it) and their chat. */
   async function setup(ctx: DirectChatStoreContext) {
     const ada = await ctx.newUser("Ada");
     const ravi = await ctx.newUser("Ravi");
     const groupId = await ctx.newGroup(ada);
-    const { chatId } = await ctx.store.openChat(groupId, ada, ravi);
+    const { chatId } = await openFor(ctx, groupId, ada, ravi);
     return { ada, ravi, groupId, chatId };
   }
 
@@ -62,10 +73,10 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
       withStore(async (ctx) => {
         const { ada, ravi, groupId, chatId } = await setup(ctx);
         expect(chatId).toMatch(/^[0-9a-f-]{36}$/);
-        expect(await ctx.store.openChat(groupId, ada, ravi)).toEqual({ chatId });
-        expect(await ctx.store.openChat(groupId, ravi, ada)).toEqual({ chatId });
+        expect(await ctx.store.openChat(groupId, ada, ravi)).toEqual({ chatId, created: false });
+        expect(await ctx.store.openChat(groupId, ravi, ada)).toEqual({ chatId, created: false });
         // Ids match in any letter case.
-        expect(await ctx.store.openChat(groupId.toUpperCase(), ravi.toUpperCase(), ada.toUpperCase())).toEqual({ chatId });
+        expect(await ctx.store.openChat(groupId.toUpperCase(), ravi.toUpperCase(), ada.toUpperCase())).toEqual({ chatId, created: false });
       }));
 
     test("the pair is stored in order: the smaller id is first, as lower-case text", () =>
@@ -93,6 +104,39 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
         expect((await ctx.store.findChat(groupId, third.chatId))?.participants).toEqual([ada, mina].sort());
       }));
 
+    test("openChat says it created the chat exactly once: the first call, never a repeat", () =>
+      withStore(async (ctx) => {
+        const ada = await ctx.newUser("Ada");
+        const ravi = await ctx.newUser("Ravi");
+        const mina = await ctx.newUser("Mina");
+        const groupId = await ctx.newGroup(ada);
+        const first = await ctx.store.openChat(groupId, ada, ravi);
+        expect(first.created).toBe(true);
+        expect((await ctx.store.openChat(groupId, ravi, ada)).created).toBe(false);
+        expect((await ctx.store.openChat(groupId, ada, ravi)).created).toBe(false);
+        // Another pair, and the same pair in another group, are new chats.
+        expect((await ctx.store.openChat(groupId, ada, mina)).created).toBe(true);
+        expect((await ctx.store.openChat(await ctx.newGroup(ada), ada, ravi)).created).toBe(true);
+      }));
+
+    test("findPairChat finds the pair's chat either way round and never makes one", () =>
+      withStore(async (ctx) => {
+        const { ada, ravi, groupId, chatId } = await setup(ctx);
+        const mina = await ctx.newUser("Mina");
+        expect(await ctx.store.findPairChat(groupId, ada, ravi)).toEqual({ chatId });
+        expect(await ctx.store.findPairChat(groupId, ravi, ada)).toEqual({ chatId });
+        expect(await ctx.store.findPairChat(groupId.toUpperCase(), ravi.toUpperCase(), ada.toUpperCase())).toEqual({ chatId });
+        // Nothing for another pair, another group, the same person twice, bad ids; and asking made nothing.
+        expect(await ctx.store.findPairChat(groupId, ada, mina)).toBeNull();
+        expect(await ctx.store.findPairChat(await ctx.newGroup(ada), ada, ravi)).toBeNull();
+        expect(await ctx.store.findPairChat(groupId, ada, ada)).toBeNull();
+        expect(await ctx.store.findPairChat("nope", ada, ravi)).toBeNull();
+        expect(await ctx.store.findPairChat(groupId, "nope", ravi)).toBeNull();
+        expect((await ctx.store.openChat(groupId, ada, mina)).created).toBe(true);
+        await ctx.deleteGroup(groupId);
+        expect(await ctx.store.findPairChat(groupId, ada, ravi)).toBeNull();
+      }));
+
     test("opening at the same moment makes one chat", () =>
       withStore(async (ctx) => {
         const ada = await ctx.newUser("Ada");
@@ -102,6 +146,8 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
           Array.from({ length: 8 }, (_, i) => (i % 2 === 0 ? ctx.store.openChat(groupId, ada, ravi) : ctx.store.openChat(groupId, ravi, ada))),
         );
         expect(new Set(results.map((r) => r.chatId)).size).toBe(1);
+        // Exactly one of the eight made it.
+        expect(results.filter((r) => r.created)).toHaveLength(1);
       }));
 
     test("openChat refuses a deleted or unknown group, the same person twice, bad ids and a person with no account", () =>
@@ -153,7 +199,7 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
       withStore(async (ctx) => {
         const { ada, ravi, groupId, chatId } = await setup(ctx);
         const mina = await ctx.newUser("Mina");
-        const keep = await ctx.store.openChat(groupId, ada, mina);
+        const keep = await openFor(ctx, groupId, ada, mina);
         const kept = await post(ctx, keep.chatId, mina, "still here");
         const gone = await post(ctx, chatId, ravi, "bye");
         await ctx.deleteUser(ravi);
@@ -214,11 +260,11 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
         const { ada, ravi, groupId, chatId: withRavi } = await setup(ctx);
         const mina = await ctx.newUser("Mina");
         const zoe = await ctx.newUser("Zoe");
-        const withMina = (await ctx.store.openChat(groupId, ada, mina)).chatId;
-        const withZoe = (await ctx.store.openChat(groupId, zoe, ada)).chatId;
-        const between = (await ctx.store.openChat(groupId, ravi, mina)).chatId;
+        const withMina = (await openFor(ctx, groupId, ada, mina)).chatId;
+        const withZoe = (await openFor(ctx, groupId, zoe, ada)).chatId;
+        const between = (await openFor(ctx, groupId, ravi, mina)).chatId;
         const otherGroup = await ctx.newGroup(ada);
-        const elsewhere = (await ctx.store.openChat(otherGroup, ada, ravi)).chatId;
+        const elsewhere = (await openFor(ctx, otherGroup, ada, ravi)).chatId;
 
         await post(ctx, withRavi, ada, "to Ravi");
         await post(ctx, withMina, mina, "from Mina");
@@ -239,7 +285,7 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
     test("listChatsFor finds nothing for a malformed or unknown group or person", () =>
       withStore(async (ctx) => {
         const { ada, groupId } = await setup(ctx);
-        await post(ctx, (await ctx.store.openChat(groupId, ada, await ctx.newUser())).chatId, ada, "x");
+        await post(ctx, (await openFor(ctx, groupId, ada, await ctx.newUser())).chatId, ada, "x");
         for (const id of ["nope", "", crypto.randomUUID()]) {
           expect(await ctx.store.listChatsFor(id, ada)).toEqual([]);
           expect(await ctx.store.listChatsFor(groupId, id)).toEqual([]);
@@ -250,6 +296,34 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
   });
 
   describe("DirectChatStore contract: messages", () => {
+    test("a message needs both people to be active members of the group: after a removal or a leave nothing is saved, and rejoining works again", () =>
+      withStore(async (ctx) => {
+        const { ada, ravi, groupId, chatId } = await setup(ctx);
+        const clientId = crypto.randomUUID();
+        const first = await ctx.store.send({ chatId, senderId: ada, clientId, body: "before" });
+        expect(first.created).toBe(true);
+
+        // The other person is removed: neither of them can write, a retry of an earlier message included.
+        await ctx.removeMember(groupId, ravi);
+        await expect(ctx.store.send({ chatId, senderId: ada, clientId: crypto.randomUUID(), body: "too late" })).rejects.toThrow();
+        await expect(ctx.store.send({ chatId, senderId: ravi, clientId: crypto.randomUUID(), body: "too late" })).rejects.toThrow();
+        await expect(ctx.store.send({ chatId, senderId: ada, clientId, body: "before" })).rejects.toThrow();
+        expect(bodies((await ctx.store.listLatest(chatId, 10)).messages)).toEqual(["before"]);
+      }));
+
+    test("a person who is not (or no longer) a member cannot be written to, even in a chat made earlier", () =>
+      withStore(async (ctx) => {
+        const ada = await ctx.newUser("Ada");
+        const mina = await ctx.newUser("Mina");
+        const groupId = await ctx.newGroup(ada);
+        // Mina never joined the group: the chat can exist (opening does not check), a message cannot be saved.
+        const { chatId } = await ctx.store.openChat(groupId, ada, mina);
+        await expect(ctx.store.send({ chatId, senderId: ada, clientId: crypto.randomUUID(), body: "hi" })).rejects.toThrow();
+        await expect(ctx.store.send({ chatId, senderId: mina, clientId: crypto.randomUUID(), body: "hi" })).rejects.toThrow();
+        await ctx.join(groupId, mina);
+        expect((await ctx.store.send({ chatId, senderId: ada, clientId: crypto.randomUUID(), body: "hi" })).created).toBe(true);
+      }));
+
     test("send saves a message with the sender's name and a cursor, and it can be found", () =>
       withStore(async (ctx) => {
         const { ada, chatId } = await setup(ctx);
@@ -400,7 +474,7 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
       withStore(async (ctx) => {
         const { ada, ravi, groupId, chatId } = await setup(ctx);
         const mina = await ctx.newUser("Mina");
-        const other = (await ctx.store.openChat(groupId, ada, mina)).chatId;
+        const other = (await openFor(ctx, groupId, ada, mina)).chatId;
         const mine = await postMany(ctx, chatId, ada, 2);
         const theirs = await post(ctx, other, mina, "elsewhere");
         expect(bodies((await ctx.store.listAfter(chatId, mine[0].cursor, 10)).messages)).toEqual(["m2"]);
@@ -414,9 +488,9 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
       withStore(async (ctx) => {
         const { ada, ravi, groupId, chatId } = await setup(ctx);
         const mina = await ctx.newUser("Mina");
-        const withMina = (await ctx.store.openChat(groupId, ada, mina)).chatId;
+        const withMina = (await openFor(ctx, groupId, ada, mina)).chatId;
         const otherGroup = await ctx.newGroup(ada);
-        const samePair = (await ctx.store.openChat(otherGroup, ada, ravi)).chatId;
+        const samePair = (await openFor(ctx, otherGroup, ada, ravi)).chatId;
         await post(ctx, chatId, ada, "a1");
         await post(ctx, withMina, ada, "b1");
         await post(ctx, samePair, ada, "c1");
@@ -452,7 +526,7 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
       withStore(async (ctx) => {
         const { ada, ravi, groupId, chatId } = await setup(ctx);
         const mina = await ctx.newUser("Mina");
-        const other = (await ctx.store.openChat(groupId, ada, mina)).chatId;
+        const other = (await openFor(ctx, groupId, ada, mina)).chatId;
         const clientId = crypto.randomUUID();
         const a = await ctx.store.send({ chatId, senderId: ada, clientId, body: "here" });
         const b = await ctx.store.send({ chatId: other, senderId: ada, clientId, body: "there" });
@@ -508,7 +582,7 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
       withStore(async (ctx) => {
         const { ada, groupId, chatId } = await setup(ctx);
         const mina = await ctx.newUser("Mina");
-        const other = (await ctx.store.openChat(groupId, ada, mina)).chatId;
+        const other = (await openFor(ctx, groupId, ada, mina)).chatId;
         const message = await post(ctx, chatId, ada, "mine");
         for (const id of [crypto.randomUUID(), "not-a-uuid", "", message.id.slice(0, 35)]) {
           expect(await ctx.store.findMessageById(chatId, id)).toBeNull();
@@ -675,11 +749,11 @@ export function runDirectChatStoreContract(withStore: WithStore): void {
       withStore(async (ctx) => {
         const { ada, ravi, groupId, chatId } = await setup(ctx);
         const mina = await ctx.newUser("Mina");
-        const withMina = (await ctx.store.openChat(groupId, ada, mina)).chatId;
+        const withMina = (await openFor(ctx, groupId, ada, mina)).chatId;
         const silent = await ctx.newUser("Silent");
-        await ctx.store.openChat(groupId, ada, silent);
+        await openFor(ctx, groupId, ada, silent);
         const otherGroup = await ctx.newGroup(ada);
-        const elsewhere = (await ctx.store.openChat(otherGroup, ada, ravi)).chatId;
+        const elsewhere = (await openFor(ctx, otherGroup, ada, ravi)).chatId;
 
         await postMany(ctx, chatId, ravi, 3);
         await post(ctx, withMina, mina, "hi");

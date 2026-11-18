@@ -47,6 +47,19 @@ const CHAT_IS_LIVE = sql.raw(
   "exists (select 1 from public.direct_chats c join public.groups g on g.id = c.group_id where c.id = r.chat_id and g.deleted_at is null)",
 );
 
+/**
+ * Both people of the chat aliased `chat` are ACTIVE members of its group. The membership rows are locked FOR SHARE
+ * while the statement runs, so a removal that commits first is seen (the row is re-read) and one
+ * that comes second waits until the message is saved: a message cannot land after a removal.
+ */
+const bothActive = (chat: string, lock = true) => {
+  const share = lock ? " for share of gm" : "";
+  return sql.raw(
+    `exists (select 1 from public.group_members gm where gm.group_id = ${chat}.group_id and gm.user_id = ${chat}.user_low and gm.status = 'active'${share}) ` +
+      `and exists (select 1 from public.group_members gm where gm.group_id = ${chat}.group_id and gm.user_id = ${chat}.user_high and gm.status = 'active'${share})`,
+  );
+};
+
 function toRecord(row: MessageRow): DirectMessageRecord {
   return {
     id: row.id,
@@ -112,6 +125,7 @@ export function createDirectChatStore<S extends Record<string, unknown> = Record
         and exists (
           select 1 from public.direct_chats c
           where c.id = r.chat_id and (c.user_low = ${senderId}::uuid or c.user_high = ${senderId}::uuid)
+            and ${bothActive("c", false)}
         )`);
     return rows[0] ? toRecord(rows[0]) : null;
   }
@@ -135,7 +149,7 @@ export function createDirectChatStore<S extends Record<string, unknown> = Record
 
       // The insert selects from the live group, so a deleted or unknown group inserts nothing. On a
       // repeat, `ins` is empty and the second branch finds the chat that was made before.
-      const rows = await db.execute<{ id: string }>(sql`
+      const rows = await db.execute<{ id: string; created: boolean }>(sql`
         with ins as (
           insert into public.direct_chats (group_id, user_low, user_high)
           select g.id, ${low}::uuid, ${high}::uuid
@@ -144,18 +158,28 @@ export function createDirectChatStore<S extends Record<string, unknown> = Record
           on conflict (group_id, user_low, user_high) do nothing
           returning id
         )
-        select id from ins
+        select id, true as created from ins
         union all
-        select c.id from public.direct_chats c join public.groups g on g.id = c.group_id
+        select c.id, false as created from public.direct_chats c join public.groups g on g.id = c.group_id
         where c.group_id = ${groupId}::uuid and c.user_low = ${low}::uuid and c.user_high = ${high}::uuid
           and g.deleted_at is null and not exists (select 1 from ins)`);
-      if (rows[0]) return { chatId: rows[0].id };
+      if (rows[0]) return { chatId: rows[0].id, created: rows[0].created };
 
       // Nothing came back: the group is gone, or two opens raced and the other one's row was not
-      // visible to this statement. Look again.
+      // visible to this statement. Look again (that one made it, so this call did not).
       const found = await pairChat(groupId, low, high);
-      if (found) return { chatId: found };
+      if (found) return { chatId: found, created: false };
       throw new Error("openChat: the group does not exist or is deleted.");
+    },
+
+    async findPairChat(groupId, userX, userY) {
+      if (!isUuid(groupId) || !isUuid(userX) || !isUuid(userY)) return null;
+      const x = userX.toLowerCase();
+      const y = userY.toLowerCase();
+      if (x === y) return null;
+      const [low, high] = x < y ? [x, y] : [y, x];
+      const found = await pairChat(groupId, low, high);
+      return found ? { chatId: found } : null;
     },
 
     async findChat(groupId, chatId) {
@@ -220,7 +244,8 @@ export function createDirectChatStore<S extends Record<string, unknown> = Record
       // Postgres cannot store a NUL character in text, and the driver would throw an obscure error.
       if (input.body.includes("\u0000")) throw new Error("send: text cannot hold a NUL character.");
 
-      // `c` is the chat when its group is live AND the sender is one of its two people; with no
+      // `c` is the chat when its group is live, the sender is one of its two people AND both of them
+      // are still active members of the group (the membership is locked for the statement); with no
       // such chat nothing is inserted and nothing is returned, not even for a repeat. On a repeat,
       // `ins` is empty and the second branch finds the row that was saved before (this statement's
       // snapshot is from before the insert, so it never sees a row `ins` just made).
@@ -229,6 +254,7 @@ export function createDirectChatStore<S extends Record<string, unknown> = Record
           select ch.id from public.direct_chats ch join public.groups g on g.id = ch.group_id
           where ch.id = ${input.chatId}::uuid and g.deleted_at is null
             and (ch.user_low = ${input.senderId}::uuid or ch.user_high = ${input.senderId}::uuid)
+            and ${bothActive("ch")}
         ), ins as (
           insert into public.direct_messages (chat_id, sender_id, client_id, body)
           select c.id, ${input.senderId}::uuid, ${input.clientId}::uuid, ${input.body} from c
@@ -244,11 +270,12 @@ export function createDirectChatStore<S extends Record<string, unknown> = Record
         select ${MESSAGE_COLUMNS}, r.created from r ${WITH_SENDER}`);
       if (rows[0]) return { message: toRecord(rows[0]), created: rows[0].created };
 
-      // Nothing came back: the chat or its group is gone, the sender is not in the chat, or two
+      // Nothing came back: the chat or its group is gone, the sender is not in the chat, a person of it
+      // is no longer a member, or two
       // sends with one client id raced and the other one's row was not visible to this statement.
       const found = await existing(input.chatId, input.senderId, input.clientId);
       if (found) return { message: found, created: false };
-      throw new Error("send: the chat does not exist, its group is deleted, or the sender is not in it.");
+      throw new Error("send: the chat does not exist, its group is deleted, the sender is not in it, or a person of it is no longer a member.");
     },
 
     listLatest: latest,

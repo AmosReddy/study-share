@@ -5,7 +5,7 @@ import { PrivateChatList } from "@/client/components/chat/private-chat-list";
 import { PrivateUnreadSync } from "@/client/components/chat/private-unread-sync";
 import { Skeleton } from "@/client/components/ui/skeleton";
 import { requireDirectChatDeps } from "@/server/chat/direct-request-deps";
-import { listPrivateChats, privateUnread } from "@/server/chat/direct-use-cases";
+import { loadPrivateSummary } from "@/server/chat/direct-use-cases";
 
 export default function PrivateChatsPage({ params }: PageProps<"/groups/[id]/chat/private">) {
   return (
@@ -24,14 +24,14 @@ export default function PrivateChatsPage({ params }: PageProps<"/groups/[id]/cha
 async function PrivateChats({ params }: Pick<PageProps<"/groups/[id]/chat/private">, "params">) {
   const { id } = await params;
   const deps = await requireDirectChatDeps(id);
-  const list = await listPrivateChats(deps, id);
-  if (!list) notFound();
-  const unread = await privateUnread(deps, id);
+  const summary = await loadPrivateSummary(deps, id);
+  if (!summary) notFound();
+  const { unread } = summary;
   return (
     <div className="flex flex-col gap-3">
       <PrivateUnreadSync groupId={id} any={unread.any} />
       <ChatSwitch groupId={id} current="private" unread={unread.any} />
-      <PrivateChatList groupId={id} initial={{ chats: list.chats, unread }} />
+      <PrivateChatList groupId={id} initial={summary} />
     </div>
   );
 }

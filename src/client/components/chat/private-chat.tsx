@@ -54,6 +54,7 @@ export function PrivateChat({ groupId, chatId, initial, canSend, otherName, send
       fetchPage={fetchPage}
       copy={copy}
       canSend={canSend}
+      ownDeletable
     />
   );
 }
