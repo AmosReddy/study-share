@@ -100,11 +100,14 @@ export interface ResourceStore {
    */
   listDetailValues(groupId: string, fieldId: string): Promise<string[]>;
   /**
-   * What the ready files use: the type ids, and for each detail id the values (typed text or
-   * choice ids), each once and in byte order. Only ready, not deleted files of a live group count,
-   * so a removed type or choice shows up only while a file still uses it.
+   * What the ready files use: the type ids, and for each of the details named in `fieldIds` the
+   * values (typed text or choice ids), each once and in byte order. Only the details asked about
+   * are read (the caller passes the dropdown and the removed ones, whose values it needs), so the
+   * free text of any other detail is never loaded; an id nothing has a value for is left out, and
+   * ids are matched exactly. Only ready, not deleted files of a live group count, so a removed
+   * type or choice shows up only while a file still uses it.
    */
-  usedOptionIds(groupId: string): Promise<{ typeIds: string[]; detailValues: Record<string, string[]> }>;
+  usedOptionIds(groupId: string, fieldIds: string[]): Promise<{ typeIds: string[]; detailValues: Record<string, string[]> }>;
   /** Null when not found or deleted. Works while the file is still uploading. */
   update(
     groupId: string,

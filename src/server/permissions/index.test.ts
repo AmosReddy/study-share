@@ -19,6 +19,7 @@ const groupActions = {
   "group.members.remove": ["owner"],
   "group.transfer": ["owner"],
   "group.delete": ["owner"],
+  "group.form.edit": ["owner"],
   "file.upload": ["owner", "member"],
   "file.view": ["owner", "member"],
   "file.delete.any": ["owner"],
@@ -57,7 +58,7 @@ describe("can(group and file actions)", () => {
   test("the table above lists every action the module knows", () => {
     // If an action is added to permissions without a row here, this line stops compiling.
     const listed: Record<Action, readonly Role[]> = groupActions;
-    expect(Object.keys(listed)).toHaveLength(16);
+    expect(Object.keys(listed)).toHaveLength(17);
   });
 
   test("an admin cannot upload or view files, since the role table does not list it (no admin exists yet)", () => {

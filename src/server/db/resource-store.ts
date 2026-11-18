@@ -225,16 +225,20 @@ export function createResourceStore<S extends Record<string, unknown> = Record<s
       return rows.map((r) => r.value);
     },
 
-    async usedOptionIds(groupId) {
+    async usedOptionIds(groupId, fieldIds) {
       const empty = { typeIds: [], detailValues: {} };
       if (!isUuid(groupId)) return empty;
       const live = sql`r.group_id = ${groupId}::uuid and r.status = 'ready' and r.deleted_at is null and ${GROUP_IS_LIVE}`;
+      // Only the details asked about are read. An id with a NUL character cannot be a jsonb key.
+      const wanted = [...new Set(fieldIds.filter((id) => !hasNul(id)))];
       const [types, values] = await Promise.all([
         db.execute<{ type_id: string }>(sql`select distinct r.type_id from public.resources r where ${live}`),
-        db.execute<{ field_id: string; value: string }>(sql`
-          select distinct e.key as field_id, e.value
-          from public.resources r, jsonb_each_text(r.details) as e
-          where ${live} and e.value <> ''`),
+        wanted.length === 0
+          ? Promise.resolve([] as { field_id: string; value: string }[])
+          : db.execute<{ field_id: string; value: string }>(sql`
+              select distinct e.key as field_id, e.value
+              from public.resources r, jsonb_each_text(r.details) as e
+              where ${live} and e.value <> '' and e.key = any(${textArray(wanted)})`),
       ]);
       // Sorted here, by UTF-16 code units, exactly as the fake sorts, so both give one order.
       const byBytes = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);

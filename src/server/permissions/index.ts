@@ -26,6 +26,7 @@ const allowedRoles = {
   "group.members.remove": ["owner"],
   "group.transfer": ["owner"],
   "group.delete": ["owner"],
+  "group.form.edit": ["owner"],
   "file.upload": ["owner", "member"],
   "file.view": ["owner", "member"],
   "file.delete.any": ["owner"],

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { DEFAULT_FORM_CONFIG } from "@/shared/form-config";
+import { DEFAULT_FORM_CONFIG, type FormConfig } from "@/shared/form-config";
 import { GROUP_CODE_ALPHABET, GROUP_LIMITS } from "@/shared/groups";
 import type { GroupStore } from "../ports/group-store";
 
@@ -498,5 +498,107 @@ export function runGroupStoreContract(withStore: WithStore): void {
           }
         }
       }));
+
+    describe("updateFormConfig", () => {
+      const custom: FormConfig = {
+        version: 2,
+        types: [
+          { id: "a1", label: "Lecture notes" },
+          { id: "b2", label: "Old type", archived: true },
+        ],
+        fields: [
+          { id: "f1", label: "Semester", kind: "dropdown", required: true, options: [{ id: "o1", label: "One" }, { id: "o2", label: "Two", archived: true }] },
+          { id: "f2", label: "Year", kind: "text", required: false, archived: true },
+        ],
+      };
+      const next = (config: FormConfig): FormConfig => ({ ...config, version: config.version + 1 });
+
+      test("saves the whole form when the version matches, and every read shows it", () =>
+        withStore(async (ctx) => {
+          const group = await makeGroup(ctx, await ctx.newUser());
+          expect(group.formConfig.version).toBe(DEFAULT_FORM_CONFIG.version);
+          expect(await ctx.store.updateFormConfig(group.id, 1, custom)).toBe("saved");
+          expect((await ctx.store.findById(group.id))?.formConfig).toEqual(custom);
+          expect((await ctx.store.findByInvite({ token: group.inviteToken }))?.formConfig).toEqual(custom);
+          expect((await ctx.store.findByInvite({ code: group.inviteCode }))?.formConfig).toEqual(custom);
+          // Nothing else about the group changed.
+          expect(await ctx.store.findById(group.id)).toEqual({ ...group, formConfig: custom });
+        }));
+
+      test("a stale version saves nothing, and the next version works once the first has saved", () =>
+        withStore(async (ctx) => {
+          const group = await makeGroup(ctx, await ctx.newUser());
+          expect(await ctx.store.updateFormConfig(group.id, 1, custom)).toBe("saved");
+          // Another save that started from version 1 now finds version 2.
+          const other: FormConfig = { ...custom, version: 2, types: [{ id: "z9", label: "Elsewhere" }] };
+          expect(await ctx.store.updateFormConfig(group.id, 1, other)).toBe("stale");
+          expect((await ctx.store.findById(group.id))?.formConfig).toEqual(custom);
+          // Versions ahead of the stored one are stale too.
+          expect(await ctx.store.updateFormConfig(group.id, 3, other)).toBe("stale");
+          expect(await ctx.store.updateFormConfig(group.id, 2, next(custom))).toBe("saved");
+          expect((await ctx.store.findById(group.id))?.formConfig).toEqual(next(custom));
+        }));
+
+      test("a version that is not a positive whole number is stale, never an error", () =>
+        withStore(async (ctx) => {
+          const group = await makeGroup(ctx, await ctx.newUser());
+          for (const version of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 40, Number.MAX_SAFE_INTEGER]) {
+            expect(await ctx.store.updateFormConfig(group.id, version, custom), String(version)).toBe("stale");
+          }
+          expect((await ctx.store.findById(group.id))?.formConfig).toEqual(DEFAULT_FORM_CONFIG);
+        }));
+
+      test("an unknown, malformed or deleted group is group_gone, and saves nothing", () =>
+        withStore(async (ctx) => {
+          const owner = await ctx.newUser();
+          const group = await makeGroup(ctx, owner);
+          expect(await ctx.store.updateFormConfig(crypto.randomUUID(), 1, custom)).toBe("group_gone");
+          for (const bad of ["not-a-uuid", "", "12345", "00000000-0000-0000-0000-00000000000g"]) {
+            expect(await ctx.store.updateFormConfig(bad, 1, custom), bad).toBe("group_gone");
+          }
+          expect(await ctx.store.softDeleteGroup(group.id)).toBe(true);
+          expect(await ctx.store.updateFormConfig(group.id, 1, custom)).toBe("group_gone");
+          // Not even a stale version tells that a deleted group exists.
+          expect(await ctx.store.updateFormConfig(group.id, 7, custom)).toBe("group_gone");
+        }));
+
+      test("only the named group changes", () =>
+        withStore(async (ctx) => {
+          const owner = await ctx.newUser();
+          const one = await makeGroup(ctx, owner);
+          const two = await makeGroup(ctx, owner);
+          expect(await ctx.store.updateFormConfig(one.id, 1, custom)).toBe("saved");
+          expect((await ctx.store.findById(two.id))?.formConfig).toEqual(DEFAULT_FORM_CONFIG);
+        }));
+
+      test("two saves from the same version: exactly one is saved, the other is stale and changes nothing", () =>
+        withStore(async (ctx) => {
+          const group = await makeGroup(ctx, await ctx.newUser());
+          for (let round = 0; round < 5; round++) {
+            const version = (await ctx.store.findById(group.id))!.formConfig.version;
+            const left: FormConfig = { version: version + 1, types: [{ id: "left", label: "Left" }], fields: [] };
+            const right: FormConfig = { version: version + 1, types: [{ id: "right", label: "Right" }], fields: [] };
+            const results = await Promise.all([
+              ctx.store.updateFormConfig(group.id, version, left),
+              ctx.store.updateFormConfig(group.id, version, right),
+            ]);
+            expect(results.slice().sort()).toEqual(["saved", "stale"]);
+            const stored = (await ctx.store.findById(group.id))!.formConfig;
+            expect(stored).toEqual(results[0] === "saved" ? left : right);
+          }
+        }));
+
+      test("a form that arrives as text is stored as a form (not as a JSON string), special characters included", () =>
+        withStore(async (ctx) => {
+          const group = await makeGroup(ctx, await ctx.newUser());
+          const tricky: FormConfig = {
+            version: 2,
+            types: [{ id: "q", label: 'Quote " and \\ and é 😀 {"a":1}' }, { id: "n", label: "100% $1 :x ?" }],
+            fields: [],
+          };
+          expect(await ctx.store.updateFormConfig(group.id, 1, tricky)).toBe("saved");
+          expect((await ctx.store.findById(group.id))?.formConfig).toEqual(tricky);
+        }));
+    });
   });
 }

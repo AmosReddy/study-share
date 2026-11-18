@@ -225,14 +225,15 @@ export function createFakeResourceStore(authStore: FakeAuthStore = getFakeAuthSt
       return [...byLower.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, value]) => value);
     },
 
-    async usedOptionIds(groupId) {
+    async usedOptionIds(groupId, fieldIds) {
       const byBytes = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+      const wanted = new Set(fieldIds);
       const typeIds = new Set<string>();
       const byField = new Map<string, Set<string>>();
       for (const e of readyIn(groupId)) {
         typeIds.add(e.typeId);
         for (const [fieldId, value] of Object.entries(e.details)) {
-          if (value === "") continue;
+          if (value === "" || !wanted.has(fieldId)) continue;
           byField.set(fieldId, (byField.get(fieldId) ?? new Set()).add(value));
         }
       }

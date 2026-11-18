@@ -484,7 +484,11 @@ export async function listFiles(deps: FileDeps, groupId: string, query: FileQuer
     );
   const [found, used, activeValues] = await Promise.all([
     page,
-    deps.resources.usedOptionIds(access.group.id),
+    // Only the dropdown and the removed details: the filters need their values, never a text detail's.
+    deps.resources.usedOptionIds(
+      access.group.id,
+      config.fields.filter((field) => field.kind === "dropdown" || field.archived).map((field) => field.id),
+    ),
     valuesOf(textFields.filter((field) => !field.archived)),
   ]);
   const stillUsed = textFields.filter(

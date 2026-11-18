@@ -88,4 +88,14 @@ export interface GroupStore {
   updateDetails(groupId: string, d: { name: string; description: string }): Promise<boolean>;
   updateJoin(groupId: string, j: { joinMode: JoinMode; passwordHash: string | null }): Promise<boolean>;
   replaceInvite(groupId: string, i: { inviteToken: string; inviteCode: string }): Promise<"ok" | "invite_taken" | "group_gone">;
+  /**
+   * Replaces the group's whole upload form, as one step, only while the stored form's version is
+   * `expectedVersion` (a stored value that is not a number, as a damaged one, counts as version 1,
+   * the version of the default form it is read as). "saved" when it was replaced; "stale" when the
+   * group is there but its version is another (nothing is written); "group_gone" for an unknown,
+   * malformed or deleted group (also when the version would have been stale). A version that is not
+   * a positive whole number is stale. Two saves from the same version: exactly one is saved. The
+   * caller has checked the form (prepareConfigForSave); the store writes what it is given.
+   */
+  updateFormConfig(groupId: string, expectedVersion: number, config: FormConfig): Promise<"saved" | "stale" | "group_gone">;
 }
