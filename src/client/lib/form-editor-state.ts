@@ -93,6 +93,47 @@ export function isDirty(draft: EditorDraft, saved: EditorDraft): boolean {
   return JSON.stringify(toDraftFormConfig(draft)) !== JSON.stringify(toDraftFormConfig(saved));
 }
 
+/**
+ * What the draft becomes after `sent` (an earlier snapshot of it) was saved as `config`, when the
+ * draft has changed since the snapshot was taken: the changes are kept, and the items that were new
+ * in `sent` now carry the ids the server gave them (the saved form lists its active items in the
+ * order they were sent), so the next save updates them instead of adding them again. The version is
+ * the saved one. Items added after the snapshot stay new.
+ */
+export function rebaseDraft(current: EditorDraft, sent: EditorDraft, config: FormConfig): EditorDraft {
+  const savedDraft = draftFromConfig(config);
+  const typeIds = new Map<string, string>();
+  const fieldIds = new Map<string, string>();
+  const choiceIds = new Map<string, string>();
+  sent.types.forEach((type, i) => {
+    const made = savedDraft.types[i];
+    if (type.id === "" && made) typeIds.set(type.key, made.id);
+  });
+  sent.fields.forEach((field, i) => {
+    const made = savedDraft.fields[i];
+    if (!made) return;
+    if (field.id === "") fieldIds.set(field.key, made.id);
+    field.options.forEach((choice, j) => {
+      const madeChoice = made.options[j];
+      if (field.kind === "dropdown" && choice.id === "" && madeChoice) choiceIds.set(`${field.key}/${choice.key}`, madeChoice.id);
+    });
+  });
+  return {
+    ...current,
+    version: config.version,
+    types: current.types.map((type) => (type.id === "" && typeIds.has(type.key) ? { ...type, id: typeIds.get(type.key)! } : type)),
+    fields: current.fields.map((field) => ({
+      ...field,
+      id: field.id === "" && fieldIds.has(field.key) ? fieldIds.get(field.key)! : field.id,
+      options: field.options.map((choice) =>
+        choice.id === "" && choiceIds.has(`${field.key}/${choice.key}`)
+          ? { ...choice, id: choiceIds.get(`${field.key}/${choice.key}`)! }
+          : choice,
+      ),
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Counters and limits
 

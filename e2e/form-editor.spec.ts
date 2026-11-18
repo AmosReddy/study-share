@@ -346,6 +346,9 @@ test("the limits are refused with a message: a 6th type, a 4th detail, a 16th ch
   await semester.getByRole("button", { name: /^Remove choice 2/ }).click();
   await saveButton(page).click();
   await expect(page.getByText(FORM_MESSAGES.tooFewChoices(2))).toBeVisible();
+  // The message belongs to the list of choices it is about (a screen reader reads it with the list).
+  await expect(semester.getByRole("list", { name: "Choices for Semester" })).toHaveAccessibleDescription(FORM_MESSAGES.tooFewChoices(2));
+  await auditPage(page);
   for (let i = 2; i <= 15; i++) {
     await semester.getByRole("button", { name: "Add a choice" }).click();
     await semester.getByLabel(`Choice ${i} of Semester`).fill(`Sem ${i}`);
@@ -607,4 +610,40 @@ test("the editor fits a 360px screen and meets the phone quality bar, with error
     expect(box?.height ?? 0).toBeGreaterThanOrEqual(43.5);
     expect(box?.width ?? 0).toBeGreaterThanOrEqual(43.5);
   }
+});
+
+test("nothing can be edited while a save is on its way, and what was typed is what gets saved", async ({ page }) => {
+  test.slow();
+  const group = await setUp(page, "Slow Save");
+  await openEditor(page, group);
+
+  // The save's answer is held back until the test lets it through.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route(`**${group.path}/settings/upload-form`, async (route) => {
+    if (route.request().method() !== "POST" || !route.request().headers()["next-action"]) return route.continue();
+    await gate;
+    return route.continue();
+  });
+
+  await addType(page).click();
+  await page.getByLabel("Type option 5").fill("  Exam paper ");
+  await saveButton(page).click();
+  await expect(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  for (const control of [page.getByLabel("Type option 1"), page.getByLabel("Type option 5"), addType(page), addDetail(page), page.getByRole("button", { name: "Move Notes down" })]) {
+    await expect(control).toBeDisabled();
+  }
+  release();
+  await expect(savedMessage(page)).toBeVisible();
+  await expect(page.getByLabel("Type option 5")).toBeEnabled();
+  await expect(page.getByLabel("Type option 5")).toHaveValue("Exam paper");
+  await expect(page.getByText("You have changes that are not saved.")).toHaveCount(0);
+
+  // The new type has its id now: a second save renames it instead of adding another one.
+  await page.getByLabel("Type option 5").fill("Exam papers");
+  await saveButton(page).click();
+  await expect(savedMessage(page)).toBeVisible();
+  await page.unroute(`**${group.path}/settings/upload-form`);
+  await page.goto(`${group.path}/upload`);
+  await expectOptions(typeSelect(page), ["Notes", "Previous year paper", "Study material", "Assignment", "Exam papers", "Other"]);
 });

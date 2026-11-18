@@ -134,7 +134,7 @@ In the editor (nothing needs saving for these, except where said).
 - [ ] **8.1** Change a type name, then try to close the tab or tap a link such as **Back to settings**.
   - **You should see:** your browser asks whether to leave. Staying keeps your changes. After **Save**, no question is asked.
 - [ ] **8.2** Open the editor in **two tabs**. In the first, rename a type and **Save**. In the second, rename something else and **Save**.
-  - **You should see:** in the second tab: **This form was changed somewhere else (maybe in another tab). Nothing was saved. Reload the page to see the latest form, then make your changes again.** What you typed is still on the screen. After reloading, you see the first tab's version.
+  - **You should see:** in the second tab: **This form was changed somewhere else, or your last save already went through. Reload to see the latest version. Nothing new was saved.** What you typed is still on the screen. After reloading, you see the first tab's version.
 - [ ] **8.3** Try the keyboard: Tab to a **Move ... down** button and press Enter or Space.
   - **You should see:** the row moves and the cursor stays on that row's button.
 

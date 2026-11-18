@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_FORM_CONFIG,
   FORM_LIMITS,
@@ -557,6 +557,55 @@ describe("isFormConfig", () => {
     expect(isFormConfig(DEFAULT_FORM_CONFIG)).toBe(true);
     for (const junk of [null, undefined, 5, "x", [], {}, { version: 1, types: "x", fields: [] }, { version: 0, types: [], fields: [] }]) {
       expect(isFormConfig(junk), JSON.stringify(junk)).toBe(false);
+    }
+  });
+});
+
+describe("prepareConfigForSave: labels with invisible or look-alike characters", () => {
+  it("an NFC and an NFD spelling of the same label are duplicates, and the stored label is NFC", () => {
+    const nfc = "Caf\u00e9";
+    const nfd = "Cafe\u0301";
+    expect(nfc).not.toBe(nfd);
+    expect(refused(withTypes([{ id: "", label: nfc }, { id: "", label: nfd }])).errors).toEqual({ "type:1": FORM_MESSAGES.labelTaken });
+    expect(saved(withTypes([{ id: "", label: nfd }])).types[0]!.label).toBe(nfc);
+  });
+
+  it("a label with nothing visible (only zero-width or format characters) is empty", () => {
+    for (const label of ["\u200b", "\u200b\u200b", " \u200b ", "\u200e\ufeff", "\u2060"]) {
+      expect(refused(withTypes([{ id: "", label }])).errors, JSON.stringify(label)).toEqual({ "type:0": FORM_MESSAGES.labelRequired });
+    }
+  });
+
+  it("format characters are removed from the stored label and cannot hide a duplicate", () => {
+    expect(saved(withTypes([{ id: "", label: "Lab\u200b record" }])).types[0]!.label).toBe("Lab record");
+    expect(refused(withTypes([{ id: "", label: "Slides" }, { id: "", label: "Sli\u200bdes" }])).errors).toEqual({ "type:1": FORM_MESSAGES.labelTaken });
+  });
+});
+
+describe("prepareConfigForSave: in a browser without crypto.randomUUID or String.prototype.isWellFormed", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("checks a draft and refuses a broken label the same way", () => {
+    const proto = String.prototype as unknown as Record<string, unknown>;
+    const wellFormed = proto.isWellFormed;
+    const toWellFormed = proto.toWellFormed;
+    vi.stubGlobal("crypto", {});
+    try {
+      proto.isWellFormed = undefined;
+      proto.toWellFormed = undefined;
+      // A counter for new ids, as the editor passes for its pre-check.
+      const result = prepareConfigForSave(CURRENT, withTypes([{ id: "notes", label: "Notes" }, { id: "", label: "Slides" }]), counter());
+      expect(result.ok).toBe(true);
+      for (const label of ["bad\ud800", "\udc00x", "ok\ud83d"]) {
+        expect(refused(withTypes([{ id: "", label }])).errors, JSON.stringify(label)).toEqual({ "type:0": FORM_MESSAGES.oddCharacter });
+      }
+      // Whole emoji are fine.
+      expect(save(withTypes([{ id: "", label: "\ud83d\ude00 Fun" }])).ok).toBe(true);
+      // Even the default id maker does not throw here: the answer is a friendly refusal, never a crash.
+      expect(() => prepareConfigForSave(CURRENT, withTypes([{ id: "", label: "Slides" }]))).not.toThrow();
+    } finally {
+      proto.isWellFormed = wellFormed;
+      proto.toWellFormed = toWellFormed;
     }
   });
 });

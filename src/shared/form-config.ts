@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isWellFormedText } from "./text";
 
 /**
  * A group's upload form: which types a file can have and which extra details it asks for. Title
@@ -58,7 +59,7 @@ export const FORM_MESSAGES = {
   tooLong: (max: number) => `Use ${max} characters or fewer.`,
   // Saving the form (the owner's editor). Keys of the errors are described at prepareConfigForSave.
   formChangedElsewhere:
-    "This form was changed somewhere else (maybe in another tab). Nothing was saved. Reload the page to see the latest form, then make your changes again.",
+    "This form was changed somewhere else, or your last save already went through. Reload to see the latest version. Nothing new was saved.",
   badDraft: "Something is wrong with this form. Reload the page and try again.",
   formTooBig: "This form has too many items to save. Remove some and try again.",
   couldNotSave: "We couldn't save the form right now. Please try again.",
@@ -387,12 +388,20 @@ class NoIdError extends Error {}
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A label as it will be stored (tidied), or the sentence saying what is wrong with it. */
+/**
+ * A label as it will be stored, or the sentence saying what is wrong with it. Invisible format
+ * characters (zero-width spaces, direction marks: \p{Cf}) are removed, whitespace runs become one
+ * space, and the text is stored in NFC form, so "é" typed two ways is one label. A label with nothing
+ * visible left is empty.
+ */
 function checkLabel(raw: unknown, max: number): { label: string } | { error: string } {
-  const label = tidy(asText(raw));
+  const text = asText(raw);
+  // A lone surrogate (half of an emoji, which Postgres refuses in JSON) cannot be stored.
+  if (!isWellFormedText(text)) return { error: FORM_MESSAGES.oddCharacter };
+  const label = tidy(text.replace(/\p{Cf}/gu, "")).normalize("NFC");
   if (label === "") return { error: FORM_MESSAGES.labelRequired };
-  // A control character or half of an emoji (which Postgres refuses in JSON) cannot be stored.
-  if (!hasNoControl(label) || !label.isWellFormed()) return { error: FORM_MESSAGES.oddCharacter };
+  // A control character cannot be stored either.
+  if (!hasNoControl(label)) return { error: FORM_MESSAGES.oddCharacter };
   if (characterCount(label) > max) return { error: FORM_MESSAGES.tooLong(max) };
   return { label };
 }

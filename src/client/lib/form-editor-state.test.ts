@@ -12,6 +12,7 @@ import {
   fieldsUsedText,
   isDirty,
   previewConfig,
+  rebaseDraft,
   toDraftFormConfig,
   typeAddBlocked,
   type EditorAction,
@@ -358,5 +359,74 @@ describe("clearErrors", () => {
     const errors = { a: "1", b: "2" };
     expect(clearErrors(errors, "a")).toEqual({ b: "2" });
     expect(clearErrors(errors, "zzz")).toBe(errors);
+  });
+});
+
+describe("rebaseDraft (edits made while a save was in flight)", () => {
+  /** What the server would answer for a draft: every new item gets an id, labels as sent. */
+  function savedAs(draft: EditorDraft): FormConfig {
+    let n = 0;
+    const id = (current: string) => current || `srv${++n}`;
+    return {
+      version: draft.version + 1,
+      types: draft.types.map((type) => ({ id: id(type.id), label: type.label.trim() })),
+      fields: draft.fields.map((field) => ({
+        id: id(field.id),
+        label: field.label.trim(),
+        kind: field.kind,
+        required: field.required,
+        ...(field.kind === "dropdown" ? { options: field.options.map((choice) => ({ id: id(choice.id), label: choice.label })) } : {}),
+      })),
+    };
+  }
+
+  it("keeps what was typed after the snapshot, gives the snapshot's new items their ids, and does not lose the dirty state", () => {
+    let sent = run(start(), { type: "addType" }, { type: "addField" });
+    sent = run(
+      sent,
+      { type: "renameType", key: sent.types[2]!.key, label: "Exam" },
+      { type: "renameField", key: sent.fields[2]!.key, label: "Year" },
+    );
+    const config = savedAs(sent);
+    // While the request was out, the person renamed the new type again and added another one.
+    let current = run(sent, { type: "renameType", key: sent.types[2]!.key, label: "Exam paper" }, { type: "addType" });
+    current = run(current, { type: "renameType", key: current.types[3]!.key, label: "Quiz" });
+
+    const rebased = rebaseDraft(current, sent, config);
+    expect(rebased.version).toBe(config.version);
+    expect(rebased.types.map((type) => [type.id, type.label])).toEqual([
+      ["t1", "Lecture notes"],
+      ["t2", "Lab record"],
+      ["srv1", "Exam paper"],
+      ["", "Quiz"],
+    ]);
+    expect(rebased.fields[2]).toMatchObject({ id: expect.stringMatching(/^srv/), label: "Year" });
+    // The edit is not lost: the draft still differs from what was saved.
+    expect(isDirty(rebased, draftFromConfig(config))).toBe(true);
+    // And the next save is accepted by the server's own rules (ids exist, version current).
+    expect(prepareConfigForSave(config, toDraftFormConfig(rebased)).ok).toBe(true);
+  });
+
+  it("maps the new choices of a new dropdown by position", () => {
+    let sent = run(start(), { type: "addField" });
+    const key = sent.fields[2]!.key;
+    sent = run(sent, { type: "setKind", key, kind: "dropdown" });
+    sent = run(sent, { type: "renameField", key, label: "Term" });
+    for (const choice of sent.fields[2]!.options)
+      sent = run(sent, { type: "renameChoice", fieldKey: key, choiceKey: choice.key, label: `C${choice.key}` });
+    const config = savedAs(sent);
+    const current = run(sent, { type: "setRequired", key, required: true });
+    const rebased = rebaseDraft(current, sent, config);
+    expect(rebased.fields[2]!.options.map((choice) => choice.id)).toEqual(config.fields[2]!.options!.map((option) => option.id));
+    expect(rebased.fields[2]!.required).toBe(true);
+    expect(prepareConfigForSave(config, toDraftFormConfig(rebased)).ok).toBe(true);
+  });
+
+  it("changes nothing for items that already had ids", () => {
+    const sent = start();
+    const current = run(sent, { type: "renameType", key: "e:t1", label: "Lectures" });
+    const rebased = rebaseDraft(current, sent, savedAs(sent));
+    expect(rebased.types.map((type) => type.id)).toEqual(["t1", "t2"]);
+    expect(rebased.types[0]!.label).toBe("Lectures");
   });
 });

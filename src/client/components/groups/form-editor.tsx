@@ -18,6 +18,7 @@ import {
   fieldsUsedText,
   isDirty,
   previewConfig,
+  rebaseDraft,
   toDraftFormConfig,
   typeAddBlocked,
   type Direction,
@@ -92,6 +93,12 @@ export function FormEditor({ groupId, config, action }: FormEditorProps) {
   const [attention, setAttention] = useState(0);
 
   const dirty = isDirty(draft, saved.draft);
+
+  // The draft as of the latest render, for the end of a save (which started with an older one).
+  const latest = useRef(draft);
+  useEffect(() => {
+    latest.current = draft;
+  });
 
   // Focus follows what the person just did: a new row's name box, the neighbour of a removed row, the
   // moved row's button (or the other one when it has reached the end and is disabled).
@@ -236,7 +243,9 @@ export function FormEditor({ groupId, config, action }: FormEditorProps) {
     const body = toDraftFormConfig(sending);
     setConfirming(null);
     // The same rules the server applies, so a mistake shows at once; the server still decides.
-    const checked = prepareConfigForSave(saved.config, body);
+    // New ids are made by a throwaway counter here (crypto.randomUUID is not there on every page).
+    let made = 0;
+    const checked = prepareConfigForSave(saved.config, body, () => `check${++made}`);
     if (!checked.ok) {
       showProblems(sending, checked.errors, checked.formError);
       return;
@@ -253,7 +262,9 @@ export function FormEditor({ groupId, config, action }: FormEditorProps) {
       }
       const next = draftFromConfig(result.config);
       setSaved({ config: result.config, draft: next });
-      dispatch({ type: "replace", draft: next });
+      // Nothing can be edited while a save is out (see the fieldset), but if the draft did change,
+      // keep the changes: it takes the new ids and version and stays "not saved".
+      dispatch({ type: "replace", draft: latest.current === sending ? next : rebaseDraft(latest.current, sending, result.config) });
       setErrors({});
       setFormError(undefined);
       setNotice({ tone: "success", text: SAVED_MESSAGE });
@@ -292,130 +303,137 @@ export function FormEditor({ groupId, config, action }: FormEditorProps) {
         <p className="text-sm text-muted-foreground">Always asked, and always required. It cannot be changed.</p>
       </div>
 
-      <section aria-labelledby={`${uid}-types`} className="flex flex-col gap-3">
-        <h3 id={`${uid}-types`} className="text-lg font-semibold">
-          Type options
-        </h3>
-        <p className="text-sm text-muted-foreground">
-          Members pick one when they upload (Type is always asked and always required). Up to {FORM_LIMITS.maxTypes}, and Other is always
-          added.
-        </p>
-        <ul aria-label="Type options" className="flex flex-col gap-3">
-          {draft.types.map((type, index) => {
-            const name = nameOf(type.label, `type ${index + 1}`);
-            const errorId = `${uid}-${type.key}-error`;
-            const error = errors[`type:${type.key}`];
-            return (
-              <li key={type.key} className="flex flex-col gap-2">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <input
-                    data-focus={`type:${type.key}:label`}
-                    aria-label={`Type option ${index + 1}`}
-                    placeholder="Name of this type"
-                    autoComplete="off"
-                    maxLength={FORM_LIMITS.maxTypeLabel}
-                    value={type.label}
-                    onChange={(event) => change({ type: "renameType", key: type.key, label: event.target.value }, `type:${type.key}`)}
-                    aria-invalid={error ? true : undefined}
-                    aria-describedby={error ? errorId : undefined}
-                    className={cn(inputClassName, "sm:flex-1")}
-                  />
-                  <RowButtons
-                    name={name}
-                    prefix={`type:${type.key}`}
-                    first={index === 0}
-                    last={index === draft.types.length - 1}
-                    onMove={(direction) => {
-                      moveFocus(`type:${type.key}`, direction);
-                      change({ type: "moveType", key: type.key, direction });
-                    }}
-                    onRemove={() => (type.id === "" ? removeType(type.key) : askRemove(`type:${type.key}`))}
-                  />
-                </div>
-                {error ? <FieldError id={errorId}>{error}</FieldError> : null}
-                {confirming === `type:${type.key}` ? (
-                  <RemoveConfirm
-                    name={name}
-                    prefix={`type:${type.key}`}
-                    onConfirm={() => removeType(type.key)}
-                    onCancel={() => cancelRemove(`type:${type.key}`)}
-                  />
-                ) : null}
-              </li>
-            );
-          })}
-          <li className="flex min-h-11 items-center rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-            Other: members say what it is. Always added.
-          </li>
-        </ul>
-        {errors.types ? <FieldError id={`${uid}-types-error`}>{errors.types}</FieldError> : null}
-        <AddButton focusId="add-type" blocked={typeBlocked} reasonId={`${uid}-type-limit`} onClick={addType}>
-          Add a type
-        </AddButton>
-      </section>
-
-      <section aria-labelledby={`${uid}-details`} className="flex flex-col gap-3">
-        <h3 id={`${uid}-details`} className="text-lg font-semibold">
-          Extra details
-        </h3>
-        <p className="text-sm text-muted-foreground">
-          Things members fill in besides the title and type, like Subject or Semester. Up to {FORM_LIMITS.maxDetails}.
-        </p>
-        <ul aria-label="Extra details" className="flex flex-col gap-4">
-          {draft.fields.map((field, index) => (
-            <li key={field.key}>
-              <div
-                role="group"
-                aria-labelledby={`${uid}-${field.key}-heading`}
-                className="flex flex-col gap-4 rounded-xl border bg-card p-4"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h4 id={`${uid}-${field.key}-heading`} className="text-base font-semibold">
-                    Detail {index + 1}
-                  </h4>
-                  <RowButtons
-                    name={nameOf(field.label, `detail ${index + 1}`)}
-                    prefix={`field:${field.key}`}
-                    first={index === 0}
-                    last={index === draft.fields.length - 1}
-                    onMove={(direction) => {
-                      moveFocus(`field:${field.key}`, direction);
-                      change({ type: "moveField", key: field.key, direction });
-                    }}
-                    onRemove={() => (field.id === "" ? removeField(field.key) : askRemove(`field:${field.key}`))}
-                    removeText="Remove"
-                  />
-                </div>
-                {confirming === `field:${field.key}` ? (
-                  <RemoveConfirm
-                    name={nameOf(field.label, `detail ${index + 1}`)}
-                    prefix={`field:${field.key}`}
-                    onConfirm={() => removeField(field.key)}
-                    onCancel={() => cancelRemove(`field:${field.key}`)}
-                  />
-                ) : null}
-                <DetailCard
-                  uid={uid}
-                  field={field}
-                  number={index + 1}
-                  errors={errors}
-                  confirming={confirming}
-                  onChange={change}
-                  onAddChoice={() => addChoice(field)}
-                  onRemoveChoice={(choiceKey) => removeChoice(field, choiceKey)}
-                  onAskRemoveChoice={(choiceKey) => askRemove(`choice:${field.key}:${choiceKey}`)}
-                  onCancelRemoveChoice={(choiceKey) => cancelRemove(`choice:${field.key}:${choiceKey}`)}
-                  onFocus={focusNext}
-                />
-              </div>
+      {/* Nothing can be changed while a save is on its way, so what is saved is what was on the screen. */}
+      <fieldset disabled={pending} className="contents">
+        <section aria-labelledby={`${uid}-types`} className="flex flex-col gap-3">
+          <h3 id={`${uid}-types`} className="text-lg font-semibold">
+            Type options
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            Members pick one when they upload (Type is always asked and always required). Up to {FORM_LIMITS.maxTypes}, and Other is always
+            added.
+          </p>
+          <ul aria-label="Type options" aria-describedby={errors.types ? `${uid}-types-error` : undefined} className="flex flex-col gap-3">
+            {draft.types.map((type, index) => {
+              const name = nameOf(type.label, `type ${index + 1}`);
+              const errorId = `${uid}-${type.key}-error`;
+              const error = errors[`type:${type.key}`];
+              return (
+                <li key={type.key} className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <input
+                      data-focus={`type:${type.key}:label`}
+                      aria-label={`Type option ${index + 1}`}
+                      placeholder="Name of this type"
+                      autoComplete="off"
+                      maxLength={FORM_LIMITS.maxTypeLabel}
+                      value={type.label}
+                      onChange={(event) => change({ type: "renameType", key: type.key, label: event.target.value }, `type:${type.key}`)}
+                      aria-invalid={error ? true : undefined}
+                      aria-describedby={error ? errorId : undefined}
+                      className={cn(inputClassName, "sm:flex-1")}
+                    />
+                    <RowButtons
+                      name={name}
+                      prefix={`type:${type.key}`}
+                      first={index === 0}
+                      last={index === draft.types.length - 1}
+                      onMove={(direction) => {
+                        moveFocus(`type:${type.key}`, direction);
+                        change({ type: "moveType", key: type.key, direction });
+                      }}
+                      onRemove={() => (type.id === "" ? removeType(type.key) : askRemove(`type:${type.key}`))}
+                    />
+                  </div>
+                  {error ? <FieldError id={errorId}>{error}</FieldError> : null}
+                  {confirming === `type:${type.key}` ? (
+                    <RemoveConfirm
+                      name={name}
+                      prefix={`type:${type.key}`}
+                      onConfirm={() => removeType(type.key)}
+                      onCancel={() => cancelRemove(`type:${type.key}`)}
+                    />
+                  ) : null}
+                </li>
+              );
+            })}
+            <li className="flex min-h-11 items-center rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+              Other: members say what it is. Always added.
             </li>
-          ))}
-        </ul>
-        {errors.fields ? <FieldError id={`${uid}-fields-error`}>{errors.fields}</FieldError> : null}
-        <AddButton focusId="add-field" blocked={fieldBlocked} reasonId={`${uid}-field-limit`} onClick={addField}>
-          Add a detail
-        </AddButton>
-      </section>
+          </ul>
+          {errors.types ? <FieldError id={`${uid}-types-error`}>{errors.types}</FieldError> : null}
+          <AddButton focusId="add-type" blocked={typeBlocked} reasonId={`${uid}-type-limit`} onClick={addType}>
+            Add a type
+          </AddButton>
+        </section>
+
+        <section aria-labelledby={`${uid}-details`} className="flex flex-col gap-3">
+          <h3 id={`${uid}-details`} className="text-lg font-semibold">
+            Extra details
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            Things members fill in besides the title and type, like Subject or Semester. Up to {FORM_LIMITS.maxDetails}.
+          </p>
+          <ul
+            aria-label="Extra details"
+            aria-describedby={errors.fields ? `${uid}-fields-error` : undefined}
+            className="flex flex-col gap-4"
+          >
+            {draft.fields.map((field, index) => (
+              <li key={field.key}>
+                <div
+                  role="group"
+                  aria-labelledby={`${uid}-${field.key}-heading`}
+                  className="flex flex-col gap-4 rounded-xl border bg-card p-4"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h4 id={`${uid}-${field.key}-heading`} className="text-base font-semibold">
+                      Detail {index + 1}
+                    </h4>
+                    <RowButtons
+                      name={nameOf(field.label, `detail ${index + 1}`)}
+                      prefix={`field:${field.key}`}
+                      first={index === 0}
+                      last={index === draft.fields.length - 1}
+                      onMove={(direction) => {
+                        moveFocus(`field:${field.key}`, direction);
+                        change({ type: "moveField", key: field.key, direction });
+                      }}
+                      onRemove={() => (field.id === "" ? removeField(field.key) : askRemove(`field:${field.key}`))}
+                      removeText="Remove"
+                    />
+                  </div>
+                  {confirming === `field:${field.key}` ? (
+                    <RemoveConfirm
+                      name={nameOf(field.label, `detail ${index + 1}`)}
+                      prefix={`field:${field.key}`}
+                      onConfirm={() => removeField(field.key)}
+                      onCancel={() => cancelRemove(`field:${field.key}`)}
+                    />
+                  ) : null}
+                  <DetailCard
+                    uid={uid}
+                    field={field}
+                    number={index + 1}
+                    errors={errors}
+                    confirming={confirming}
+                    onChange={change}
+                    onAddChoice={() => addChoice(field)}
+                    onRemoveChoice={(choiceKey) => removeChoice(field, choiceKey)}
+                    onAskRemoveChoice={(choiceKey) => askRemove(`choice:${field.key}:${choiceKey}`)}
+                    onCancelRemoveChoice={(choiceKey) => cancelRemove(`choice:${field.key}:${choiceKey}`)}
+                    onFocus={focusNext}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+          {errors.fields ? <FieldError id={`${uid}-fields-error`}>{errors.fields}</FieldError> : null}
+          <AddButton focusId="add-field" blocked={fieldBlocked} reasonId={`${uid}-field-limit`} onClick={addField}>
+            Add a detail
+          </AddButton>
+        </section>
+      </fieldset>
 
       <FormPreview draft={draft} />
 
@@ -696,7 +714,11 @@ function DetailCard({
               {FORM_LIMITS.minChoices} to {FORM_LIMITS.maxChoices} choices.
             </FieldHint>
           </div>
-          <ul aria-label={`Choices for ${fieldName}`} className="flex flex-col gap-3">
+          <ul
+            aria-label={`Choices for ${fieldName}`}
+            aria-describedby={optionsError ? `${base}-options-error` : undefined}
+            className="flex flex-col gap-3"
+          >
             {field.options.map((choice, index) => {
               const error = errors[`field:${field.key}:option:${choice.key}`];
               const errorId = `${base}-${choice.key}-error`;
