@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { describe, expect, test } from "vitest";
 import { runGroupStoreContract, type GroupStoreContext } from "@/server/adapters/group-store.contract";
+import { DEFAULT_FORM_CONFIG, type FormConfig } from "@/shared/form-config";
 import { GROUP_CODE_ALPHABET, GROUP_LIMITS } from "@/shared/groups";
 import type { GroupStore } from "@/server/ports/group-store";
 import { createGroupStore } from "./group-store";
@@ -317,4 +318,30 @@ describe.skipIf(!url)("SQL group store", { timeout: 120_000 }, () => {
       expect(await store.getMembership(groupId, friend)).toEqual({ role: "member", status: "active" });
       expect(await store.removeMember(groupId, friend)).toBe(true);
     }), 60_000);
+  test("the stored form configuration is read back as stored, and a damaged one reads as the default", () =>
+    withStore(async ({ store, client, newUser }) => {
+      const owner = await newUser();
+      const group = await makeGroup(store, owner);
+      const custom: FormConfig = {
+        version: 2,
+        types: [
+          { id: "a1", label: "Lecture notes" },
+          { id: "b2", label: "Old type", archived: true },
+        ],
+        fields: [
+          { id: "f1", label: "Semester", kind: "dropdown", required: true, options: [{ id: "o1", label: "One" }, { id: "o2", label: "Two", archived: true }] },
+          { id: "f2", label: "Year", kind: "text", required: false, archived: true },
+        ],
+      };
+      await client`update public.groups set form_config = ${JSON.stringify(custom)}::text::jsonb where id = ${group.id}`;
+      expect((await store.findById(group.id))?.formConfig).toEqual(custom);
+      expect((await store.findByInvite({ token: group.inviteToken }))?.formConfig).toEqual(custom);
+      expect((await store.findByInvite({ code: group.inviteCode }))?.formConfig).toEqual(custom);
+
+      // Anything that is not a valid configuration (the database accepts any JSON) reads as the default.
+      for (const damaged of ["{}", "[]", "null", '"text"', "5", '{"version":1,"types":"x","fields":[]}']) {
+        await client`update public.groups set form_config = ${damaged}::text::jsonb where id = ${group.id}`;
+        expect((await store.findById(group.id))?.formConfig, damaged).toEqual(DEFAULT_FORM_CONFIG);
+      }
+    }));
 });

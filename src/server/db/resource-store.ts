@@ -1,8 +1,9 @@
 import "server-only";
 import { sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import type { ResourceStatus, ResourceType } from "@/shared/resources";
+import type { ResourceStatus } from "@/shared/resources";
 import type { ResourceRecord, ResourceStore } from "@/server/ports/resource-store";
+import { cleanDetails, hasNul, legacyTypeKey, parseDetails } from "@/server/resource-answers";
 import { clampResourceLimit, decodeResourceCursor, encodeResourceCursor } from "@/server/resource-cursor";
 
 /**
@@ -17,8 +18,10 @@ type ResourceRow = {
   uploader_id: string | null;
   uploader_name: string;
   title: string;
-  subject: string;
-  type: ResourceType;
+  type_id: string;
+  type_other: string;
+  /** The details as JSON text (read with ::text so the driver's JSON handling cannot change it). */
+  details: string;
   file_key: string;
   file_name: string;
   content_type: string;
@@ -32,8 +35,8 @@ type ResourceRow = {
  * WITH_UPLOADER). Times come back as numbers because the driver hands timestamps over as text:
  * milliseconds for the record, microseconds for the list cursor. */
 const RESOURCE_COLUMNS = sql.raw(
-  "r.id, r.group_id, r.uploader_id, coalesce(p.display_name, '') as uploader_name, r.title, r.subject, " +
-    "r.type, r.file_key, r.file_name, r.content_type, r.size_bytes, r.status, " +
+  "r.id, r.group_id, r.uploader_id, coalesce(p.display_name, '') as uploader_name, r.title, " +
+    "r.type_id, r.type_other, r.details::text as details, r.file_key, r.file_name, r.content_type, r.size_bytes, r.status, " +
     "(extract(epoch from r.created_at) * 1000)::float8 as created_ms, " +
     "round(extract(epoch from r.created_at) * 1000000)::bigint as created_us",
 );
@@ -51,8 +54,9 @@ function toRecord(row: ResourceRow): ResourceRecord {
     uploaderId: row.uploader_id,
     uploaderName: row.uploader_name,
     title: row.title,
-    subject: row.subject,
-    type: row.type,
+    typeId: row.type_id,
+    typeOther: row.type_other,
+    details: parseDetails(row.details),
     fileKey: row.file_key,
     fileName: row.file_name,
     contentType: row.content_type,
@@ -69,13 +73,19 @@ function isUuid(id: string): boolean {
   return UUID.test(id);
 }
 
-/** Postgres cannot store a NUL character in text, so no file has one, and comparing with one would throw. */
-const hasNul = (text: string) => text.includes("\u0000");
-
 /** Makes `%`, `_` and `\` plain characters in a LIKE pattern (the backslash is the escape character). */
 function escapeLike(text: string): string {
   return text.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
+
+/** A list of texts as a parameter: JSON text, cast through text so no driver turns the string into a JSON string. */
+const jsonList = (values: string[]) => sql`${JSON.stringify(values.map((v) => v.toWellFormed()))}::text::jsonb`;
+
+/** The texts of a list as a `text[]`, built from parameters only (an array parameter would be spread by the query builder). */
+const textArray = (values: string[]) => sql`array(select jsonb_array_elements_text(${jsonList(values)}))`;
+
+/** The details as a jsonb value, from one text parameter. */
+const detailsJson = (details: Record<string, string>) => sql`${JSON.stringify(cleanDetails(details))}::text::jsonb`;
 
 /**
  * The SQL ResourceStore, on public.resources (RLS on, no policies; the app connects as the
@@ -93,8 +103,9 @@ export function createResourceStore<S extends Record<string, unknown> = Record<s
       const rows = await db.execute<ResourceRow>(sql`
         with r as (
           insert into public.resources
-            (id, group_id, uploader_id, title, subject, type, file_key, file_name, content_type, size_bytes, status)
-          select ${input.id}::uuid, g.id, ${input.uploaderId}::uuid, ${input.title}, ${input.subject}, ${input.type},
+            (id, group_id, uploader_id, title, type, type_id, type_other, details, file_key, file_name, content_type, size_bytes, status)
+          select ${input.id}::uuid, g.id, ${input.uploaderId}::uuid, ${input.title}, ${legacyTypeKey(input.typeId)},
+            ${input.typeId}, ${input.typeOther}, ${detailsJson(input.details)},
             ${input.fileKey}, ${input.fileName}, ${input.contentType}, ${input.sizeBytes}::bigint, 'uploading'
           from public.groups g
           where g.id = ${input.groupId}::uuid and g.deleted_at is null
@@ -139,19 +150,40 @@ export function createResourceStore<S extends Record<string, unknown> = Record<s
       const none = { items: [], nextCursor: null };
       if (!isUuid(groupId)) return none;
       const limit = clampResourceLimit(query.limit);
-      const search = query.search?.trim() ?? "";
-      if (hasNul(search) || (query.subject !== undefined && hasNul(query.subject))) return none;
+      const text = query.search?.text.trim() ?? "";
+      const details = query.details ?? [];
+      // Text with a NUL character cannot be in any file, so it matches nothing (and would make Postgres throw).
+      if (hasNul(text) || (query.typeId !== undefined && hasNul(query.typeId))) return none;
+      if (details.some((d) => hasNul(d.fieldId) || hasNul(d.value))) return none;
 
       const filters = [sql`r.group_id = ${groupId}::uuid`, sql`r.status = 'ready'`, sql`r.deleted_at is null`, GROUP_IS_LIVE];
-      if (search !== "") {
-        const pattern = `%${escapeLike(search)}%`;
+      if (text !== "") {
+        const pattern = `%${escapeLike(text)}%`;
+        // Ids with a NUL character match no file, so they are left out instead of failing the query.
+        const typeIds = (query.search?.typeIds ?? []).filter((id) => !hasNul(id));
+        const optionIds = (query.search?.optionIds ?? []).filter((id) => !hasNul(id));
+        const textFieldIds = (query.search?.textFieldIds ?? []).filter((id) => !hasNul(id));
         // chr(92) is the backslash, written that way so no string-literal rule can change it.
-        filters.push(
-          sql`(r.title ilike ${pattern} escape chr(92) or r.subject ilike ${pattern} escape chr(92) or r.file_name ilike ${pattern} escape chr(92))`,
-        );
+        // Every list is a parameter (JSON text turned into a text[] by the database), never part of the SQL text.
+        filters.push(sql`(
+          r.title ilike ${pattern} escape chr(92)
+          or r.file_name ilike ${pattern} escape chr(92)
+          or r.type_other ilike ${pattern} escape chr(92)
+          or exists (
+            select 1 from jsonb_each_text(r.details) as e
+            where e.key = any(${textArray(textFieldIds)}) and e.value ilike ${pattern} escape chr(92))
+          or r.type_id = any(${textArray(typeIds)})
+          or exists (
+            select 1 from jsonb_each_text(r.details) as e
+            where e.value = any(${textArray(optionIds)}))
+        )`);
       }
-      if (query.type !== undefined) filters.push(sql`r.type = ${query.type}`);
-      if (query.subject !== undefined) filters.push(sql`lower(r.subject) = lower(${query.subject})`);
+      if (query.typeId !== undefined) filters.push(sql`r.type_id = ${query.typeId}`);
+      for (const d of details) {
+        // A missing answer counts as empty, so an empty value finds the files with no answer.
+        const answer = sql`coalesce(r.details ->> ${d.fieldId}::text, '')`;
+        filters.push(d.kind === "dropdown" ? sql`${answer} = ${d.value}` : sql`lower(${answer}) = lower(${d.value})`);
+      }
       const cursor = decodeResourceCursor(query.cursor);
       if (cursor) {
         // Exact microseconds from the epoch, so the comparison is on the stored time itself.
@@ -175,25 +207,53 @@ export function createResourceStore<S extends Record<string, unknown> = Record<s
       };
     },
 
-    async listSubjects(groupId) {
-      if (!isUuid(groupId)) return [];
-      // Grouped by the lower-case form so "Maths" and "maths" are one subject; "C" compares the
-      // bytes, as the fake compares strings, so both order and pick the same way.
-      const rows = await db.execute<{ subject: string }>(sql`
-        select min(r.subject collate "C") as subject
-        from public.resources r
-        where r.group_id = ${groupId}::uuid and r.status = 'ready' and r.deleted_at is null and r.subject <> ''
-          and ${GROUP_IS_LIVE}
-        group by lower(r.subject)
-        order by lower(r.subject) collate "C"`);
-      return rows.map((r) => r.subject);
+    async listDetailValues(groupId, fieldId) {
+      if (!isUuid(groupId) || hasNul(fieldId)) return [];
+      // Grouped by the lower-case form so "Maths" and "maths" are one value; "C" compares the
+      // bytes, as the fake compares strings, so both order and pick the same way. The value is
+      // taken once in the inner query, so the field id is a single parameter.
+      const rows = await db.execute<{ value: string }>(sql`
+        select min(v collate "C") as value
+        from (
+          select r.details ->> ${fieldId}::text as v
+          from public.resources r
+          where r.group_id = ${groupId}::uuid and r.status = 'ready' and r.deleted_at is null and ${GROUP_IS_LIVE}
+        ) t
+        where v is not null and v <> ''
+        group by lower(v)
+        order by lower(v) collate "C"`);
+      return rows.map((r) => r.value);
+    },
+
+    async usedOptionIds(groupId) {
+      const empty = { typeIds: [], detailValues: {} };
+      if (!isUuid(groupId)) return empty;
+      const live = sql`r.group_id = ${groupId}::uuid and r.status = 'ready' and r.deleted_at is null and ${GROUP_IS_LIVE}`;
+      const [types, values] = await Promise.all([
+        db.execute<{ type_id: string }>(sql`select distinct r.type_id from public.resources r where ${live}`),
+        db.execute<{ field_id: string; value: string }>(sql`
+          select distinct e.key as field_id, e.value
+          from public.resources r, jsonb_each_text(r.details) as e
+          where ${live} and e.value <> ''`),
+      ]);
+      // Sorted here, by UTF-16 code units, exactly as the fake sorts, so both give one order.
+      const byBytes = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+      const byField = new Map<string, string[]>();
+      for (const row of values) byField.set(row.field_id, [...(byField.get(row.field_id) ?? []), row.value]);
+      return {
+        typeIds: types.map((r) => r.type_id).sort(byBytes),
+        // fromEntries makes own properties, so a detail id like "__proto__" stays plain data.
+        detailValues: Object.fromEntries([...byField].sort(([a], [b]) => byBytes(a, b)).map(([id, list]) => [id, list.sort(byBytes)])),
+      };
     },
 
     async update(groupId, id, d) {
       if (!isUuid(groupId) || !isUuid(id)) return null;
       const rows = await db.execute<ResourceRow>(sql`
         with r as (
-          update public.resources x set title = ${d.title}, subject = ${d.subject}, type = ${d.type}
+          update public.resources x
+          set title = ${d.title}, type = ${legacyTypeKey(d.typeId)}, type_id = ${d.typeId}, type_other = ${d.typeOther},
+            details = ${detailsJson(d.details)}
           where x.id = ${id}::uuid and x.group_id = ${groupId}::uuid and x.deleted_at is null
             and exists (select 1 from public.groups g where g.id = x.group_id and g.deleted_at is null)
           returning x.*

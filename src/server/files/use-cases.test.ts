@@ -246,8 +246,9 @@ describe("prepareUpload", () => {
       status: "uploading",
       uploaderId: owner.id,
       title: "Unit 1 notes",
-      subject: "Chemistry",
-      type: "notes",
+      typeId: "notes",
+      typeOther: "",
+      details: { subject: "Chemistry" },
       fileName: "unit1.pdf",
       contentType: "application/pdf",
       sizeBytes: PDF.length,
@@ -275,7 +276,7 @@ describe("prepareUpload", () => {
     const owner = t.person("Asha");
     const groupId = await t.makeGroup(owner);
     const made = await prepared(t.as(owner), groupId, details({ title: "  Unit   1\tnotes \n", subject: undefined }));
-    expect(await t.resources.findById(groupId, made.resourceId)).toMatchObject({ title: "Unit 1 notes", subject: "" });
+    expect(await t.resources.findById(groupId, made.resourceId)).toMatchObject({ title: "Unit 1 notes", details: {} });
   });
 
   it("cleans the file name for the stored key and name, whatever path or odd characters it came with", async () => {
@@ -724,8 +725,9 @@ describe("listFiles", () => {
         groupId,
         uploaderId: owner.id,
         title: `File ${i}`,
-        subject: "",
-        type: "notes",
+        typeId: "notes",
+        typeOther: "",
+        details: {},
         fileKey: `k-${i}`,
         fileName: `f${i}.pdf`,
         contentType: "application/pdf",
@@ -772,8 +774,8 @@ describe("listFiles", () => {
     const deps = t.as(owner);
     await listFiles(deps, groupId, { search: `a\u0000b${"x".repeat(300)}` });
     const sent = list.mock.calls[0][1];
-    expect([...(sent.search ?? "")].length).toBeLessThanOrEqual(RESOURCE_LIMITS.maxTitle);
-    expect([...(sent.search ?? "")].length).toBe(100);
+    expect([...(sent.search?.text ?? "")].length).toBeLessThanOrEqual(RESOURCE_LIMITS.maxTitle);
+    expect([...(sent.search?.text ?? "")].length).toBe(100);
     expect(sent.search).not.toContain("\u0000");
     expect(sent.limit).toBe(20);
   });
@@ -873,8 +875,9 @@ describe("openFile", () => {
       groupId,
       uploaderId: owner.id,
       title: "Odd",
-      subject: "",
-      type: "other",
+      typeId: "other",
+      typeOther: "",
+      details: {},
       fileKey: "odd-key",
       fileName: "page.pdf",
       contentType: "text/html",
@@ -933,7 +936,7 @@ describe("updateFile", () => {
     const { resourceId } = await uploadReady(t.as(member), groupId);
     const result = await updateFile(t.as(member), groupId, resourceId, { ...edit, title: "  Better   title " });
     expect(result).toMatchObject({ ok: true, data: { title: "Better title", subject: "Organic", type: "assignment", typeLabel: "Assignment" } });
-    expect(await t.resources.findById(groupId, resourceId)).toMatchObject({ title: "Better title", subject: "Organic" });
+    expect(await t.resources.findById(groupId, resourceId)).toMatchObject({ title: "Better title", details: { subject: "Organic" } });
   });
 
   it("does not let the owner, or anyone else, edit another person's file", async () => {

@@ -16,6 +16,7 @@ import {
   type ResourceType,
 } from "@/shared/resources";
 import { uuidSchema } from "@/shared/groups";
+import { legacyTypeKey } from "@/server/resource-answers";
 import { FILE_PREPARE_USER_LIMIT } from "./rate-limit-policy";
 import { SNIFF_BYTES, contentMatchesType } from "./sniff";
 
@@ -130,14 +131,23 @@ async function readyFile(deps: FileDeps, groupId: string, resourceId: string): P
 
 const isUploader = (deps: FileDeps, record: ResourceRecord) => record.uploaderId !== null && record.uploaderId === deps.user.id;
 
+/**
+ * TEMPORARY SHIM (custom upload form, Task 2): the file's answers on the old fixed form. The store
+ * now holds `typeId`, `typeOther` and `details`; until Task 3 moves these use-cases onto the
+ * group's form configuration, a type that is not one of the old keys shows as Other, and the
+ * Subject is the detail with the id `subject`. Task 3 deletes this.
+ */
+const legacyType = (record: ResourceRecord) => legacyTypeKey(record.typeId) as ResourceType;
+const legacySubject = (record: ResourceRecord) => (Object.hasOwn(record.details, "subject") ? record.details.subject : "");
+
 function viewOf(deps: FileDeps, membership: Membership, record: ResourceRecord): FileView {
   const own = isUploader(deps, record);
   return {
     id: record.id,
     title: record.title,
-    subject: record.subject,
-    type: record.type,
-    typeLabel: RESOURCE_TYPES[record.type],
+    subject: legacySubject(record),
+    type: legacyType(record),
+    typeLabel: RESOURCE_TYPES[legacyType(record)],
     fileName: record.fileName,
     sizeBytes: record.sizeBytes,
     uploaderName: record.uploaderName.trim() === "" ? FILE_MESSAGES.formerMember : record.uploaderName,
@@ -186,8 +196,10 @@ export async function prepareUpload(
       groupId: access.group.id,
       uploaderId: deps.user.id,
       title,
-      subject,
-      type,
+      // SHIM (Task 3 replaces it): the old form's type and subject as the new answers.
+      typeId: type,
+      typeOther: "",
+      details: subject === "" ? {} : { subject },
       fileKey,
       fileName,
       contentType,
@@ -304,8 +316,17 @@ export async function listFiles(deps: FileDeps, groupId: string, query: FileQuer
   if (!access) return null;
   const filters = cleanQuery(query);
   const [page, subjects] = await Promise.all([
-    filters ? deps.resources.list(access.group.id, { ...filters, limit: FILE_PAGE_SIZE }) : { items: [], nextCursor: null },
-    deps.resources.listSubjects(access.group.id),
+    filters
+      ? deps.resources.list(access.group.id, {
+          // SHIM (Task 3 replaces it): the old form's search, type and subject as store queries.
+          ...(filters.search ? { search: { text: filters.search, typeIds: [], optionIds: [], textFieldIds: ["subject"] } } : {}),
+          ...(filters.type ? { typeId: filters.type } : {}),
+          ...(filters.subject ? { details: [{ fieldId: "subject", kind: "text" as const, value: filters.subject }] } : {}),
+          ...(filters.cursor ? { cursor: filters.cursor } : {}),
+          limit: FILE_PAGE_SIZE,
+        })
+      : { items: [], nextCursor: null },
+    deps.resources.listDetailValues(access.group.id, "subject"),
   ]);
   return {
     items: page.items.map((record) => viewOf(deps, access.membership, record)),
@@ -371,7 +392,16 @@ export async function updateFile(deps: FileDeps, groupId: string, resourceId: st
     const parsed = parse(fileDetailsSchema, raw, FILE_MESSAGES.badForm);
     if ("failure" in parsed) return parsed.failure;
 
-    const saved = await deps.resources.update(access.group.id, record.id, parsed.data);
+    // SHIM (Task 3 replaces it): the old form's type and subject as the new answers. What the file
+    // holds beyond them (other details, the "Other" text of a file that stays Other) is kept.
+    const { subject, type, title } = parsed.data;
+    const otherDetails = Object.fromEntries(Object.entries(record.details).filter(([id]) => id !== "subject"));
+    const saved = await deps.resources.update(access.group.id, record.id, {
+      title,
+      typeId: type,
+      typeOther: type === "other" ? record.typeOther : "",
+      details: subject === "" ? otherDetails : { ...otherDetails, subject },
+    });
     return saved ? { ok: true, data: viewOf(deps, access.membership, saved) } : NOT_FOUND;
   } catch {
     console.error("Could not save a file's details.");

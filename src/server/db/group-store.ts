@@ -1,6 +1,7 @@
 import "server-only";
 import { sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { parseFormConfig, type FormConfig } from "@/shared/form-config";
 import { GROUP_LIMITS, type GroupRole, type JoinMode, type MemberStatus } from "@/shared/groups";
 import type { GroupRecord, GroupStore } from "@/server/ports/group-store";
 import { guardTransaction } from "./transaction-guard";
@@ -19,15 +20,26 @@ type GroupRow = {
   password_hash: string | null;
   invite_token: string;
   invite_code: string;
+  /** The configuration as JSON text (read with ::text so the driver's JSON handling cannot change it). */
+  form_config: string;
   created_ms: number;
 };
 
 /** The columns a GroupRecord is made from. The driver hands timestamps over as text, so the time
  * comes back as epoch milliseconds instead (the same conversion on every path keeps them equal). */
 const GROUP_COLUMNS = sql.raw(
-  "id, name, description, join_mode, password_hash, invite_token, invite_code, " +
+  "id, name, description, join_mode, password_hash, invite_token, invite_code, form_config::text as form_config, " +
     "(extract(epoch from created_at) * 1000)::float8 as created_ms",
 );
+
+/** The stored form. Text that is not JSON, or JSON that is not a valid form, reads as the default form. */
+function readFormConfig(text: string): FormConfig {
+  try {
+    return parseFormConfig(JSON.parse(text));
+  } catch {
+    return parseFormConfig(null);
+  }
+}
 
 function toRecord(row: GroupRow): GroupRecord {
   return {
@@ -38,6 +50,7 @@ function toRecord(row: GroupRow): GroupRecord {
     passwordHash: row.password_hash,
     inviteToken: row.invite_token,
     inviteCode: row.invite_code,
+    formConfig: readFormConfig(row.form_config),
     createdAt: new Date(Number(row.created_ms)),
   };
 }

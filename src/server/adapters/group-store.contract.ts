@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { DEFAULT_FORM_CONFIG } from "@/shared/form-config";
 import { GROUP_CODE_ALPHABET, GROUP_LIMITS } from "@/shared/groups";
 import type { GroupStore } from "../ports/group-store";
 
@@ -68,6 +69,26 @@ export function runGroupStoreContract(withStore: WithStore): void {
         expect(await ctx.store.getMembership(result.group.id, owner)).toEqual({ role: "owner", status: "active" });
         expect(await ctx.store.findById(result.group.id)).toEqual(result.group);
         expect(await ctx.store.findById(crypto.randomUUID())).toBeNull();
+      }));
+
+    test("a new group has the default upload form, whichever way it is read", () =>
+      withStore(async (ctx) => {
+        const owner = await ctx.newUser();
+        const group = await makeGroup(ctx, owner);
+        expect(group.formConfig).toEqual(DEFAULT_FORM_CONFIG);
+        expect((await ctx.store.findById(group.id))?.formConfig).toEqual(DEFAULT_FORM_CONFIG);
+        expect((await ctx.store.findByInvite({ token: group.inviteToken }))?.formConfig).toEqual(DEFAULT_FORM_CONFIG);
+        expect((await ctx.store.findByInvite({ code: group.inviteCode }))?.formConfig).toEqual(DEFAULT_FORM_CONFIG);
+        // A change a caller makes to the record it got (if it can make one at all) reaches no other group.
+        try {
+          (group.formConfig.types as { label: string }[])[0].label = "Changed";
+        } catch {
+          // The fake hands out a frozen copy; the SQL store hands out a fresh one. Either is fine.
+        }
+        const second = await makeGroup(ctx, owner);
+        expect(second.formConfig).toEqual(DEFAULT_FORM_CONFIG);
+        expect((await ctx.store.findById(second.id))?.formConfig).toEqual(DEFAULT_FORM_CONFIG);
+        expect(DEFAULT_FORM_CONFIG.types[0].label).toBe("Notes");
       }));
 
     test("rejects a 21st group for one person", () =>

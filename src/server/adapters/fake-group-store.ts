@@ -1,3 +1,4 @@
+import { DEFAULT_FORM_CONFIG } from "@/shared/form-config";
 import { GROUP_LIMITS, type GroupRole, type MemberStatus } from "@/shared/groups";
 import type { GroupRecord, GroupStore, MemberRow } from "../ports/group-store";
 import { getFakeAuthStore, type FakeAuthStore } from "./fake-auth-provider";
@@ -85,6 +86,8 @@ export function createFakeGroupStore(authStore: FakeAuthStore = getFakeAuthStore
         passwordHash: input.passwordHash,
         inviteToken: input.inviteToken,
         inviteCode: input.inviteCode,
+        // Every new group starts on the default form, as the column default gives in the database.
+        formConfig: DEFAULT_FORM_CONFIG,
         createdAt: new Date(),
       };
       state.groups.set(group.id, group);
