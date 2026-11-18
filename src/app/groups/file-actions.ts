@@ -2,9 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { saveFormConfig } from "@/server/files/form-use-cases";
 import { requireFileDeps } from "@/server/files/request-deps";
 import { completeUpload, deleteFile, prepareUpload, updateFile, type FileResult } from "@/server/files/use-cases";
 import { FILE_MESSAGES } from "@/shared/file-messages";
+import type { SaveFormResult } from "@/shared/form-config";
 import type { FormState } from "@/shared/form-state";
 import { failed, text } from "../(auth)/form-data";
 
@@ -110,4 +112,20 @@ export async function deleteFileAction(_state: FormState, form: FormData): Promi
 
   revalidatePath("/", "layout");
   redirect(`/groups/${groupId}?notice=deleted`);
+}
+
+/**
+ * Saves the group's upload form from the owner's editor (the owner only: anyone else gets the same
+ * "not available" answer as for a group that is not there). `draft` is whatever the browser sent, so
+ * the use-case checks its shape and every rule; this only turns its answer into what the screen shows.
+ * On success every page is refreshed, so the upload and library screens use the new form at once.
+ */
+export async function saveFormConfigAction(groupId: string, draft: unknown): Promise<SaveFormResult> {
+  const deps = await requireFileDeps(typeof groupId === "string" ? groupId : "");
+  const result = await saveFormConfig(deps, typeof groupId === "string" ? groupId : "", draft);
+  if (result.ok) {
+    revalidatePath("/", "layout");
+    return { ok: true, config: result.config };
+  }
+  return { ok: false, errors: result.errors, ...(result.formError ? { formError: result.formError } : {}) };
 }

@@ -1570,6 +1570,17 @@ describe("the library on a group's own form", () => {
   const titlesOf = async (t: ReturnType<typeof setup>, who: Person, groupId: string, query: Record<string, unknown> = {}) =>
     ((await listFiles(t.as(who), groupId, query as never))?.items ?? []).map((i) => i.title).sort();
 
+  it("asks the store for the values of the dropdown and removed details only, never an active text detail's", async () => {
+    const t = setup();
+    const owner = t.person("Asha");
+    const { groupId } = await seedLibrary(t, owner);
+    const spy = vi.spyOn(t.resources, "usedOptionIds");
+    await listFiles(t.as(owner), groupId);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe(groupId);
+    expect([...spy.mock.calls[0][1]].sort()).toEqual(["f_sem", "f_year"]);
+  });
+
   it("builds the filters from the form and from what files use: removed items appear only while used", async () => {
     const t = setup();
     const owner = t.person("Asha");

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { runGroupStoreContract, type GroupStoreContext } from "@/server/adapters/group-store.contract";
 import { DEFAULT_FORM_CONFIG, type FormConfig } from "@/shared/form-config";
 import { GROUP_CODE_ALPHABET, GROUP_LIMITS } from "@/shared/groups";
@@ -342,6 +342,76 @@ describe.skipIf(!url)("SQL group store", { timeout: 120_000 }, () => {
       for (const damaged of ["{}", "[]", "null", '"text"', "5", '{"version":1,"types":"x","fields":[]}']) {
         await client`update public.groups set form_config = ${damaged}::text::jsonb where id = ${group.id}`;
         expect((await store.findById(group.id))?.formConfig, damaged).toEqual(DEFAULT_FORM_CONFIG);
+      }
+    }));
+
+  test("updateFormConfig stores a real JSON object (not a JSON string), counted by the version inside it", () =>
+    withStore(async ({ store, client, newUser }) => {
+      const owner = await newUser();
+      const group = await makeGroup(store, owner);
+      const next: FormConfig = { version: 2, types: [{ id: "a1", label: "Notes" }], fields: [] };
+      expect(await store.updateFormConfig(group.id, 1, next)).toBe("saved");
+      const [row] = await client<{ kind: string; version: number; label: string }[]>`
+        select jsonb_typeof(form_config) as kind, (form_config->>'version')::int as version, form_config->'types'->0->>'label' as label
+        from public.groups where id = ${group.id}`;
+      expect(row).toEqual({ kind: "object", version: 2, label: "Notes" });
+    }));
+
+  test("updateFormConfig treats a stored version that is not a number as version 1 (the version a damaged form is read as)", () =>
+    withStore(async ({ store, client, newUser }) => {
+      const owner = await newUser();
+      const group = await makeGroup(store, owner);
+      const next: FormConfig = { version: 2, types: [{ id: "a1", label: "Notes" }], fields: [] };
+      // The database accepts any JSON: none of these has a numeric version, and none may raise on the comparison.
+      for (const damaged of ["{}", "[]", "null", '"text"', "5", '{"version":"x"}', '{"version":null}', '{"version":{"a":1}}']) {
+        await client`update public.groups set form_config = ${damaged}::text::jsonb where id = ${group.id}`;
+        expect(await store.updateFormConfig(group.id, 7, next), damaged).toBe("stale");
+        expect(await store.updateFormConfig(group.id, 1, next), damaged).toBe("saved");
+        expect((await store.findById(group.id))?.formConfig, damaged).toEqual(next);
+      }
+    }));
+
+  test("updateFormConfig compares numbers as numbers, so a stored 2.0 is version 2", () =>
+    withStore(async ({ store, client, newUser }) => {
+      const owner = await newUser();
+      const group = await makeGroup(store, owner);
+      const custom = JSON.stringify({ version: 2, types: [], fields: [] }).replace('"version":2', '"version":2.0');
+      await client`update public.groups set form_config = ${custom}::text::jsonb where id = ${group.id}`;
+      expect(await store.updateFormConfig(group.id, 1, DEFAULT_FORM_CONFIG)).toBe("stale");
+      expect(await store.updateFormConfig(group.id, 2, { version: 3, types: [], fields: [] })).toBe("saved");
+    }));
+
+  test("many saves at the same instant from one version: one is saved, all the others are stale", () =>
+    withStore(async ({ store, newUser }) => {
+      const owner = await newUser();
+      const group = await makeGroup(store, owner);
+      const results = await Promise.all(
+        Array.from({ length: 5 }, (_, i) =>
+          store.updateFormConfig(group.id, 1, { version: 2, types: [{ id: `t${i}`, label: `Type ${i}` }], fields: [] }),
+        ),
+      );
+      expect(results.filter((r) => r === "saved")).toHaveLength(1);
+      expect(results.filter((r) => r === "stale")).toHaveLength(4);
+      const winner = results.indexOf("saved");
+      expect((await store.findById(group.id))?.formConfig.types).toEqual([{ id: `t${winner}`, label: `Type ${winner}` }]);
+    }));
+
+  test("a damaged stored form logs the one fixed warning and a valid or null one does not", () =>
+    withStore(async ({ store, client, newUser }) => {
+      const owner = await newUser();
+      const group = await makeGroup(store, owner);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await store.findById(group.id);
+        await client`update public.groups set form_config = 'null'::jsonb where id = ${group.id}`;
+        await store.findById(group.id);
+        expect(warn).not.toHaveBeenCalled();
+        await client`update public.groups set form_config = '{"version":1,"types":"x","fields":[]}'::jsonb where id = ${group.id}`;
+        await store.findById(group.id);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]).toEqual(["A group's stored upload form is not valid, so the default form is used."]);
+      } finally {
+        warn.mockRestore();
       }
     }));
 });

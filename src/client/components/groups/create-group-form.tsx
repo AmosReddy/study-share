@@ -274,8 +274,19 @@ function CreatedScreen({ state, onStartOver }: { state: FormState; onStartOver: 
         />
       </div>
 
-      <div className="mt-8 flex flex-col gap-3 border-t pt-6 sm:flex-row">
-        <Button asChild className="h-11 px-5 text-base">
+      <div className="mt-8 flex flex-col gap-3 border-t pt-6">
+        <h2 className="text-xl font-semibold">Next: your upload form</h2>
+        <p className="text-muted-foreground">
+          Members will upload with a ready-made form: Title, Type and an optional Subject. Change it to fit your group, or skip this and
+          do it later in Settings.
+        </p>
+        <Button asChild className="h-11 px-5 text-base sm:self-start">
+          <Link href={`/groups/${values.groupId}/settings/upload-form`}>Next: set up your upload form</Link>
+        </Button>
+      </div>
+
+      <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+        <Button asChild variant="outline" className="h-11 px-5 text-base">
           <Link href={`/groups/${values.groupId}`}>
             Open the group
           </Link>

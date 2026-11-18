@@ -25,11 +25,18 @@ describe("isTabActive", () => {
     expect(isTabActive(`${BASE}/chat/messages`, BASE, "chat")).toBe(false);
   });
 
-  it("lights Members and Settings on their own address only", () => {
+  it("lights Members on its own address only", () => {
     expect(isTabActive(`${BASE}/members`, BASE, "members")).toBe(true);
     expect(isTabActive(`${BASE}/members`, BASE, "library")).toBe(false);
-    expect(isTabActive(`${BASE}/settings`, BASE, "settings")).toBe(true);
-    expect(isTabActive(`${BASE}/settings`, BASE, "library")).toBe(false);
+    expect(isTabActive(`${BASE}/members/x`, BASE, "members")).toBe(false);
+  });
+
+  it("lights Settings on its own address and the pages under it, such as the upload form editor", () => {
+    for (const path of [`${BASE}/settings`, `${BASE}/settings/`, `${BASE}/settings/upload-form`]) {
+      expect(isTabActive(path, BASE, "settings"), path).toBe(true);
+      expect(isTabActive(path, BASE, "library"), path).toBe(false);
+    }
+    expect(isTabActive(`${BASE}/settingsx`, BASE, "settings")).toBe(false);
   });
 
   it("does not light Library for another group or for look-alike addresses", () => {

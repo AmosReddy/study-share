@@ -1,3 +1,5 @@
+import { toWellFormedText } from "./text";
+
 /** A file is 'uploading' until the server has confirmed what reached storage; only 'ready' files are listed. */
 export type ResourceStatus = "uploading" | "ready";
 
@@ -96,7 +98,7 @@ const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cs}\p{Co}\p{Cn}\u061c\u200e\u200f\u202a-\u2
  * name is cut to RESOURCE_LIMITS.maxFileName characters. Never empty, and never "." or "..".
  */
 export function safeFileName(name: string): string {
-  const lastPart = name.toWellFormed().normalize("NFC").split(/[\\/]/).pop() ?? "";
+  const lastPart = toWellFormedText(name).normalize("NFC").split(/[\\/]/).pop() ?? "";
   // Tabs and line breaks become spaces BEFORE the control characters are removed.
   const cleaned = lastPart.replace(/\s+/gu, " ").replace(HIDDEN_CHARACTERS, "").replace(UNSAFE_NAME_CHARACTERS, "_").trim();
   const dot = cleaned.lastIndexOf(".");

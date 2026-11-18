@@ -46,9 +46,9 @@ export function isFakeGroupLive(groupId: string): boolean {
 }
 
 /**
- * TEST ONLY: gives a group its own upload form, as its owner will be able to later (there is no
- * editor yet). The configuration is read the way the database store reads one (parseFormConfig),
- * so an invalid one becomes the default. False for an unknown or deleted group. Used by the unit
+ * TEST ONLY: gives a group its own upload form without a version check or any rule of the editor
+ * (the owner's real way is updateFormConfig). The configuration is read the way the database store
+ * reads one (parseFormConfig), so an invalid one becomes the default. False for an unknown or deleted group. Used by the unit
  * tests and, in test mode, by the e2e set-up route.
  */
 export function setFakeGroupFormConfig(groupId: string, config: FormConfig): boolean {
@@ -212,6 +212,16 @@ export function createFakeGroupStore(authStore: FakeAuthStore = getFakeAuthStore
       group.joinMode = j.joinMode;
       group.passwordHash = j.passwordHash;
       return true;
+    },
+
+    async updateFormConfig(groupId, expectedVersion, config) {
+      const group = liveGroup(groupId);
+      if (!group) return "group_gone";
+      // One synchronous section, so of two saves from the same version only the first finds it.
+      if (group.formConfig.version !== expectedVersion) return "stale";
+      // Read back the way the database store reads it: a value that is not a valid form is the default.
+      group.formConfig = parseFormConfig(JSON.parse(JSON.stringify(config)));
+      return "saved";
     },
 
     async replaceInvite(groupId, i) {

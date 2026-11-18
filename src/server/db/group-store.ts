@@ -1,7 +1,7 @@
 import "server-only";
 import { sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { parseFormConfig, type FormConfig } from "@/shared/form-config";
+import { isFormConfig, parseFormConfig, type FormConfig } from "@/shared/form-config";
 import { GROUP_LIMITS, type GroupRole, type JoinMode, type MemberStatus } from "@/shared/groups";
 import type { GroupRecord, GroupStore } from "@/server/ports/group-store";
 import { guardTransaction } from "./transaction-guard";
@@ -32,13 +32,23 @@ const GROUP_COLUMNS = sql.raw(
     "(extract(epoch from created_at) * 1000)::float8 as created_ms",
 );
 
-/** The stored form. Text that is not JSON, or JSON that is not a valid form, reads as the default form. */
+/** The one line logged when a stored form is damaged: fixed, so it can never carry a group's data. */
+const DAMAGED_FORM_WARNING = "A group's stored upload form is not valid, so the default form is used.";
+
+/**
+ * The stored form. Text that is not JSON, or JSON that is not a valid form, reads as the default
+ * form, with one fixed warning in the log (a stored JSON null is "nothing stored" and is silent).
+ */
 function readFormConfig(text: string): FormConfig {
+  let stored: unknown;
   try {
-    return parseFormConfig(JSON.parse(text));
+    stored = JSON.parse(text);
   } catch {
+    console.warn(DAMAGED_FORM_WARNING);
     return parseFormConfig(null);
   }
+  if (stored !== null && !isFormConfig(stored)) console.warn(DAMAGED_FORM_WARNING);
+  return parseFormConfig(stored);
 }
 
 function toRecord(row: GroupRow): GroupRecord {
@@ -88,6 +98,9 @@ const personLockKey = (userId: string) => `group-person:${userId.toLowerCase()}`
 type Tx = Parameters<Parameters<Executor<Record<string, unknown>>["transaction"]>[0]>[0];
 const lockGroup = (tx: Tx, groupId: string) =>
   tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${groupLockKey(groupId)}, 0))`);
+
+/** The largest version the database compares (a Postgres int); a form is saved once per owner click, so it is never near. */
+const MAX_VERSION = 2_147_483_647;
 
 /** The all-zero uuid: no account has it, so it stands in for an id that is not a uuid and
  * matches no membership (the foreign key to auth.users keeps it out of group_members). */
@@ -326,6 +339,29 @@ export function createGroupStore<S extends Record<string, unknown> = Record<stri
         where id = ${groupId} and deleted_at is null
         returning 1`);
       return rows.length > 0;
+    },
+
+    async updateFormConfig(groupId, expectedVersion, config) {
+      if (!isUuid(groupId)) return "group_gone";
+      // A version that is not a positive whole number can match nothing, so no update is tried.
+      if (Number.isSafeInteger(expectedVersion) && expectedVersion >= 1 && expectedVersion <= MAX_VERSION) {
+        // One statement: the version is compared and the form replaced under the same row lock, so
+        // of two saves from one version the second finds the new version and updates nothing. A
+        // stored version that is not a number (a damaged form) counts as 1, the version it is read as.
+        // The form goes in as one text parameter cast through text, so the driver cannot turn it
+        // into a JSON string (as for the other jsonb columns).
+        const rows = await db.execute(sql`
+          update public.groups set form_config = ${JSON.stringify(config)}::text::jsonb
+          where id = ${groupId}::uuid and deleted_at is null
+            and (case when jsonb_typeof(form_config->'version') = 'number'
+              then (form_config->'version') = to_jsonb(${expectedVersion}::int)
+              else ${expectedVersion}::int = 1 end)
+          returning 1`);
+        if (rows.length > 0) return "saved";
+      }
+      // Nothing was updated: the group is either there with another version, or gone.
+      const live = await db.execute(sql`select 1 from public.groups where id = ${groupId}::uuid and deleted_at is null`);
+      return live.length > 0 ? "stale" : "group_gone";
     },
 
     async replaceInvite(groupId, i) {

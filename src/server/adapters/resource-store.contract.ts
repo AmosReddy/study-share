@@ -46,6 +46,9 @@ export function runResourceStoreContract(withStore: WithStore): void {
     };
   }
 
+  /** Every detail id these tests use, for usedOptionIds. */
+  const ALL = ["semester", "year", "subject", "extra"];
+
   /** A file left 'uploading', created a moment after the previous one. */
   async function pending(ctx: ResourceStoreContext, groupId: string, uploaderId: string, over: Partial<NewResource> = {}) {
     await sleep(TICK_MS);
@@ -182,7 +185,7 @@ export function runResourceStoreContract(withStore: WithStore): void {
         expect((await ctx.store.findById(groupId, record.id))?.status).toBe("uploading");
         expect(await ctx.store.list(groupId, { limit: 10 })).toEqual(none);
         expect(await ctx.store.listDetailValues(groupId, "subject")).toEqual([]);
-        expect(await ctx.store.usedOptionIds(groupId)).toEqual({ typeIds: [], detailValues: {} });
+        expect(await ctx.store.usedOptionIds(groupId, ["subject", "semester"])).toEqual({ typeIds: [], detailValues: {} });
       }));
 
     test("markReady shows the file in the list, and a repeat returns it again", () =>
@@ -459,7 +462,7 @@ export function runResourceStoreContract(withStore: WithStore): void {
     test("usedOptionIds lists the type ids and detail values that ready files use, and nothing else", () =>
       withStore(async (ctx) => {
         const { uploader, groupId } = await setup(ctx);
-        expect(await ctx.store.usedOptionIds(groupId)).toEqual({ typeIds: [], detailValues: {} });
+        expect(await ctx.store.usedOptionIds(groupId, ALL)).toEqual({ typeIds: [], detailValues: {} });
 
         await ready(ctx, groupId, uploader, { typeId: "pyq", details: { semester: "s_two", year: "y_2024", subject: "Maths" } });
         await ready(ctx, groupId, uploader, { typeId: "pyq", details: { semester: "s_one" } });
@@ -469,7 +472,7 @@ export function runResourceStoreContract(withStore: WithStore): void {
         const gone = await ready(ctx, groupId, uploader, { typeId: "study_material", details: { semester: "s_deleted", extra: "x" } });
         await ctx.store.softDelete(groupId, gone.id);
 
-        expect(await ctx.store.usedOptionIds(groupId)).toEqual({
+        expect(await ctx.store.usedOptionIds(groupId, ALL)).toEqual({
           typeIds: ["k3j9x", "other", "pyq"],
           detailValues: { semester: ["s_one", "s_two"], subject: ["Maths"], year: ["y_2024"] },
         });
@@ -481,17 +484,54 @@ export function runResourceStoreContract(withStore: WithStore): void {
         const other = await ctx.newGroup(uploader);
         await ready(ctx, groupId, uploader, { typeId: "pyq", details: { semester: "s_mine" } });
         await ready(ctx, other, uploader, { typeId: "assignment", details: { semester: "s_theirs" } });
-        expect(await ctx.store.usedOptionIds(groupId)).toEqual({ typeIds: ["pyq"], detailValues: { semester: ["s_mine"] } });
-        expect(await ctx.store.usedOptionIds(other)).toEqual({ typeIds: ["assignment"], detailValues: { semester: ["s_theirs"] } });
+        expect(await ctx.store.usedOptionIds(groupId, ["semester"])).toEqual({ typeIds: ["pyq"], detailValues: { semester: ["s_mine"] } });
+        expect(await ctx.store.usedOptionIds(other, ["semester"])).toEqual({ typeIds: ["assignment"], detailValues: { semester: ["s_theirs"] } });
         await ctx.deleteGroup(groupId);
-        expect(await ctx.store.usedOptionIds(groupId)).toEqual({ typeIds: [], detailValues: {} });
+        expect(await ctx.store.usedOptionIds(groupId, ["semester"])).toEqual({ typeIds: [], detailValues: {} });
+      }));
+
+    test("usedOptionIds returns the values of the details it is asked about, and of no other (a text detail's free text stays in the database)", () =>
+      withStore(async (ctx) => {
+        const { uploader, groupId } = await setup(ctx);
+        await ready(ctx, groupId, uploader, { typeId: "pyq", details: { semester: "s_one", year: "y_2024", subject: "Maths", note: "private words" } });
+        await ready(ctx, groupId, uploader, { typeId: "notes", details: { semester: "s_two", subject: "Physics" } });
+
+        expect(await ctx.store.usedOptionIds(groupId, ["semester"])).toEqual({
+          typeIds: ["notes", "pyq"],
+          detailValues: { semester: ["s_one", "s_two"] },
+        });
+        expect(await ctx.store.usedOptionIds(groupId, ["year", "semester"])).toEqual({
+          typeIds: ["notes", "pyq"],
+          detailValues: { semester: ["s_one", "s_two"], year: ["y_2024"] },
+        });
+        // No details asked for: the types only.
+        expect(await ctx.store.usedOptionIds(groupId, [])).toEqual({ typeIds: ["notes", "pyq"], detailValues: {} });
+        // A detail nobody has a value for, a repeated id and the empty id add nothing.
+        expect(await ctx.store.usedOptionIds(groupId, ["nobody", "semester", "semester", ""])).toEqual({
+          typeIds: ["notes", "pyq"],
+          detailValues: { semester: ["s_one", "s_two"] },
+        });
+        // Ids are compared exactly: not by case, not by prefix, and not as a pattern.
+        expect(await ctx.store.usedOptionIds(groupId, ["SEMESTER", "sem", "sem%", "%", "_emester"])).toEqual({
+          typeIds: ["notes", "pyq"],
+          detailValues: {},
+        });
+      }));
+
+    test("usedOptionIds takes any text as a detail id without failing", () =>
+      withStore(async (ctx) => {
+        const { uploader, groupId } = await setup(ctx);
+        await ready(ctx, groupId, uploader, { typeId: "notes", details: { semester: "s_one" } });
+        const odd = ["a\u0000b", "bad\ud800", "'; drop table groups; --", "x".repeat(5000), "__proto__", "constructor", '{"a":1}'];
+        expect(await ctx.store.usedOptionIds(groupId, odd)).toEqual({ typeIds: ["notes"], detailValues: {} });
+        expect(await ctx.store.usedOptionIds(groupId, [...odd, "semester"])).toEqual({ typeIds: ["notes"], detailValues: { semester: ["s_one"] } });
       }));
 
     test("detail ids that look like object keys stay plain data in usedOptionIds", () =>
       withStore(async (ctx) => {
         const { uploader, groupId } = await setup(ctx);
         await ready(ctx, groupId, uploader, { details: Object.fromEntries([["__proto__", "v1"]]) });
-        const used = await ctx.store.usedOptionIds(groupId);
+        const used = await ctx.store.usedOptionIds(groupId, ["__proto__"]);
         expect(Object.getPrototypeOf(used.detailValues)).toBe(Object.prototype);
         expect(Object.hasOwn(used.detailValues, "__proto__")).toBe(true);
         expect(Object.entries(used.detailValues)).toEqual([["__proto__", ["v1"]]]);
@@ -559,7 +599,7 @@ export function runResourceStoreContract(withStore: WithStore): void {
         expect((await ctx.store.list(groupId, { limit: 10, typeId: "assignment" })).items).toEqual([updated]);
         expect(await ctx.store.listDetailValues(groupId, "subject")).toEqual(["New subject"]);
         expect((await ctx.store.list(groupId, { limit: 10, details: [choiceFilter("semester", "s_one")] })).items).toEqual([]);
-        expect(await ctx.store.usedOptionIds(groupId)).toEqual({
+        expect(await ctx.store.usedOptionIds(groupId, ALL)).toEqual({
           typeIds: ["assignment"],
           detailValues: { subject: ["New subject"], year: ["y_2025"] },
         });
@@ -620,7 +660,7 @@ export function runResourceStoreContract(withStore: WithStore): void {
         expect(await ctx.store.list(groupId, { limit: 10 })).toEqual(none);
         expect(await ctx.store.list(groupId, { limit: 10, typeId: "notes", details: [textFilter("subject", "Biology")] })).toEqual(none);
         expect(await ctx.store.listDetailValues(groupId, "subject")).toEqual([]);
-        expect(await ctx.store.usedOptionIds(groupId)).toEqual({ typeIds: [], detailValues: {} });
+        expect(await ctx.store.usedOptionIds(groupId, ALL)).toEqual({ typeIds: [], detailValues: {} });
         expect(await ctx.store.markReady(waiting.id, groupId)).toBeNull();
         expect(await ctx.store.update(groupId, done.id, answers())).toBeNull();
         expect(await ctx.store.softDelete(groupId, done.id)).toBeNull();
@@ -752,7 +792,7 @@ export function runResourceStoreContract(withStore: WithStore): void {
           expect(await ctx.store.markReady(record.id, bad)).toBeNull();
           expect(await ctx.store.list(bad, { limit: 10 })).toEqual(none);
           expect(await ctx.store.listDetailValues(bad, "subject")).toEqual([]);
-          expect(await ctx.store.usedOptionIds(bad)).toEqual({ typeIds: [], detailValues: {} });
+          expect(await ctx.store.usedOptionIds(bad, ALL)).toEqual({ typeIds: [], detailValues: {} });
           expect(await ctx.store.update(bad, record.id, answers())).toBeNull();
           expect(await ctx.store.update(groupId, bad, answers())).toBeNull();
           expect(await ctx.store.softDelete(bad, record.id)).toBeNull();
@@ -770,7 +810,7 @@ export function runResourceStoreContract(withStore: WithStore): void {
         const record = await ready(ctx, groupId, uploader);
         expect(await ctx.store.findById(groupId.toUpperCase(), record.id.toUpperCase())).toEqual(record);
         expect((await ctx.store.list(groupId.toUpperCase(), { limit: 10 })).items).toEqual([record]);
-        expect((await ctx.store.usedOptionIds(groupId.toUpperCase())).typeIds).toEqual(["notes"]);
+        expect((await ctx.store.usedOptionIds(groupId.toUpperCase(), ALL)).typeIds).toEqual(["notes"]);
         expect(await ctx.store.listDetailValues(groupId.toUpperCase(), "subject")).toEqual(["Biology"]);
       }));
 
