@@ -3,6 +3,8 @@
 import { BookOpen, MessageSquare, Settings, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { UnreadDot } from "@/client/components/chat/unread-dot";
+import { usePrivateUnread } from "@/client/lib/private-unread-store";
 import { cn } from "@/client/lib/utils";
 import { isTabActive } from "./active-tab";
 
@@ -10,6 +12,8 @@ type GroupTabsProps = {
   groupId: string;
   /** Only the owner gets the Settings tab. */
   showSettings: boolean;
+  /** The person has private messages they have not read, as the server saw it when it drew this page. Newer news comes from the browser's own store. */
+  privateUnread: boolean;
 };
 
 /**
@@ -17,8 +21,9 @@ type GroupTabsProps = {
  * safe area (the iPhone home bar); the group layout gives the content above it matching bottom
  * padding. From 1024px a row of tabs at the top of the group.
  */
-export function GroupTabs({ groupId, showSettings }: GroupTabsProps) {
+export function GroupTabs({ groupId, showSettings, privateUnread }: GroupTabsProps) {
   const pathname = usePathname();
+  const unread = usePrivateUnread(groupId, privateUnread);
   const base = `/groups/${groupId}`;
   const items = [
     { href: base, tab: "library" as const, label: "Library", Icon: BookOpen },
@@ -48,7 +53,10 @@ export function GroupTabs({ groupId, showSettings }: GroupTabsProps) {
                 )}
               >
                 <Icon className="size-5 shrink-0 lg:size-4" aria-hidden="true" />
-                {label}
+                <span className="relative">
+                  {label}
+                  {tab === "chat" && unread ? <UnreadDot className="absolute top-0.5 -right-3.5" /> : null}
+                </span>
               </Link>
             </li>
           );

@@ -1,5 +1,6 @@
 import "server-only";
 import { requireGroupDeps } from "@/server/groups/request-deps";
+import type { GroupDeps } from "@/server/groups/use-cases";
 import { getServerEnv } from "@/server/env";
 import { getDirectChatStore } from "@/server/services";
 import type { DirectChatDeps } from "./direct-use-cases";
@@ -15,6 +16,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 export async function requireDirectChatDeps(groupId: string): Promise<DirectChatDeps> {
   const next = UUID.test(groupId) ? `/groups/${groupId}` : "/";
-  const deps = await requireGroupDeps(next);
+  return withDirectChat(await requireGroupDeps(next));
+}
+
+/** Group dependencies a page already has, with the private chat store and the chat-key secret added. */
+export function withDirectChat(deps: GroupDeps): DirectChatDeps {
   return { ...deps, direct: getDirectChatStore(), secret: getServerEnv().SUPABASE_SERVICE_ROLE_KEY };
 }

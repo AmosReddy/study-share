@@ -6,6 +6,7 @@ import { Skeleton } from "@/client/components/ui/skeleton";
 import { can } from "@/server/permissions";
 import { SignedInFrame } from "../../_components/signed-in-frame";
 import { loadGroupPage } from "./load-group";
+import { loadPrivateUnread } from "./load-private-unread";
 
 /** One title for every group address, so it never says whether a group exists or what it is called. */
 export const metadata: Metadata = { title: "Group | study-share" };
@@ -27,6 +28,7 @@ async function GroupFrame({ params, children }: { params: Promise<{ id: string }
   const page = await loadGroupPage(id);
   if (!page) notFound();
   const { user, group, membership } = page;
+  const unread = await loadPrivateUnread(id);
 
   return (
     <SignedInFrame user={user} activeGroupId={group.id} title={group.name}>
@@ -39,7 +41,7 @@ async function GroupFrame({ params, children }: { params: Promise<{ id: string }
             <p className="line-clamp-3 text-muted-foreground [overflow-wrap:anywhere]">{group.description}</p>
           ) : null}
         </header>
-        <GroupTabs groupId={group.id} showSettings={can(user, "group.edit", { membership })} />
+        <GroupTabs groupId={group.id} showSettings={can(user, "group.edit", { membership })} privateUnread={unread.any} />
         {/* Room at the bottom for the phone tab bar and the safe area under it. */}
         <div data-testid="group-content" className="min-w-0 pb-[calc(4.5rem+env(safe-area-inset-bottom))] lg:pb-0">
           {children}

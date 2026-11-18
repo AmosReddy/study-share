@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatMessageTime, groupRows, GROUP_GAP_MS } from "./chat-format";
+import { formatMessageTime, formatRelativeTime, groupRows, GROUP_GAP_MS } from "./chat-format";
 import type { ChatItem } from "./chat-state";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 14, 10, 0) + minute * 60_000).toISOString();
@@ -67,5 +67,35 @@ describe("formatMessageTime", () => {
 
   it("gives an empty text for something that is not a time", () => {
     expect(formatMessageTime("not a time", now, "UTC")).toBe("");
+  });
+});
+
+describe("formatRelativeTime", () => {
+  const now = Date.UTC(2026, 10, 20, 12, 0, 0);
+  const ago = (ms: number) => new Date(now - ms).toISOString();
+  const MIN = 60_000;
+
+  it("says just now under a minute, and for a time a little ahead of this clock", () => {
+    expect(formatRelativeTime(ago(0), now)).toBe("just now");
+    expect(formatRelativeTime(ago(59_999), now)).toBe("just now");
+    expect(formatRelativeTime(ago(-30_000), now)).toBe("just now");
+  });
+
+  it("counts minutes, hours and days", () => {
+    expect(formatRelativeTime(ago(MIN), now)).toBe("1 min ago");
+    expect(formatRelativeTime(ago(59 * MIN), now)).toBe("59 min ago");
+    expect(formatRelativeTime(ago(60 * MIN), now)).toBe("1 h ago");
+    expect(formatRelativeTime(ago(23 * 60 * MIN + 59 * MIN), now)).toBe("23 h ago");
+    expect(formatRelativeTime(ago(24 * 60 * MIN), now)).toBe("1 d ago");
+    expect(formatRelativeTime(ago(6 * 24 * 60 * MIN + 5 * MIN), now)).toBe("6 d ago");
+  });
+
+  it("gives the date after a week, with the year only for another year", () => {
+    expect(formatRelativeTime("2026-11-10T09:00:00.000Z", now, "UTC")).toBe("10 Nov");
+    expect(formatRelativeTime("2025-03-02T09:00:00.000Z", now, "UTC")).toBe("2 Mar 2025");
+  });
+
+  it("is empty for text that is not a time", () => {
+    expect(formatRelativeTime("soon", now)).toBe("");
   });
 });

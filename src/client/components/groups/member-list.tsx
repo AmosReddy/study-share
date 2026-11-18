@@ -1,5 +1,6 @@
 "use client";
 
+import { MessageSquare } from "lucide-react";
 import Link from "next/link";
 import { useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import { FormMessage } from "@/client/components/auth/form-message";
@@ -15,11 +16,16 @@ import {
   SheetTitle,
 } from "@/client/components/ui/sheet";
 import { guardAction } from "@/client/components/auth/guard-action";
+import { UnreadDot } from "@/client/components/chat/unread-dot";
 import { IDLE, type FormAction } from "@/shared/form-state";
 import { ConfirmSheet } from "./confirm-sheet";
 
-/** One row of the list. No emails. `userId` is there only for the owner, who needs it to aim a removal. */
-export type MemberItem = { name: string; isOwner: boolean; isYou: boolean; userId?: string };
+/**
+ * One row of the list. No emails. `userId` is there only for the owner, who needs it to aim a
+ * removal. `chatKey` is a one-way code that names the person for "Message" (never an account id)
+ * and is missing on your own row; `unread` means they sent you a private message you have not read.
+ */
+export type MemberItem = { name: string; isOwner: boolean; isYou: boolean; userId?: string; chatKey?: string; unread?: boolean };
 
 type MemberListProps = {
   groupId: string;
@@ -29,6 +35,8 @@ type MemberListProps = {
   leave: "allowed" | "owner" | "none";
   ownerCannotLeave: string;
   leaveAction: FormAction;
+  /** Starts a private chat with the person a row's `chatKey` names; without it no row has a Message button. */
+  openChatAction?: FormAction;
   /** The owner's way to remove people; without it no row has a Remove button. */
   removeAction?: FormAction;
   /** Where an owner who cannot leave goes to hand the group over (Settings). */
@@ -45,6 +53,7 @@ export function MemberList({
   leave,
   ownerCannotLeave,
   leaveAction,
+  openChatAction,
   removeAction,
   handOverHref,
 }: MemberListProps) {
@@ -76,11 +85,17 @@ export function MemberList({
             // Remove sheet's open state must stay with its person, never slide to the next row. Rows
             // without an id (plain members' view) have no state to keep.
             <li key={member.userId ?? `row-${index}`} className="flex min-h-14 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
-              <span className="min-w-0 flex-1 font-medium [overflow-wrap:anywhere]">{member.name}</span>
+              <span className="min-w-0 flex-1 font-medium [overflow-wrap:anywhere]">
+                {member.name}
+                {member.unread ? <UnreadDot className="mx-2 align-middle" /> : null}
+              </span>
               <span className="flex shrink-0 gap-2">
                 {member.isOwner ? <span className={`${badgeClass} bg-highlight/25`}>Owner</span> : null}
                 {member.isYou ? <span className={`${badgeClass} bg-muted`}>You</span> : null}
               </span>
+              {openChatAction && member.chatKey && !member.isYou ? (
+                <MessageMember groupId={groupId} chatKey={member.chatKey} name={member.name} action={openChatAction} />
+              ) : null}
               {removeAction && member.userId && !member.isOwner && !member.isYou ? (
                 <RemoveMember
                   groupId={groupId}
@@ -109,6 +124,26 @@ export function MemberList({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * "Message <name>": a small form that posts the person's chat key and goes to the conversation. A
+ * code that no longer names anyone (they left, the page is old) or too many new chats shows the
+ * reason under the row, and the button stays usable.
+ */
+function MessageMember({ groupId, chatKey, name, action }: { groupId: string; chatKey: string; name: string; action: FormAction }) {
+  const [state, formAction, pending] = useActionState(guardAction(action), IDLE);
+  return (
+    <form action={formAction} className="contents">
+      <input type="hidden" name="groupId" value={groupId} />
+      <input type="hidden" name="chatKey" value={chatKey} />
+      <Button type="submit" variant="outline" aria-label={`Message ${name}`} disabled={pending} className="h-11 min-w-11 shrink-0 gap-2 px-4 text-base">
+        <MessageSquare className="size-4" aria-hidden="true" />
+        {pending ? "Opening…" : "Message"}
+      </Button>
+      {state.formError ? <FormMessage tone="error" title={state.formError} className="basis-full" /> : null}
+    </form>
   );
 }
 

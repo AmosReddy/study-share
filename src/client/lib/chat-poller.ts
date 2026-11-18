@@ -20,15 +20,17 @@ import { REQUEST_TIMEOUT_MS, STALE_REQUEST_MS, IDLE_SLOW_AFTER_MS, nextPollDelay
 
 export type PollKind = "after" | "latest";
 
-export type PollerDeps = {
+export type PollerDeps<P = ChatPage> = {
   /** One request. `cursor` is set for "after". Resolve "aborted" when `signal` aborts. */
-  fetchPage(kind: PollKind, cursor: string | null, signal: AbortSignal): Promise<FetchOutcome>;
+  fetchPage(kind: PollKind, cursor: string | null, signal: AbortSignal): Promise<FetchOutcome<P>>;
   /** The newest message's cursor and the ids held now, read when each request is made. */
   getView(): { cursor: string | null; known: readonly string[] };
   isVisible(): boolean;
   /** Milliseconds, any origin (Date.now). */
   now(): number;
-  onPage(kind: PollKind, page: ChatPage, known: readonly string[]): void;
+  /** For a page with more waiting beyond it (so the next request follows at once). The default reads `hasMore` from a chat page. */
+  hasMore?(page: P): boolean;
+  onPage(kind: PollKind, page: P, known: readonly string[]): void;
   onReconnecting(reconnecting: boolean): void;
   onGone(): void;
   onSignedOut(): void;
@@ -47,7 +49,7 @@ export type ChatPoller = {
 
 type Request = { controller: AbortController; startedAt: number; reason: "timeout" | "restart" | "stop" | null };
 
-export function createChatPoller(deps: PollerDeps): ChatPoller {
+export function createChatPoller<P = ChatPage>(deps: PollerDeps<P>): ChatPoller {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
   let current: Request | null = null;
@@ -99,7 +101,7 @@ export function createChatPoller(deps: PollerDeps): ChatPoller {
             sinceLatest = 0;
           } else {
             sinceLatest += 1;
-            hasMore = outcome.page.hasMore;
+            hasMore = deps.hasMore ? deps.hasMore(outcome.page) : (outcome.page as { hasMore?: unknown }).hasMore === true;
           }
           deps.onPage(kind, outcome.page, view.known);
           break;

@@ -49,3 +49,29 @@ export function formatMessageTime(iso: string, nowMs: number, timeZone?: string)
   }).format(at);
   return `${date}, ${clock}`;
 }
+
+/**
+ * How long ago something was, for the Private list: "just now" (under a minute, and a time a
+ * little ahead of this clock), "5 min ago", "3 h ago", "2 d ago" up to a week, then the date
+ * ("14 Nov", with the year when it is another year). `nowMs` and `timeZone` are given so it is
+ * testable; the page passes its own clock reading, and only once the browser has taken over. ""
+ * for text that is not a time.
+ */
+export function formatRelativeTime(iso: string, nowMs: number, timeZone?: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const minutes = Math.floor((nowMs - at.getTime()) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} d ago`;
+  const year = (date: Date) => new Intl.DateTimeFormat("en-GB", { year: "numeric", timeZone }).format(date);
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    ...(year(at) === year(new Date(nowMs)) ? {} : { year: "numeric" as const }),
+    timeZone,
+  }).format(at);
+}

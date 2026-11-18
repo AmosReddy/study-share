@@ -24,7 +24,7 @@ import {
   type ChatState,
 } from "@/client/lib/chat-state";
 import { formatMessageTime, groupRows } from "@/client/lib/chat-format";
-import { fetchChatPage } from "@/client/lib/chat-poll";
+import { fetchChatPage, type FetchOutcome } from "@/client/lib/chat-poll";
 import { newClientId } from "@/client/lib/client-id";
 import { useNow } from "@/client/lib/use-now";
 import { hasVisibleCharacter } from "@/shared/message-schemas";
@@ -35,12 +35,46 @@ import { ChatMessage } from "./chat-message";
 import { useChatPoll } from "./use-chat-poll";
 import { useFillViewport } from "./use-fill-viewport";
 
+/** The sentences and addresses that make this panel the group's chat or a private one. */
+export type ChatCopy = {
+  /** The panel's accessible name. */
+  label: string;
+  /** Shown while there are no messages. */
+  empty: string;
+  /** What the delete sheet says for a message of your own. */
+  deleteOwn: string;
+  /** Shown in place of the message box when the person may not reply (private chats only). */
+  readOnlyNote: string;
+};
+
+const GROUP_COPY: ChatCopy = {
+  label: "Chat",
+  empty: "No messages yet. Say hello to the group.",
+  deleteOwn: "It disappears for everyone in the group and cannot be brought back.",
+  readOnlyNote: "",
+};
+
+/** A page of the chat, and for a private chat whether the person may still reply. */
+type PanelPage = ChatPage & { canSend?: boolean };
+
 type ChatPanelProps = {
   groupId: string;
   /** The newest messages, rendered by the server. */
   initial: ChatPage;
   sendAction: (groupId: string, body: string, clientId: string) => Promise<SendMessageResult>;
   deleteAction: (groupId: string, messageId: string) => Promise<DeleteMessageResult>;
+  /**
+   * One request for a page of this chat, for the poll and for "Load earlier messages". Without it
+   * the panel is the group's chat. Keep it stable between renders (useCallback).
+   */
+  fetchPage?: (query: { after?: string; before?: string }, signal: AbortSignal) => Promise<FetchOutcome<PanelPage>>;
+  /** Names this chat for the polling loop (it starts over when it changes). Defaults to the group's id. */
+  chatKey?: string;
+  /** Where "Log in again" leads. Defaults to the group's chat. */
+  resumeHref?: string;
+  copy?: ChatCopy;
+  /** Private chats: the person may reply. When false the message box is replaced by the read-only note; polls keep it current. */
+  canSend?: boolean;
 };
 
 /** Within this many pixels of the end counts as "at the bottom". */
@@ -52,7 +86,17 @@ const NEAR_BOTTOM = 80;
  * phone's tab bar, with the composer fixed at its bottom; the viewer stays at the newest message
  * unless they scrolled up, in which case a "New messages" button waits for them.
  */
-export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPanelProps) {
+export function ChatPanel({
+  groupId,
+  initial,
+  sendAction,
+  deleteAction,
+  fetchPage: fetchPageProp,
+  chatKey = groupId,
+  resumeHref = `/groups/${encodeURIComponent(groupId)}/chat`,
+  copy = GROUP_COPY,
+  canSend: initialCanSend = true,
+}: ChatPanelProps) {
   const [state, dispatchToState] = useReducer(chatReducer, initial, initialChatState);
   // The same state, kept up to date the moment an action is dispatched (not after the next render),
   // so a poll that follows at once reads the new cursor and the ids held. The reducer is pure, so
@@ -68,6 +112,12 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
   const [olderFailed, setOlderFailed] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
   const [seenAt, setSeenAt] = useState("");
+  const [canSend, setCanSend] = useState(initialCanSend);
+  const fetchPage = useCallback(
+    (query: { after?: string; before?: string }, signal: AbortSignal): Promise<FetchOutcome<PanelPage>> =>
+      fetchPageProp ? fetchPageProp(query, signal) : fetchChatPage(groupId, query, signal),
+    [fetchPageProp, groupId],
+  );
 
   const items = useMemo(() => chatItems(state), [state]);
   const rows = useMemo(() => groupRows(items), [items]);
@@ -91,10 +141,15 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
     () => ({ cursor: mirrorRef.current.cursor, known: mirrorRef.current.messages.map((message) => message.id) }),
     [],
   );
-  const markActive = useChatPoll({
-    groupId,
+  const markActive = useChatPoll<PanelPage>({
+    chatKey,
+    fetchPage,
     getView,
     dispatch,
+    // Someone leaving or being removed, or coming back, changes whether this person may reply.
+    onPage: useCallback((page: PanelPage) => {
+      if (typeof page.canSend === "boolean") setCanSend(page.canSend);
+    }, []),
     onReconnecting: setReconnecting,
     onGone: useCallback(() => setStopped("gone"), []),
     onSignedOut: useCallback(() => setStopped("signed-out"), []),
@@ -180,7 +235,7 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
     if (!list || !oldest || loadingOlder) return;
     setLoadingOlder(true);
     setOlderFailed(false);
-    const outcome = await fetchChatPage(groupId, { before: oldest.cursor }, new AbortController().signal);
+    const outcome = await fetchPage({ before: oldest.cursor }, new AbortController().signal);
     setLoadingOlder(false);
     if (outcome.kind === "gone") return setStopped("gone");
     if (outcome.kind === "signed-out") return setStopped("signed-out");
@@ -203,17 +258,17 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
     [deleteAction, groupId],
   );
 
-  if (stopped) return <ChatStopped reason={stopped} groupId={groupId} />;
+  if (stopped) return <ChatStopped reason={stopped} resumeHref={resumeHref} />;
 
   const showNewMessages = !atBottom && hasUnseen(items, seenAt);
 
   return (
     <section
       ref={panelRef}
-      aria-label="Chat"
+      aria-label={copy.label}
       // The height shown until useFillViewport measures; the negative margin gives back the space
       // the group page keeps under its content for the phone's tab bar, so the page does not scroll.
-      className="relative flex h-[calc(100dvh-18rem)] min-h-72 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground -mb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:-mb-8"
+      className="relative flex h-[calc(100dvh-21rem)] min-h-72 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground -mb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:-mb-8"
     >
       <div className="relative min-h-0 flex-1">
         <div
@@ -242,7 +297,7 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
             </div>
           ) : null}
           {rows.length === 0 ? (
-            <p className="px-2 py-10 text-center text-muted-foreground">No messages yet. Say hello to the group.</p>
+            <p className="px-2 py-10 text-center text-muted-foreground">{copy.empty}</p>
           ) : (
             <ul className="flex flex-col">
               {rows.map((row) => (
@@ -250,6 +305,8 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
                   key={row.item.key}
                   row={row}
                   groupId={groupId}
+                  allowDelete={canSend}
+                  deleteOwnDescription={copy.deleteOwn}
                   timeText={now ? formatMessageTime(row.item.createdAt, now) : ""}
                   canDeleteAny={state.canDeleteAny}
                   deleteAction={removeAction}
@@ -277,12 +334,18 @@ export function ChatPanel({ groupId, initial, sendAction, deleteAction }: ChatPa
           Reconnecting…
         </p>
       ) : null}
-      <ChatComposer onSend={send} />
+      {canSend ? (
+        <ChatComposer onSend={send} />
+      ) : (
+        <p role="note" className="border-t bg-background px-4 py-3 text-base text-muted-foreground [overflow-wrap:anywhere]">
+          {copy.readOnlyNote}
+        </p>
+      )}
     </section>
   );
 }
 
-function ChatStopped({ reason, groupId }: { reason: "gone" | "signed-out"; groupId: string }) {
+function ChatStopped({ reason, resumeHref }: { reason: "gone" | "signed-out"; resumeHref: string }) {
   return (
     <section
       aria-label="Chat"
@@ -304,7 +367,7 @@ function ChatStopped({ reason, groupId }: { reason: "gone" | "signed-out"; group
           <h2 className="text-lg font-semibold">You were signed out</h2>
           <p className="max-w-md text-muted-foreground">Log in again to keep chatting.</p>
           {/* A full page load, so the server sends the person to log in and back here. */}
-          <a href={`/groups/${encodeURIComponent(groupId)}/chat`} className={buttonVariants({ className: "h-11 px-5 text-base" })}>
+          <a href={resumeHref} className={buttonVariants({ className: "h-11 px-5 text-base" })}>
             Log in again
           </a>
         </>

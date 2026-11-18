@@ -25,6 +25,19 @@ describe("isTabActive", () => {
     expect(isTabActive(`${BASE}/chat/messages`, BASE, "chat")).toBe(false);
   });
 
+  it("lights Chat on the private chats under it, and nothing else with it", () => {
+    const id = "6f1c2b9e-3d4a-4f5b-8c7d-9e0a1b2c3d4e";
+    for (const path of [`${BASE}/chat/private`, `${BASE}/chat/private/`, `${BASE}/chat/private/${id}`, `${BASE}/chat/private/${id}/`]) {
+      expect(isTabActive(path, BASE, "chat"), path).toBe(true);
+      expect(isTabActive(path, BASE, "library"), path).toBe(false);
+      expect(isTabActive(path, BASE, "members"), path).toBe(false);
+      expect(isTabActive(path, BASE, "settings"), path).toBe(false);
+    }
+    expect(isTabActive(`${BASE}/chat/privately`, BASE, "chat")).toBe(false);
+    expect(isTabActive("/groups/abcd/chat/private", BASE, "chat")).toBe(false);
+    expect(isTabActive(`${BASE}/members/chat/private`, BASE, "chat")).toBe(false);
+  });
+
   it("lights Members on its own address only", () => {
     expect(isTabActive(`${BASE}/members`, BASE, "members")).toBe(true);
     expect(isTabActive(`${BASE}/members`, BASE, "library")).toBe(false);
