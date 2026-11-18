@@ -621,3 +621,36 @@ test("a group on the default form shows the same screens as before and passes th
   await expect(fileLink(page, /Unit 1 notes/)).toContainText("Subject: Physics");
   await expect(fileLink(page, /Manual/)).toContainText("Other: Lab manual");
 });
+
+test("a file whose type the form no longer knows shows 'Unknown type' in the edit form and keeps it until the member changes it", async ({ page }) => {
+  test.slow();
+  const group = await setUp(page, "Unknown Type");
+  await upload(page, group.path, { title: "Unit 1 notes", type: "Notes" });
+  // The group's form is replaced by one that has no record of the Notes type at all.
+  await setFormConfig(page, group.id, CLASS_FORM);
+
+  await page.goto(group.path);
+  await fileLink(page, /Unit 1 notes/).click();
+  const edit = page.getByRole("region", { name: "Edit details" });
+  const type = edit.getByLabel("Type", { exact: true });
+  await expectOptions(type, ["Lecture notes", "Lab record", "Unknown type", "Other"]);
+  await expect(type).toHaveValue("notes");
+  await expect(type.locator("option:checked")).toHaveText("Unknown type");
+
+  // Saving something else leaves the type alone (it is not silently switched to the first one).
+  await edit.getByLabel("Title", { exact: true }).fill("Unit 1 notes (final)");
+  await page.getByRole("button", { name: "Save details" }).click();
+  await expect(page.getByText(FILE_MESSAGES.saved, { exact: true })).toBeVisible();
+  await expect(type).toHaveValue("notes");
+  await expect(type.locator("option:checked")).toHaveText("Unknown type");
+  await page.reload();
+  await expect(edit.getByLabel("Type", { exact: true })).toHaveValue("notes");
+
+  // Choosing a type of the form changes it, and the unknown one is gone for good.
+  await edit.getByLabel("Type", { exact: true }).selectOption({ label: "Lab record" });
+  await edit.getByLabel("Semester (required)", { exact: true }).selectOption({ label: "Semester 1" });
+  await page.getByRole("button", { name: "Save details" }).click();
+  await expect(page.getByTestId("file-meta")).toContainText("Lab record");
+  await page.reload();
+  await expectOptions(edit.getByLabel("Type", { exact: true }), ["Lecture notes", "Lab record", "Other"]);
+});

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ErrorAnnouncer } from "@/client/components/auth/error-announcer";
 import { FormMessage } from "@/client/components/auth/form-message";
@@ -59,6 +60,7 @@ export function GroupSettings({
   const uid = useId();
   const detailsHeading = `${uid}-details-heading`;
   const joinHeading = `${uid}-join-heading`;
+  const formHeading = `${uid}-form-heading`;
   const handOverHeading = `${uid}-hand-over-heading`;
   const deleteHeading = `${uid}-delete-heading`;
   return (
@@ -75,6 +77,18 @@ export function GroupSettings({
           Join settings
         </h2>
         <JoinSettings groupId={group.id} joinMode={group.joinMode} action={joinAction} />
+      </section>
+
+      <section aria-labelledby={formHeading} className="flex flex-col gap-3">
+        <h2 id={formHeading} className={sectionHeading}>
+          Upload form
+        </h2>
+        <p className="text-muted-foreground">
+          Choose the types of file and the extra details (like Subject or Semester) members fill in when they upload.
+        </p>
+        <Button asChild variant="outline" className="h-11 self-start px-5 text-base">
+          <Link href={`/groups/${group.id}/settings/upload-form`}>Edit upload form</Link>
+        </Button>
       </section>
 
       <InviteCard

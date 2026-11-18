@@ -10,14 +10,22 @@ import { activeFields, activeOptions, activeTypes, OTHER_TYPE_ID, typeLabel, typ
 /** One entry of the Type select. */
 export type TypeChoice = { id: string; label: string };
 
+/** What the Type select calls a file's type that its group's form has no record of at all. */
+export const UNKNOWN_TYPE_LABEL = "Unknown type";
+
 /**
  * The types a member may pick on this group's form, then Other. Pass `currentTypeId` when editing
- * a file: a type that was removed from the form is still listed (marked).
+ * a file: a type that was removed from the form is still listed (marked), and so is a type the
+ * form does not know at all ("Unknown type"), so the select shows what the file holds and keeps it
+ * until the member picks another, instead of quietly showing the first type.
  */
 export function typeChoices(config: FormConfig, currentTypeId?: string): TypeChoice[] {
   const choices: TypeChoice[] = activeTypes(config).map(({ id, label }) => ({ id, label }));
-  const removed = config.types.find((type) => type.id === currentTypeId && type.archived);
-  if (removed) choices.push({ id: removed.id, label: `${removed.label} (removed)` });
+  const known = config.types.find((type) => type.id === currentTypeId);
+  if (known?.archived) choices.push({ id: known.id, label: `${known.label} (removed)` });
+  else if (!known && currentTypeId !== undefined && currentTypeId !== "" && currentTypeId !== OTHER_TYPE_ID) {
+    choices.push({ id: currentTypeId, label: UNKNOWN_TYPE_LABEL });
+  }
   choices.push({ id: OTHER_TYPE_ID, label: typeLabel(config, OTHER_TYPE_ID, "") });
   return choices;
 }
