@@ -37,6 +37,24 @@ export function idleDelay(idleMs: number): number {
   return POLL_INTERVAL_MS;
 }
 
+/**
+ * The rhythm of the background check for unread private messages that runs on every group page
+ * (the chat's own polling is much faster, and only runs while the chat is open): every 10 s while
+ * the page is in use, every 30 s after two minutes without input, every 60 s after ten, and 20, 40,
+ * then 60 s after failures in a row.
+ */
+export const BACKGROUND_POLL_MS = 10_000;
+export const BACKGROUND_IDLE_SLOW_MS = 30_000;
+export const BACKGROUND_IDLE_SLOWER_MS = 60_000;
+export const BACKGROUND_BACKOFF_MS = [20_000, 40_000, 60_000] as const;
+
+export function nextBackgroundPollDelay(options: { failures: number; idleMs: number }): number {
+  const idle =
+    options.idleMs >= IDLE_SLOWER_AFTER_MS ? BACKGROUND_IDLE_SLOWER_MS : options.idleMs >= IDLE_SLOW_AFTER_MS ? BACKGROUND_IDLE_SLOW_MS : BACKGROUND_POLL_MS;
+  const backoff = options.failures <= 0 ? 0 : BACKGROUND_BACKOFF_MS[Math.min(options.failures, BACKGROUND_BACKOFF_MS.length) - 1];
+  return Math.max(idle, backoff);
+}
+
 /** Wait before the next poll: the slower of the idle interval and the back-off after failures. */
 export function nextPollDelay(options: { failures: number; idleMs: number }): number {
   return Math.max(pollDelay(options.failures), idleDelay(options.idleMs));

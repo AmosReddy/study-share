@@ -2,7 +2,7 @@
 
 import { MessageSquare } from "lucide-react";
 import Link from "next/link";
-import { useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
+import { useActionState, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { SubmitButton } from "@/client/components/auth/submit-button";
 import { Button } from "@/client/components/ui/button";
@@ -16,6 +16,7 @@ import {
   SheetTitle,
 } from "@/client/components/ui/sheet";
 import { guardAction } from "@/client/components/auth/guard-action";
+import { usePrivateUnread } from "@/client/components/chat/private-unread-scope";
 import { UnreadDot } from "@/client/components/chat/unread-dot";
 import { IDLE, type FormAction } from "@/shared/form-state";
 import { ConfirmSheet } from "./confirm-sheet";
@@ -61,6 +62,16 @@ export function MemberList({
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const removedRef = useRef(false);
+  // The dots follow the browser's latest news (the background check), not only what the server drew; before any news the server's own answer stands.
+  const drawn = useMemo(
+    () => ({
+      any: members.some((m) => m.unread),
+      fromChatKeys: members.flatMap((m) => (m.unread && m.chatKey ? [m.chatKey] : [])),
+      chats: [],
+    }),
+    [members],
+  );
+  const live = usePrivateUnread(groupId, drawn);
   // After a removal the row (and its Remove button) is gone and focus would fall to the page: put
   // it on the list's heading, so a keyboard or screen-reader user stays in the Members list.
   const onRemoved = useCallback(() => {
@@ -88,7 +99,7 @@ export function MemberList({
             <li key={member.userId ?? member.chatKey ?? (member.isYou ? "you" : `row-${index}`)} className="flex min-h-14 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
               <span className="min-w-0 flex-1 font-medium [overflow-wrap:anywhere]">
                 {member.name}
-                {member.unread ? <UnreadDot className="mx-2 align-middle" /> : null}
+                {member.chatKey && live.fromChatKeys.includes(member.chatKey) ? <UnreadDot className="mx-2 align-middle" /> : null}
               </span>
               <span className="flex shrink-0 gap-2">
                 {member.isOwner ? <span className={`${badgeClass} bg-highlight/25`}>Owner</span> : null}

@@ -8,7 +8,7 @@ This guide walks you through trying out everything Slice 6 added: **two members 
 - **Only the two of them:** nobody else can read, find or even learn about the chat. That includes the group owner, the other members and people from other groups.
 - **It works like the group chat:** text only, new messages appear by themselves every few seconds, you can delete **your own** messages (not the other person's), and it works on a small phone screen.
 - **A Group | Private switch** at the top of the **Chat** tab. **Private** is your list of private chats, newest first, each with the other person's name, the start of the last message, and how long ago it was.
-- **Unread dots:** a small red dot shows on the **Chat** tab, on **Private**, on the chat's row, and on that person's row in **Members** when they wrote something you have not read yet.
+- **Unread dots and a banner, wherever you are in the group:** when someone writes to you privately, a small red dot shows on the **Chat** tab, on **Private**, on the chat's row, and on that person's row in **Members**, and the **Chat** page shows a box **New private message from <name>** with an **Open** button. It appears by itself within about **10 to 15 seconds**, on the Library, Members or Chat tab, with no reload.
 - **A chat appears only once someone writes in it.** Tapping **Message** and writing nothing leaves no trace for the other person (or for you in the list).
 - **When one of you leaves the group or is removed:** the person who stays can still **read** the conversation but cannot reply. The person who left cannot open it. If they join the group again later, they get the same conversation back.
 
@@ -34,7 +34,7 @@ After most steps you will see **You should see**. If it looks different, write d
 
 - [ ] Test 1: Start a chat from Members
 - [ ] Test 2: Reply, and the chat updates by itself
-- [ ] Test 3: Unread dots appear and clear
+- [ ] Test 3: Unread dots and the banner appear and clear
 - [ ] Test 4: Nobody else can see it
 - [ ] Test 5: Delete your own message
 - [ ] Test 6: A removed member loses access, the other person reads only
@@ -67,8 +67,12 @@ Use **B on the phone**.
 
 ## Test 3: Unread dots appear and clear
 
-- [ ] **3.1** On the **desktop**, as the owner, open the **Library** tab. On the **phone**, send **Are you there?** in the chat. Then, on the desktop, tap **Members**.
-  - **You should see:** a red dot on the **Chat** tab and next to **B's name** in the list, and none next to C's name. (The Library tab does not check for news by itself; that is by design.)
+- [ ] **3.1** On the **desktop**, as the owner, open the **Library** tab and leave it alone. On the **phone**, send **Are you there?** in the chat.
+  - **You should see:** within about **10 to 15 seconds**, without touching anything, a small red dot on the **Chat** tab.
+- [ ] **3.1b** On the desktop, tap **Chat**.
+  - **You should see:** the Group chat page (it may say **No messages yet. Say hello to the group.**, that is the group's chat, not the private one) with a box above it, **New private message from B** and a big **Open** button, and a red dot on **Private**. Tap **Open**: you are in the private chat with the message. Go back to **Chat**: the box is gone.
+- [ ] **3.1c** On the desktop, tap **Members** and leave it alone. On the phone, send another message.
+  - **You should see:** within about **10 to 15 seconds**, without touching anything, a red dot next to **B's name** (and none next to C's name).
 - [ ] **3.2** Tap **Message** next to B, read the chat, then tap **Back to private chats**.
   - **You should see:** B's row has no dot any more, and the dots on the **Chat** tab and **Private** are gone. Reload the page: they stay gone.
 
@@ -138,7 +142,7 @@ On the **phone** (a narrow screen of about 360 pixels is the hardest case).
 These are by design. They are not bugs.
 
 - **The chat checks for news every few seconds** (it is not instant). After a few minutes with nobody touching the page it checks less often, and any tap wakes it up again.
-- **Dots only refresh in the Chat area.** On the Library or Settings tab the red dot on **Chat** is as it was when you last loaded a page or visited the Chat area.
+- **Dots and the banner are checked every 10 seconds or so.** While the page is hidden (another tab or app) nothing is checked, it checks straight away when you come back, and after a few minutes with no touch it checks less often (every 30, then 60 seconds). So a message can take up to about 15 seconds to show a dot, and longer on a page you have not touched for a while.
 - **The group owner has no power over private chats.** They cannot read, find or delete anything in them.
 - **Text only.** No pictures or files, no editing, no replies, and no "seen" marks or typing signs.
 - **A chat nobody has written in is not listed**, for either person.

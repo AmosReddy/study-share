@@ -39,3 +39,24 @@ export type DirectChatPage = {
   otherName: string;
   otherGone: boolean;
 };
+
+/** An unread private chat as the banner names it: the conversation to open and who it is with. Never an account id. */
+export type UnreadChat = { chatId: string; name: string };
+
+/**
+ * Everything the unread dots and the banner need, for the signed-in person only: whether anything
+ * is unread, whose Members rows get a dot (by chatKey) and which conversations are unread.
+ */
+export type PrivateUnreadState = { any: boolean; fromChatKeys: string[]; chats: UnreadChat[] };
+
+/** Nothing unread (made fresh each time: callers may change it). */
+export const noUnreadState = (): PrivateUnreadState => ({ any: false, fromChatKeys: [], chats: [] });
+
+/** The unread state a summary holds (the Private list's poll, or the server's own look). */
+export function unreadStateFrom(summary: PrivateSummary): PrivateUnreadState {
+  return {
+    any: summary.unread.any,
+    fromChatKeys: [...summary.unread.fromChatKeys],
+    chats: summary.chats.filter((chat) => chat.unread).map((chat) => ({ chatId: chat.chatId, name: chat.name })),
+  };
+}

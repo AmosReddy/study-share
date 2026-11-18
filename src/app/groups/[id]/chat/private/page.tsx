@@ -1,11 +1,13 @@
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
+import { PrivateUnreadBanner } from "@/client/components/chat/private-unread-banner";
 import { ChatSwitch } from "@/client/components/chat/chat-switch";
 import { PrivateChatList } from "@/client/components/chat/private-chat-list";
 import { PrivateUnreadSync } from "@/client/components/chat/private-unread-sync";
 import { Skeleton } from "@/client/components/ui/skeleton";
 import { requireDirectChatDeps } from "@/server/chat/direct-request-deps";
 import { loadPrivateSummary } from "@/server/chat/direct-use-cases";
+import { unreadStateFrom } from "@/shared/direct-chat-types";
 
 export default function PrivateChatsPage({ params }: PageProps<"/groups/[id]/chat/private">) {
   return (
@@ -26,11 +28,12 @@ async function PrivateChats({ params }: Pick<PageProps<"/groups/[id]/chat/privat
   const deps = await requireDirectChatDeps(id);
   const summary = await loadPrivateSummary(deps, id);
   if (!summary) notFound();
-  const { unread } = summary;
+  const unread = unreadStateFrom(summary);
   return (
     <div className="flex flex-col gap-3">
-      <PrivateUnreadSync groupId={id} any={unread.any} />
-      <ChatSwitch groupId={id} current="private" unread={unread.any} />
+      <PrivateUnreadSync groupId={id} unread={unread} />
+      <ChatSwitch groupId={id} current="private" unread={unread} />
+      <PrivateUnreadBanner groupId={id} fallback={unread} onList />
       <PrivateChatList groupId={id} initial={summary} />
     </div>
   );

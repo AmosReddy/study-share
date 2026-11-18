@@ -2,6 +2,7 @@
 
 import { createContext, useContext, type ReactNode } from "react";
 import { usePrivateUnreadFor } from "@/client/lib/private-unread-store";
+import type { PrivateUnreadState } from "@/shared/direct-chat-types";
 
 const ViewerContext = createContext("");
 
@@ -17,7 +18,7 @@ export function PrivateUnreadScope({ viewer, children }: { viewer: string; child
 /** The signed-in person's tag, or "" outside the scope. */
 export const useViewer = () => useContext(ViewerContext);
 
-/** Whether this person has unread private messages in the group: the browser's latest news, else `fallback`. */
-export function usePrivateUnread(groupId: string, fallback: boolean): boolean {
+/** What this person has unread in the group: the browser's latest news, else `fallback` (what the server drew). */
+export function usePrivateUnread(groupId: string, fallback?: PrivateUnreadState): PrivateUnreadState {
   return usePrivateUnreadFor(useViewer(), groupId, fallback);
 }

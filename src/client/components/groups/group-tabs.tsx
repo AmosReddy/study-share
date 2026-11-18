@@ -21,7 +21,7 @@ type GroupTabsProps = {
  */
 export function GroupTabs({ groupId, showSettings }: GroupTabsProps) {
   const pathname = usePathname();
-  const unread = usePrivateUnread(groupId, false);
+  const unread = usePrivateUnread(groupId).any;
   const base = `/groups/${groupId}`;
   const items = [
     { href: base, tab: "library" as const, label: "Library", Icon: BookOpen },

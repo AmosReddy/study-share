@@ -1,10 +1,10 @@
 import "server-only";
 import { cache } from "react";
 import { withDirectChat } from "@/server/chat/direct-request-deps";
+import { loadPrivateSummary, type DirectChatDeps } from "@/server/chat/direct-use-cases";
 import { getServerEnv } from "@/server/env";
 import { viewerTokenFor } from "@/server/groups/chat-key";
-import { privateUnread } from "@/server/chat/direct-use-cases";
-import type { PrivateUnread } from "@/shared/direct-chat-types";
+import { noUnreadState, unreadStateFrom, type PrivateUnreadState } from "@/shared/direct-chat-types";
 import { loadGroupPage } from "./load-group";
 
 /**
@@ -20,21 +20,39 @@ export function viewerTokenOf(userId: string): string {
   }
 }
 
+/** Next's own control flow (a redirect to log in, not-found) travels as an error with a NEXT_ digest: it is not a failure. */
+function isNextControlFlow(error: unknown): boolean {
+  const digest = typeof error === "object" && error !== null ? (error as { digest?: unknown }).digest : undefined;
+  return typeof digest === "string" && digest.startsWith("NEXT_");
+}
+
 /**
- * Whether the signed-in person has unread private messages in this group, and from whom (as chat
- * keys), for the pages that draw a dot. Cached for one request, so the group layout and the page
- * under it share one lookup. A dot is a nicety: whatever goes wrong, this answers "nothing unread"
- * and never throws, so no page is ever broken by it.
+ * What the person has unread in this group (dots, Members rows, banner), from their own summary.
+ * A dot is a nicety: a store failure logs one fixed line and answers "nothing unread", so a page
+ * that asked is never broken by it.
  */
-export const loadPrivateUnread = cache(async (groupId: string): Promise<PrivateUnread> => {
+export async function safeUnreadState(deps: DirectChatDeps, groupId: string): Promise<PrivateUnreadState> {
+  try {
+    const summary = await loadPrivateSummary(deps, groupId);
+    return summary ? unreadStateFrom(summary) : noUnreadState();
+  } catch {
+    console.error("Could not check for unread private messages.");
+    return noUnreadState();
+  }
+}
+
+/**
+ * The person's unread state for this group, for the pages that draw a dot or the banner. Cached
+ * for one request, so the group layout and the page under it share one lookup. Never throws,
+ * except for Next's own redirect (a session that ended), which is let through.
+ */
+export const loadPrivateUnread = cache(async (groupId: string): Promise<PrivateUnreadState> => {
   try {
     const page = await loadGroupPage(groupId);
-    if (page) return await privateUnread(withDirectChat(page.deps), groupId);
+    if (page) return await safeUnreadState(withDirectChat(page.deps), groupId);
   } catch (error) {
-    // Redirects (a session that ended) are not failures: let Next have them.
-    const digest = typeof error === "object" && error !== null ? (error as { digest?: unknown }).digest : undefined;
-    if (typeof digest === "string" && digest.startsWith("NEXT_")) throw error;
+    if (isNextControlFlow(error)) throw error;
     console.error("Could not check for unread private messages.");
   }
-  return { any: false, fromChatKeys: [] };
+  return noUnreadState();
 });

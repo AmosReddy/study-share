@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { setPrivateUnread } from "@/client/lib/private-unread-store";
+import type { PrivateUnreadState } from "@/shared/direct-chat-types";
 import { useViewer } from "./private-unread-scope";
 
 /**
@@ -10,10 +11,10 @@ import { useViewer } from "./private-unread-scope";
  * It runs after EVERY render of the page (not only when the answer changed), so a fresher answer
  * from the server always replaces what a poll last stored. Draws nothing.
  */
-export function PrivateUnreadSync({ groupId, any }: { groupId: string; any: boolean }) {
+export function PrivateUnreadSync({ groupId, unread }: { groupId: string; unread: PrivateUnreadState }) {
   const viewer = useViewer();
   useEffect(() => {
-    setPrivateUnread(viewer, groupId, any);
+    setPrivateUnread(viewer, groupId, unread);
   });
   return null;
 }

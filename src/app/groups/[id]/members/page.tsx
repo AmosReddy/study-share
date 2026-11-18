@@ -32,7 +32,7 @@ async function Members({ params }: Pick<PageProps<"/groups/[id]/members">, "para
 
   return (
     <>
-      <PrivateUnreadSync groupId={page.group.id} any={unread.any} />
+      <PrivateUnreadSync groupId={page.group.id} unread={unread} />
       <MemberList
         groupId={page.group.id}
         groupName={page.group.name}

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Suspense, type ReactNode } from "react";
+import { PrivateUnreadPoller } from "@/client/components/chat/private-unread-poller";
 import { PrivateUnreadScope } from "@/client/components/chat/private-unread-scope";
 import { GroupTabs } from "@/client/components/groups/group-tabs";
 import { Skeleton } from "@/client/components/ui/skeleton";
@@ -48,6 +49,8 @@ async function GroupFrame({ params, children }: { params: Promise<{ id: string }
           <Suspense fallback={null}>
             <UnreadFromServer groupId={id} />
           </Suspense>
+          {/* On every page of the group, so a private message shows up wherever the person is. */}
+          <PrivateUnreadPoller groupId={group.id} />
           {/* Room at the bottom for the phone tab bar and the safe area under it. */}
           <div data-testid="group-content" className="min-w-0 pb-[calc(4.5rem+env(safe-area-inset-bottom))] lg:pb-0">
             {children}

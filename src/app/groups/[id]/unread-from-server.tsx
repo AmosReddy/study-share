@@ -9,5 +9,5 @@ import { loadPrivateUnread } from "./load-private-unread";
  */
 export async function UnreadFromServer({ groupId }: { groupId: string }) {
   const unread = await loadPrivateUnread(groupId);
-  return <PrivateUnreadSync groupId={groupId} any={unread.any} />;
+  return <PrivateUnreadSync groupId={groupId} unread={unread} />;
 }

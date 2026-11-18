@@ -6,8 +6,9 @@ import { PrivateChat } from "@/client/components/chat/private-chat";
 import { PrivateUnreadSync } from "@/client/components/chat/private-unread-sync";
 import { Skeleton } from "@/client/components/ui/skeleton";
 import { requireDirectChatDeps } from "@/server/chat/direct-request-deps";
-import { loadDirectChat, privateUnread } from "@/server/chat/direct-use-cases";
+import { loadDirectChat } from "@/server/chat/direct-use-cases";
 import { DIRECT_CHAT_MESSAGES } from "@/shared/direct-chat-messages";
+import { safeUnreadState } from "../../../load-private-unread";
 import { deleteDirectMessageAction, sendDirectMessageAction } from "../../../../direct-chat-actions";
 
 export default function PrivateConversationPage({ params }: PageProps<"/groups/[id]/chat/private/[chatId]">) {
@@ -30,12 +31,12 @@ async function Conversation({ params }: Pick<PageProps<"/groups/[id]/chat/privat
   const deps = await requireDirectChatDeps(id);
   const page = await loadDirectChat(deps, id, chatId);
   if (!page) notFound();
-  const unread = await privateUnread(deps, id);
+  const unread = await safeUnreadState(deps, id);
   const { messages, hasMore, cursor, canSend, otherName, otherGone } = page;
 
   return (
     <div className="flex flex-col gap-3">
-      <PrivateUnreadSync groupId={id} any={unread.any} />
+      <PrivateUnreadSync groupId={id} unread={unread} />
       <div className="flex min-w-0 flex-col">
         <Link
           href={`/groups/${id}/chat/private`}

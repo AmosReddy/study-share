@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { ChatPanel } from "@/client/components/chat/chat-panel";
+import { PrivateUnreadBanner } from "@/client/components/chat/private-unread-banner";
 import { ChatSwitch } from "@/client/components/chat/chat-switch";
 import { PrivateUnreadSync } from "@/client/components/chat/private-unread-sync";
 import { Skeleton } from "@/client/components/ui/skeleton";
@@ -31,8 +32,9 @@ async function Chat({ params }: Pick<PageProps<"/groups/[id]/chat">, "params">) 
   const unread = await loadPrivateUnread(id);
   return (
     <div className="flex flex-col gap-3">
-      <PrivateUnreadSync groupId={id} any={unread.any} />
-      <ChatSwitch groupId={id} current="group" unread={unread.any} />
+      <PrivateUnreadSync groupId={id} unread={unread} />
+      <ChatSwitch groupId={id} current="group" unread={unread} />
+      <PrivateUnreadBanner groupId={id} fallback={unread} />
       <ChatPanel groupId={id} initial={page} sendAction={sendMessageAction} deleteAction={deleteMessageAction} />
     </div>
   );

@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { usePrivateUnread } from "@/client/components/chat/private-unread-scope";
 import { UnreadDot } from "@/client/components/chat/unread-dot";
+import type { PrivateUnreadState } from "@/shared/direct-chat-types";
 import { cn } from "@/client/lib/utils";
 
 type ChatSwitchProps = {
   groupId: string;
   current: "group" | "private";
-  /** Unread private messages, as the server saw it when it drew the page; the browser's own news (the list's polling) wins after that. */
-  unread: boolean;
+  /** What the server drew for this page; the browser's own news (the background check, the list's polling) wins after that. */
+  unread: PrivateUnreadState;
 };
 
 /**
@@ -19,7 +20,7 @@ type ChatSwitchProps = {
  */
 export function ChatSwitch({ groupId, current, unread }: ChatSwitchProps) {
   const base = `/groups/${encodeURIComponent(groupId)}/chat`;
-  const showDot = usePrivateUnread(groupId, unread);
+  const showDot = usePrivateUnread(groupId, unread).any;
   const items = [
     { key: "group" as const, href: base, label: "Group" },
     { key: "private" as const, href: `${base}/private`, label: "Private" },
@@ -40,7 +41,7 @@ export function ChatSwitch({ groupId, current, unread }: ChatSwitchProps) {
                 )}
               >
                 {label}
-                {key === "private" && showDot ? <UnreadDot /> : null}
+                {key === "private" && showDot ? <UnreadDot className="size-3.5" /> : null}
               </Link>
             </li>
           );

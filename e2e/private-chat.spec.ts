@@ -564,3 +564,106 @@ test("a read-only conversation fits a phone and meets the quality bar", async ({
   await expect(privateRow(page, RAVI)).toContainText(DIRECT_CHAT_MESSAGES.leftTag);
   await auditPage(page);
 });
+
+/** More than one background check (every 10 s), less than the test timeout. */
+const BACKGROUND = { timeout: 25_000 };
+// Next keeps pages the person left (hidden) in the document, so only the one on screen counts.
+const banner = (page: Page) => page.getByTestId("private-banner").locator("visible=true");
+
+test("a private message shows as a dot and a banner wherever the person is, without a reload, and the banner takes them to it", async ({ page, browser }, info) => {
+  test.slow();
+  const group = await setUp(page, "Private Arrival");
+  const ravi = await addMember(page, browser, info, group, RAVI);
+  await messageMember(ravi, group, OWNER);
+
+  // Nothing unread yet: no dot, no banner, on the group chat as well.
+  await page.goto(`${group.path}/chat`);
+  await expect(chatSwitch(page)).toBeVisible();
+  await expect(banner(page)).toHaveCount(0);
+  await expect(dot(page.locator("body"))).toHaveCount(0);
+
+  // The owner sits on the Library; Ravi writes. The Chat tab gets its dot by itself.
+  await tabs(page).getByRole("link", { name: "Library" }).click();
+  await expect(page).toHaveURL(group.path);
+  await say(ravi, info, "Are you free to talk?");
+  await expect(dot(tabs(page))).toBeVisible(BACKGROUND);
+  await expect(page).toHaveURL(group.path);
+
+  // Chat tab: the group chat says what is waiting, in a polite live region, with a big Open link.
+  await tabs(page).getByRole("link", { name: "Chat" }).click();
+  await expect(page).toHaveURL(`${group.path}/chat`);
+  await expect(page.getByText("No messages yet. Say hello to the group.")).toBeVisible();
+  await expect(banner(page)).toContainText(`New private message from ${RAVI}`);
+  await expect(page.getByRole("status").filter({ has: banner(page) })).toHaveCount(1);
+  const open = banner(page).getByRole("link", { name: `Open the private chat with ${RAVI}` });
+  expect((await open.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await expect(dot(chatSwitch(page))).toBeVisible();
+  await auditPage(page);
+
+  // Open goes straight to the conversation; after reading, the banner and every dot are gone.
+  await open.click();
+  await expect(page).toHaveURL(CHAT_URL);
+  await expect(message(page, "Are you free to talk?")).toBeVisible();
+  await tabs(page).getByRole("link", { name: "Chat" }).click();
+  await expect(page).toHaveURL(`${group.path}/chat`);
+  await expect(banner(page)).toHaveCount(0);
+  await expect(dot(page.locator("body"))).toHaveCount(0, POLLED);
+
+  // On the Members tab a new message puts the dot on the sender's row by itself.
+  await tabs(page).getByRole("link", { name: "Members" }).click();
+  await expect(page).toHaveURL(`${group.path}/members`);
+  await expect(memberRow(page, RAVI)).toBeVisible();
+  await expect(dot(memberRow(page, RAVI))).toHaveCount(0);
+  await say(ravi, info, "Second thing");
+  await expect(dot(memberRow(page, RAVI))).toBeVisible(BACKGROUND);
+  await expect(dot(tabs(page))).toBeVisible();
+  await expect(page).toHaveURL(`${group.path}/members`);
+
+  // Two unread chats are counted, and the banner on the Private list names no way elsewhere.
+  const meera = await addMember(page, browser, info, group, MEERA);
+  await messageMember(meera, group, OWNER);
+  await say(meera, info, "Hello from Meera");
+  await page.goto(`${group.path}/chat`);
+  await expect(banner(page)).toContainText("2 unread private chats");
+  await banner(page).getByRole("link", { name: "Open your private chats" }).click();
+  await expect(page).toHaveURL(`${group.path}/chat/private`);
+  await expect(banner(page)).toContainText("2 unread private chats");
+  await expect(banner(page).getByRole("link")).toHaveCount(0);
+  await expect(privateRow(page, RAVI)).toBeVisible();
+  await expect(privateRow(page, MEERA)).toBeVisible();
+  await privateRow(page, RAVI).getByRole("link").click();
+  await expect(message(page, "Second thing")).toBeVisible();
+  await page.getByRole("link", { name: DIRECT_CHAT_MESSAGES.backToList }).click();
+  await expect(banner(page)).toContainText(`New private message from ${MEERA}`, POLLED);
+});
+
+test("the owner who is not in a private chat, and another member, never get a dot or a banner for it", async ({ page, browser }, info) => {
+  test.slow();
+  const group = await setUp(page, "Private Outsiders");
+  const ravi = await addMember(page, browser, info, group, RAVI);
+  const meera = await addMember(page, browser, info, group, MEERA);
+  const dev = await addMember(page, browser, info, group, DEV);
+  await messageMember(ravi, group, MEERA);
+  for (const who of [page, meera, dev]) await who.goto(group.path);
+  await say(ravi, info, "Just for Meera");
+
+  // Meera's dot arrives by itself, so a background check has run for the others as well by then (they check on the same rhythm).
+  await expect(dot(tabs(meera))).toBeVisible(BACKGROUND);
+  await page.waitForTimeout(11_000);
+  for (const outsider of [page, dev]) {
+    await expect(dot(tabs(outsider))).toHaveCount(0);
+    await outsider.goto(`${group.path}/chat`);
+    await expect(chatSwitch(outsider)).toBeVisible();
+    await expect(banner(outsider)).toHaveCount(0);
+    await expect(dot(outsider.locator("body"))).toHaveCount(0);
+    await outsider.goto(`${group.path}/chat/private`);
+    await expect(outsider.getByText(DIRECT_CHAT_MESSAGES.emptyList)).toBeVisible();
+    await expect(banner(outsider)).toHaveCount(0);
+    await outsider.goto(`${group.path}/members`);
+    await expect(dot(outsider.locator("body"))).toHaveCount(0);
+    expect(await outsider.content()).not.toContain("Just for Meera");
+  }
+  // Meera, who is in it, has the banner.
+  await meera.goto(`${group.path}/chat`);
+  await expect(banner(meera)).toContainText(`New private message from ${RAVI}`);
+});

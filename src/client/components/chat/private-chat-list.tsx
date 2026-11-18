@@ -9,7 +9,7 @@ import { createChatPoller } from "@/client/lib/chat-poller";
 import { setPrivateUnread } from "@/client/lib/private-unread-store";
 import { useNow } from "@/client/lib/use-now";
 import { DIRECT_CHAT_MESSAGES } from "@/shared/direct-chat-messages";
-import type { PrivateSummary } from "@/shared/direct-chat-types";
+import { unreadStateFrom, type PrivateSummary } from "@/shared/direct-chat-types";
 import { useViewer } from "./private-unread-scope";
 import { UnreadDot } from "./unread-dot";
 import { useBrowserPoller } from "./use-chat-poll";
@@ -38,7 +38,7 @@ export function PrivateChatList({ groupId, initial }: { groupId: string; initial
         now: () => Date.now(),
         onPage: (_kind, page) => {
           setSummary(page);
-          setPrivateUnread(viewer, groupId, page.unread.any);
+          setPrivateUnread(viewer, groupId, unreadStateFrom(page));
         },
         onReconnecting: setReconnecting,
         onGone: () => setStopped("gone"),

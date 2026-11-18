@@ -31,6 +31,10 @@ export type PollerDeps<P = ChatPage> = {
   /** For a page with more waiting beyond it (so the next request follows at once). The default reads `hasMore` from a chat page. */
   hasMore?(page: P): boolean;
   onPage(kind: PollKind, page: P, known: readonly string[]): void;
+  /** The wait before the next poll, from the failures in a row and how long nobody has touched the page. Defaults to the chat's own rhythm (nextPollDelay). */
+  nextDelay?(state: { failures: number; idleMs: number }): number;
+  /** Wait this long before the FIRST poll instead of polling at once (for a loop whose page already holds fresh data). */
+  initialDelayMs?: number;
   onReconnecting(reconnecting: boolean): void;
   onGone(): void;
   onSignedOut(): void;
@@ -121,7 +125,7 @@ export function createChatPoller<P = ChatPage>(deps: PollerDeps<P>): ChatPoller 
           break;
       }
       // More newer messages are waiting: ask again straight away.
-      delay = hasMore ? 0 : nextPollDelay({ failures, idleMs: deps.now() - lastActivity });
+      delay = hasMore ? 0 : (deps.nextDelay ?? nextPollDelay)({ failures, idleMs: deps.now() - lastActivity });
     } finally {
       clearTimeout(timeout);
       if (current === request) current = null;
@@ -142,7 +146,8 @@ export function createChatPoller<P = ChatPage>(deps: PollerDeps<P>): ChatPoller 
 
   return {
     start() {
-      void poll();
+      if (deps.initialDelayMs) schedule(deps.initialDelayMs);
+      else void poll();
     },
     stop() {
       stopped = true;
