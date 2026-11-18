@@ -169,10 +169,12 @@ describe.skipIf(!url)("SQL direct chat store", { timeout: 120_000 }, () => {
     }));
 
   test("deleting a group removes its chats, messages and read positions; deleting an account removes its chats too", () =>
-    withStore(async ({ store, client, newUser, newGroup, deleteUser }) => {
+    withStore(async ({ store, client, newUser, newGroup, deleteUser, join }) => {
       const owner = await newUser("Owner");
       const leaver = await newUser("Leaver");
       const groupId = await newGroup(owner);
+      // A message needs both people to be active members of the group (real group_members rows).
+      await join(groupId, leaver);
       const { chatId } = await store.openChat(groupId, owner, leaver);
       const { message } = await store.send({ chatId, senderId: leaver, clientId: randomUUID(), body: "bye" });
       await store.markRead(chatId, owner, message.cursor);
@@ -190,6 +192,7 @@ describe.skipIf(!url)("SQL direct chat store", { timeout: 120_000 }, () => {
 
       // And the group's.
       const second = await newUser();
+      await join(groupId, second);
       const other = await store.openChat(groupId, owner, second);
       await store.send({ chatId: other.chatId, senderId: owner, clientId: randomUUID(), body: "hi" });
       await client`delete from public.groups where id = ${groupId}`;
@@ -197,10 +200,11 @@ describe.skipIf(!url)("SQL direct chat store", { timeout: 120_000 }, () => {
     }));
 
   test("group chat and private chats never see each other's messages", () =>
-    withStore(async ({ store, messages, newUser, newGroup }) => {
+    withStore(async ({ store, messages, newUser, newGroup, join }) => {
       const ada = await newUser("Ada");
       const ravi = await newUser("Ravi");
       const groupId = await newGroup(ada);
+      await join(groupId, ravi);
       const { chatId } = await store.openChat(groupId, ada, ravi);
       // The same client id in both: they are different tables with different keys.
       const clientId = randomUUID();
@@ -217,6 +221,7 @@ describe.skipIf(!url)("SQL direct chat store", { timeout: 120_000 }, () => {
       expect(await store.softDelete(chatId, group.message.id)).toBeNull();
       // Group messages never make a chat visible or unread.
       const onlyGroup = await newUser("Mina");
+      await join(groupId, onlyGroup);
       const quiet = await store.openChat(groupId, ada, onlyGroup);
       await messages.send({ groupId, senderId: onlyGroup, clientId: randomUUID(), body: "group only" });
       expect((await store.listChatsFor(groupId, ada)).map((c) => c.chatId)).toEqual([chatId]);
@@ -338,10 +343,11 @@ describe.skipIf(!url)("SQL direct chat store", { timeout: 120_000 }, () => {
     }));
 
   test("a send that repeats an earlier client id returns the stored row, even from a second connection", () =>
-    withStore(async ({ store, newUser, newGroup }) => {
+    withStore(async ({ store, newUser, newGroup, join }) => {
       const ada = await newUser("Ada");
       const ravi = await newUser("Ravi");
       const groupId = await newGroup(ada);
+      await join(groupId, ravi);
       const { chatId } = await store.openChat(groupId, ada, ravi);
       const clientId = randomUUID();
       const sends = await Promise.all(Array.from({ length: 8 }, (_, i) => store.send({ chatId, senderId: ada, clientId, body: `try ${i}` })));
