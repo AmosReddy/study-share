@@ -65,9 +65,12 @@ export type FileView = {
    * The group's extra details, in the form's order: the ones this file has a value for (also those
    * of a removed detail), and the form's current details it has no value for yet (`display` is "";
    * the screen may show them blank or leave them out). `display` is the typed text or the label of
-   * the chosen choice, so a renamed or removed choice still reads right.
+   * the chosen choice, so a renamed or removed choice still reads right. `value` is what the edit
+   * form starts with: the typed text, or the chosen choice's id ("" when nobody knows the choice,
+   * so an unknown id never reaches a page). `valueRemoved` is true for a choice removed from its
+   * dropdown; `removed` is true for a detail removed from the form.
    */
-  details: { fieldId: string; label: string; display: string; removed: boolean }[];
+  details: { fieldId: string; label: string; display: string; value: string; valueRemoved: boolean; removed: boolean }[];
   fileName: string;
   sizeBytes: number;
   /** "Former member" when the uploader's account is gone. */
@@ -158,7 +161,15 @@ function detailViews(config: FormConfig, record: ResourceRecord): FileView["deta
     // Own keys only: a detail id like "constructor" must not read from the object's prototype.
     const value = Object.hasOwn(record.details, field.id) ? record.details[field.id] : "";
     if (value === "" && field.archived) continue;
-    views.push({ fieldId: field.id, label: field.label, display: detailDisplay(config, field, value), removed: Boolean(field.archived) });
+    const choice = field.kind === "dropdown" ? (field.options ?? []).find((option) => option.id === value) : undefined;
+    views.push({
+      fieldId: field.id,
+      label: field.label,
+      display: detailDisplay(config, field, value),
+      value: field.kind === "dropdown" && !choice ? "" : value,
+      valueRemoved: choice?.archived === true,
+      removed: Boolean(field.archived),
+    });
   }
   return views;
 }

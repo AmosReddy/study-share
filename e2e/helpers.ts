@@ -263,3 +263,13 @@ export async function newPersonContext(
   await signUpAndConfirm(page, { name });
   return { page, context };
 }
+
+/**
+ * Gives a group its own upload form (test-only route, fake services only), as its owner will be
+ * able to design it later. `config` is a form configuration (see src/shared/form-config.ts); the
+ * route refuses one that is not valid, so a mistake in a test shows up here.
+ */
+export async function setFormConfig(page: Page, groupId: string, config: unknown): Promise<void> {
+  const response = await page.request.post("/api/test/set-form-config", { data: { groupId, config } });
+  expect(response.status()).toBe(204);
+}

@@ -30,4 +30,6 @@ export const FILE_MESSAGES = {
   /** Shown on the library after a successful upload or delete (the `notice` in the address). */
   notices: { uploaded: "Your file is shared with the group.", deleted: "The file was deleted." },
   saved: "Saved.",
+  /** The owner changed the group's form while the person was filling it in (a detail they filled in is gone). */
+  formChanged: "This group's upload form was just changed. Reload the page to see the latest form, then try again.",
 } as const;

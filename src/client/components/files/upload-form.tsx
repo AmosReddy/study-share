@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { SubmitButton } from "@/client/components/auth/submit-button";
 import { describedBy, FieldError, FieldHint, TextField } from "@/client/components/auth/text-field";
@@ -9,11 +9,11 @@ import { putFile } from "@/client/lib/upload-file";
 import { cn } from "@/client/lib/utils";
 import { AUTH_MESSAGES } from "@/shared/auth-messages";
 import { FILE_MESSAGES } from "@/shared/file-messages";
-import { OTHER_TYPE_ID } from "@/shared/form-config";
+import { OTHER_TYPE_ID, validateAnswers, type FormConfig } from "@/shared/form-config";
 import { RESOURCE_LIMITS } from "@/shared/resources";
 import { checkChosenFile, titleFromFileName, uploadContentType, UPLOAD_ACCEPT } from "@/shared/upload-checks";
-import { OtherTextField, SubjectField, TypeSelect } from "./file-fields";
-import type { TypeChoice } from "./type-choices";
+import { DetailInput, OtherTextField, TypeSelect } from "./file-fields";
+import { detailInputs, hasUnshownDetailError, typeChoices } from "./form-inputs";
 
 /** What the two upload actions answer (plain data, no storage key). */
 type Failure = { ok: false; fieldErrors?: Record<string, string>; formError?: string };
@@ -27,10 +27,10 @@ export type CompleteUpload = (groupId: string, resourceId: string) => Promise<An
 
 type UploadFormProps = {
   groupId: string;
-  /** What the Type select offers (see typeChoices). */
-  types: TypeChoice[];
-  /** Subjects the group already uses, offered while typing. */
-  subjects: string[];
+  /** The group's upload form: the Type select and the extra details are built from it. */
+  config: FormConfig;
+  /** Values the group already uses for each text detail (detail id to values), offered while typing. */
+  suggestions: Record<string, string[]>;
   prepareAction: PrepareUpload;
   completeAction: CompleteUpload;
 };
@@ -52,10 +52,12 @@ function isNextControlFlow(error: unknown): boolean {
  * bar, and the server confirms what arrived. Any failure shows a message and leaves the form as it
  * was; choosing Upload again starts over from step 1, so nothing needs cleaning up by hand.
  *
- * TEMPORARY (custom upload form, Task 3): still the default form's fields only (Title, Type, the
- * Other text and Subject); Task 4 builds the fields from the group's form.
+ * The fields come from the group's form: Title, Type (choosing Other asks what kind of file it is),
+ * then the extra details in order. Before anything is sent the answers are checked with the same
+ * function the server uses (validateAnswers), for instant feedback; the server still decides, and
+ * its errors are shown next to the right field (keys title, type, typeOther, detail:<id>, file).
  */
-export function UploadForm({ groupId, types, subjects, prepareAction, completeAction }: UploadFormProps) {
+export function UploadForm({ groupId, config, suggestions, prepareAction, completeAction }: UploadFormProps) {
   const router = useRouter();
   const uid = useId();
   const formRef = useRef<HTMLFormElement>(null);
@@ -65,9 +67,11 @@ export function UploadForm({ groupId, types, subjects, prepareAction, completeAc
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const titleTouched = useRef(false);
-  const [typeId, setTypeId] = useState(types[0]?.id ?? "");
+  const types = useMemo(() => typeChoices(config), [config]);
+  const specs = useMemo(() => detailInputs(config, {}, suggestions), [config, suggestions]);
+  const [typeId, setTypeId] = useState(types[0]?.id ?? OTHER_TYPE_ID);
   const [typeOther, setTypeOther] = useState("");
-  const [subject, setSubject] = useState("");
+  const [details, setDetails] = useState<Record<string, string>>(() => Object.fromEntries(specs.map((spec) => [spec.id, ""])));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | undefined>();
   const [phase, setPhase] = useState<Phase>("idle");
@@ -112,6 +116,12 @@ export function UploadForm({ groupId, types, subjects, prepareAction, completeAc
     if (chosen) takeFile(chosen);
   }, []);
 
+  /** The details to send: what is filled in, for the details the form asks. */
+  function answerDetails(): Record<string, string> {
+    const entries = specs.map((spec): [string, string] => [spec.id, details[spec.id] ?? ""]);
+    return Object.fromEntries(entries.filter(([, value]) => value.trim() !== ""));
+  }
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (working.current) return;
@@ -123,6 +133,9 @@ export function UploadForm({ groupId, types, subjects, prepareAction, completeAc
       if (problem) found.file = problem;
     }
     if (title.trim() === "") found.title = FILE_MESSAGES.titleRequired;
+    const answers = { typeId, typeOther: typeId === OTHER_TYPE_ID ? typeOther : "", details: answerDetails() };
+    const checked = validateAnswers(config, answers);
+    if (!checked.ok) Object.assign(found, checked.errors);
     if (!file || Object.keys(found).length > 0) {
       fail(found);
       return;
@@ -138,8 +151,8 @@ export function UploadForm({ groupId, types, subjects, prepareAction, completeAc
       const prepared = await prepareAction(groupId, {
         title,
         typeId,
-        typeOther: typeId === OTHER_TYPE_ID ? typeOther : "",
-        details: subject.trim() === "" ? {} : { subject },
+        typeOther: answers.typeOther,
+        details: answers.details,
         fileName: file.name,
         contentType: uploadContentType(file.name),
         sizeBytes: file.size,
@@ -147,7 +160,11 @@ export function UploadForm({ groupId, types, subjects, prepareAction, completeAc
       if (!prepared.ok) {
         const { fileName, sizeBytes, ...fields } = prepared.fieldErrors ?? {};
         const fileProblem = fileName ?? sizeBytes;
-        fail({ ...fields, ...(fileProblem ? { file: fileProblem } : {}) }, prepared.formError);
+        // A detail the form no longer has (the owner just changed it) has no field to show it next to.
+        fail(
+          { ...fields, ...(fileProblem ? { file: fileProblem } : {}) },
+          prepared.formError ?? (hasUnshownDetailError(fields, specs) ? FILE_MESSAGES.formChanged : undefined),
+        );
         return;
       }
 
@@ -253,13 +270,16 @@ export function UploadForm({ groupId, types, subjects, prepareAction, completeAc
             error={errors.typeOther}
           />
         ) : null}
-        <SubjectField
-          id={`${uid}-subject`}
-          suggestions={subjects}
-          value={subject}
-          onChange={(event) => setSubject(event.target.value)}
-          error={errors["detail:subject"]}
-        />
+        {specs.map((spec, index) => (
+          <DetailInput
+            key={spec.id}
+            id={`${uid}-detail-${index}`}
+            spec={spec}
+            value={details[spec.id] ?? ""}
+            onChange={(value) => setDetails((previous) => ({ ...previous, [spec.id]: value }))}
+            error={errors[`detail:${spec.id}`]}
+          />
+        ))}
       </fieldset>
 
       {busy ? (

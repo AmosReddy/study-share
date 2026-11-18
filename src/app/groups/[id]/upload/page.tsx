@@ -2,11 +2,11 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
-import { typeChoices } from "@/client/components/files/type-choices";
 import { UploadForm } from "@/client/components/files/upload-form";
 import { Skeleton } from "@/client/components/ui/skeleton";
 import { requireFileDeps } from "@/server/files/request-deps";
 import { getFormForGroup, listFiles } from "@/server/files/use-cases";
+import { suggestionsFrom } from "@/shared/library-query";
 import { completeUploadAction, prepareUploadAction } from "../../file-actions";
 
 export default function UploadPage({ params }: PageProps<"/groups/[id]/upload">) {
@@ -24,8 +24,8 @@ async function Upload({ params }: Pick<PageProps<"/groups/[id]/upload">, "params
   const form = await getFormForGroup(deps, id);
   const library = await listFiles(deps, id);
   if (!form || !library) notFound();
-  // TEMPORARY (Task 3): the default form's Subject suggestions; Task 4 builds every field from the form.
-  const subjects = library.filters.fields.find((field) => field.id === "subject")?.options.map((option) => option.label) ?? [];
+  // The values the group already uses for each text detail, offered while typing.
+  const suggestions = suggestionsFrom(library.filters);
 
   return (
     <section aria-labelledby="upload-heading" className="flex flex-col gap-5">
@@ -42,8 +42,8 @@ async function Upload({ params }: Pick<PageProps<"/groups/[id]/upload">, "params
       <div className="max-w-xl">
         <UploadForm
           groupId={id}
-          types={typeChoices(form.formConfig)}
-          subjects={subjects}
+          config={form.formConfig}
+          suggestions={suggestions}
           prepareAction={prepareUploadAction}
           completeAction={completeUploadAction}
         />

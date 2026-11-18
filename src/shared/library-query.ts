@@ -153,3 +153,13 @@ export function canonicalValue(value: string, known: readonly string[]): string 
   const lower = value.toLowerCase();
   return known.find((candidate) => candidate.toLowerCase() === lower) ?? value;
 }
+
+/**
+ * The values the group already uses for each text detail (detail id to values), taken from the
+ * Library's filter options, for the suggestions offered while typing. A dropdown has none.
+ */
+export function suggestionsFrom(filters: LibraryFilterOptions | undefined): Record<string, string[]> {
+  return Object.fromEntries(
+    (filters?.fields ?? []).filter((field) => field.kind === "text").map((field) => [field.id, field.options.map((option) => option.label)]),
+  );
+}

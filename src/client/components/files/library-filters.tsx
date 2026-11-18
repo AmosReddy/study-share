@@ -23,10 +23,17 @@ type LibraryFiltersProps = {
 
 const selectClassName = cn(inputClassName, "pr-8");
 
-/** The choices of one dropdown: the group's, plus a value from the address that the group does not offer (an old link), so the person can see what is filtering. */
-function choicesWith(options: FilterOption[], chosen: string): FilterOption[] {
+/**
+ * The choices of one dropdown: the group's (a removed one is marked), plus a value from the address
+ * that the group does not offer (an old link), so the person can see that something is filtering.
+ * That value is shown as typed for a text detail, and as `unknownLabel` for a type or a dropdown,
+ * whose values are ids that mean nothing to a person.
+ */
+function choicesWith(options: FilterOption[], chosen: string, unknownLabel: string | null): FilterOption[] {
   const named = options.map((option) => ({ ...option, label: option.removed ? `${option.label} (removed)` : option.label }));
-  return chosen !== "" && !options.some((option) => option.id === chosen) ? [...named, { id: chosen, label: chosen, removed: false }] : named;
+  return chosen !== "" && !options.some((option) => option.id === chosen)
+    ? [...named, { id: chosen, label: unknownLabel ?? chosen, removed: false }]
+    : named;
 }
 
 /**
@@ -37,8 +44,9 @@ function choicesWith(options: FilterOption[], chosen: string): FilterOption[] {
  * page load), and the dropdowns apply as soon as they change. Either way the address holds the
  * whole state and carries no page cursor, so a new search always starts at the first page.
  *
- * TEMPORARY (custom upload form, Task 3): the dropdowns come straight from the group's form and
- * their wording is generic; Task 4 settles the layout and the words.
+ * The dropdowns follow the group's form: "Type" first (neutral entry "All types"), then one per
+ * extra detail (neutral entry "Any <detail>"). A dropdown detail lists its choices, a text detail
+ * the values the group's files use; a removed entry is marked "(removed)".
  */
 export function LibraryFilterForm({ base, filters, options, active }: LibraryFiltersProps) {
   const router = useRouter();
@@ -100,7 +108,7 @@ export function LibraryFilterForm({ base, filters, options, active }: LibraryFil
             value={q}
             onChange={(event) => setQ(event.target.value)}
             maxLength={MAX_SEARCH_LENGTH}
-            placeholder="Search by title, subject or file name"
+            placeholder="Search by title, details or file name"
             autoComplete="off"
             enterKeyHint="search"
             className={inputClassName}
@@ -119,7 +127,7 @@ export function LibraryFilterForm({ base, filters, options, active }: LibraryFil
           </label>
           <select id={`${uid}-type`} name="type" value={type} onChange={onType} className={selectClassName}>
             <option value="">All types</option>
-            {choicesWith(options.types, type).map((choice) => (
+            {choicesWith(options.types, type, "Unknown type").map((choice) => (
               <option key={choice.id} value={choice.id}>
                 {choice.label}
               </option>
@@ -138,8 +146,8 @@ export function LibraryFilterForm({ base, filters, options, active }: LibraryFil
               onChange={(event) => onDetail(field.id, event)}
               className={selectClassName}
             >
-              <option value="">{`All ${field.label.toLowerCase()}s`}</option>
-              {choicesWith(field.options, Object.hasOwn(details, field.id) ? details[field.id] : "").map((choice) => (
+              <option value="">{`Any ${field.label.toLowerCase()}`}</option>
+              {choicesWith(field.options, Object.hasOwn(details, field.id) ? details[field.id] : "", field.kind === "dropdown" ? "Unknown choice" : null).map((choice) => (
                 <option key={choice.id} value={choice.id}>
                   {choice.label}
                 </option>

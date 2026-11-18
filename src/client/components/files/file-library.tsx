@@ -2,9 +2,11 @@ import { ChevronRight, FileText, SearchX, Upload } from "lucide-react";
 import Link from "next/link";
 import { FormMessage } from "@/client/components/auth/form-message";
 import { Button } from "@/client/components/ui/button";
+import { cn } from "@/client/lib/utils";
 import { FILE_MESSAGES } from "@/shared/file-messages";
 import { formatBytes, formatFileDate } from "@/shared/format";
 import { libraryHref, type LibraryFilterOptions, type LibraryFilters } from "@/shared/library-query";
+import { DetailLabels, typeBadgeText, type DetailLabel } from "./file-labels";
 import { LibraryFilterForm } from "./library-filters";
 
 /** One file as the page shows it (the server's FileView has at least these fields). */
@@ -12,8 +14,10 @@ export type LibraryFile = {
   id: string;
   title: string;
   typeLabel: string;
+  /** True when the type was removed from the group's form (the row marks it). */
+  typeRemoved: boolean;
   /** The file's details; the ones with nothing to show are left out of the row. */
-  details: { fieldId: string; display: string }[];
+  details: DetailLabel[];
   sizeBytes: number;
   uploaderName: string;
   uploadedAt: string;
@@ -91,14 +95,8 @@ export function FileLibrary({ groupId, files, nextCursor, later, notice, filters
                 <span className="flex min-w-0 flex-1 flex-col gap-1.5">
                   <span className="font-medium [overflow-wrap:anywhere]">{file.title}</span>
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-                    <span className={badgeClass}>{file.typeLabel}</span>
-                    {file.details.map((detail) =>
-                      detail.display ? (
-                        <span key={detail.fieldId} className="[overflow-wrap:anywhere]">
-                          {detail.display}
-                        </span>
-                      ) : null,
-                    )}
+                    <span className={cn(badgeClass, "max-w-full [overflow-wrap:anywhere]")}>{typeBadgeText(file)}</span>
+                    <DetailLabels details={file.details} />
                     <span className="[overflow-wrap:anywhere]">{file.uploaderName}</span>
                     <span>{formatBytes(file.sizeBytes)}</span>
                     <span>{formatFileDate(file.uploadedAt)}</span>

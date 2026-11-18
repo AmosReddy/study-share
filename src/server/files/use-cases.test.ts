@@ -698,7 +698,7 @@ describe("listFiles", () => {
       typeLabel: "Previous year paper",
       typeRemoved: false,
       typeOther: "",
-      details: [{ fieldId: "subject", label: "Subject", display: "Chemistry", removed: false }],
+      details: [{ fieldId: "subject", label: "Subject", display: "Chemistry", value: "Chemistry", valueRemoved: false, removed: false }],
       fileName: "board.png",
       sizeBytes: PNG.length,
       uploaderName: "Asha",
@@ -1398,8 +1398,8 @@ describe("completeUpload and a form that changed", () => {
         typeRemoved: false,
         // Semester is on the form now and the file has no value for it: shown blank.
         details: [
-          { fieldId: "f_sem", label: "Semester", display: "", removed: false },
-          { fieldId: "f_subject", label: "Subject", display: "", removed: false },
+          { fieldId: "f_sem", label: "Semester", display: "", value: "", valueRemoved: false, removed: false },
+          { fieldId: "f_subject", label: "Subject", display: "", value: "", valueRemoved: false, removed: false },
         ],
       },
     });
@@ -1440,9 +1440,9 @@ describe("files whose type or details were removed from the form", () => {
     const view = await getFile(t.as(owner), groupId, id);
     expect(view).toMatchObject({ typeId: "t_old", typeLabel: "Old exam", typeRemoved: true, typeOther: "" });
     expect(view?.details).toEqual([
-      { fieldId: "f_sem", label: "Semester", display: "Semester 3", removed: false },
-      { fieldId: "f_subject", label: "Subject", display: "Physics", removed: false },
-      { fieldId: "f_year", label: "Year", display: "2019", removed: true },
+      { fieldId: "f_sem", label: "Semester", display: "Semester 3", value: "o_3", valueRemoved: true, removed: false },
+      { fieldId: "f_subject", label: "Subject", display: "Physics", value: "Physics", valueRemoved: false, removed: false },
+      { fieldId: "f_year", label: "Year", display: "2019", value: "2019", valueRemoved: false, removed: true },
     ]);
     // The list shows the same.
     expect((await listFiles(t.as(owner), groupId))?.items[0]).toEqual(view);
@@ -1456,6 +1456,7 @@ describe("files whose type or details were removed from the form", () => {
     const view = await getFile(t.as(owner), groupId, id);
     expect(view?.details.map((d) => d.fieldId)).toEqual(["f_sem", "f_subject"]);
     expect(view?.details[0]?.display).toBe("Unknown choice");
+    expect(view?.details[0]?.value).toBe("");
     expect(JSON.stringify(view)).not.toContain("o_999");
   });
 
