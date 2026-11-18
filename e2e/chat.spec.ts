@@ -1,7 +1,7 @@
 import { expect, test, type Browser, type BrowserContext, type Page, type Request, type TestInfo } from "@playwright/test";
 import { CHAT_MESSAGES } from "../src/shared/chat-messages";
 import { auditPage } from "./audit";
-import { createGroupThroughForm, isolateRateLimits, joinWith, newPersonContext, sidewaysOverflow, signUpAndConfirm } from "./helpers";
+import { createGroupThroughForm, isolateRateLimits, joinWith, newPersonContext, saveDarkThemeBeforeLoad, sidewaysOverflow, signUpAndConfirm } from "./helpers";
 
 /*
   Slice 3, group chat, as real people in real browsers (fake services mode). The owner is the test's
@@ -641,7 +641,7 @@ test("the chat fits the screen: composer above the tab bar and the keyboard area
   await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
 
   // The dark theme too.
-  await page.emulateMedia({ colorScheme: "dark" });
+  await saveDarkThemeBeforeLoad(page);
   await page.reload();
   await expect(log(page)).toBeVisible();
   await auditPage(page);

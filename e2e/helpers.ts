@@ -19,6 +19,45 @@ export async function isolateRateLimits(page: Page) {
   await page.setExtraHTTPHeaders({ "x-forwarded-for": `10.${part()}.${part()}.${part()}` });
 }
 
+const themeSeeded = new WeakSet<Page>();
+
+/**
+ * Makes every page this tab opens from now on start with the dark theme saved, as if the person had
+ * used the toggle on an earlier visit (next-themes keeps the choice under `theme` in localStorage),
+ * so the page comes up through the real first-paint path without a second load. A person who has
+ * never touched the toggle gets the light theme whatever their device prefers, so light needs no
+ * setup. Undo it with forgetThemeChoice.
+ */
+export async function saveDarkThemeBeforeLoad(page: Page) {
+  if (!themeSeeded.has(page)) {
+    themeSeeded.add(page);
+    // An init script cannot be removed, so it reads a cookie that this file sets and clears.
+    await page.addInitScript(() => {
+      if (document.cookie.split("; ").includes("e2e-theme=dark")) localStorage.setItem("theme", "dark");
+    });
+  }
+  await page.context().addCookies([{ name: "e2e-theme", value: "dark", domain: "localhost", path: "/" }]);
+}
+
+/** Forgets any saved theme choice, back to what a first-time visitor sees (light). */
+export async function forgetThemeChoice(page: Page) {
+  await page.context().clearCookies({ name: "e2e-theme" });
+  await page.evaluate(() => localStorage.removeItem("theme"));
+}
+
+/**
+ * Switches the open page to a theme without a reload, for a sheet that covers the toggle (the
+ * page behind a modal is inert). It sends the storage event next-themes listens to for a change
+ * made in another tab, so the page goes through next-themes' own switching code.
+ */
+export async function switchThemeLive(page: Page, theme: "light" | "dark") {
+  await page.evaluate((value) => {
+    localStorage.setItem("theme", value);
+    window.dispatchEvent(new StorageEvent("storage", { key: "theme", newValue: value, storageArea: localStorage }));
+  }, theme);
+  await expect(page.locator("html")).toHaveClass(theme === "dark" ? /dark/ : /^(?!.*dark)/);
+}
+
 type OutboxBody = { code: string | null; purpose: "signup" | "recovery" | null };
 
 /** The newest email the fake provider "sent" to this address: `{ code, purpose }`, or nulls when none. */
