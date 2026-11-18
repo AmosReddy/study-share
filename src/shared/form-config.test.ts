@@ -449,3 +449,11 @@ describe("searchIdsFor", () => {
     expect(searchIdsFor(config, "spring").optionIds).toEqual(["x"]);
   });
 });
+
+describe("searchIdsFor with very short words", () => {
+  it("does not match labels for a blank or one-letter term, but does from two letters", () => {
+    expect(searchIdsFor(DEFAULT_FORM_CONFIG, "")).toEqual({ typeIds: [], optionIds: [] });
+    expect(searchIdsFor(DEFAULT_FORM_CONFIG, " o ")).toEqual({ typeIds: [], optionIds: [] });
+    expect(searchIdsFor(DEFAULT_FORM_CONFIG, "pa").typeIds).toContain("pyq");
+  });
+});

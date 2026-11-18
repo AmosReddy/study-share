@@ -305,7 +305,9 @@ export function detailDisplay(config: FormConfig, field: FormField, value: strin
  */
 export function searchIdsFor(config: FormConfig, term: string): { typeIds: string[]; optionIds: string[] } {
   const needle = term.trim().toLowerCase();
-  if (needle === "") return { typeIds: [], optionIds: [] };
+  // One letter would match nearly every type and choice label, so labels are only matched from two
+  // characters. The title, file name and text details are still searched by the store for any length.
+  if (needle.length < 2) return { typeIds: [], optionIds: [] };
   const matches = (label: string) => label.toLowerCase().includes(needle);
 
   const typeIds = config.types.filter((type) => matches(type.label)).map((type) => type.id);
