@@ -3,6 +3,8 @@
 import { BookOpen, MessageSquare, Settings, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { usePrivateUnread } from "@/client/components/chat/private-unread-scope";
+import { UnreadDot } from "@/client/components/chat/unread-dot";
 import { cn } from "@/client/lib/utils";
 import { isTabActive } from "./active-tab";
 
@@ -19,6 +21,7 @@ type GroupTabsProps = {
  */
 export function GroupTabs({ groupId, showSettings }: GroupTabsProps) {
   const pathname = usePathname();
+  const unread = usePrivateUnread(groupId).any;
   const base = `/groups/${groupId}`;
   const items = [
     { href: base, tab: "library" as const, label: "Library", Icon: BookOpen },
@@ -48,7 +51,10 @@ export function GroupTabs({ groupId, showSettings }: GroupTabsProps) {
                 )}
               >
                 <Icon className="size-5 shrink-0 lg:size-4" aria-hidden="true" />
-                {label}
+                <span className="relative">
+                  {label}
+                  {tab === "chat" && unread ? <UnreadDot className="absolute top-0.5 -right-3.5" /> : null}
+                </span>
               </Link>
             </li>
           );

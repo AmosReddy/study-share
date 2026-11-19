@@ -9,9 +9,15 @@ import {
   nextPollDelay,
   LATEST_EVERY,
   POLL_INTERVAL_MS,
+  directMessagesUrl,
   fetchChatPage,
+  fetchDirectPage,
+  fetchPrivateSummary,
   messagesUrl,
   parseChatPage,
+  parseDirectPage,
+  parsePrivateSummary,
+  privateSummaryUrl,
   pollDelay,
   pollKind,
 } from "./chat-poll";
@@ -138,5 +144,54 @@ describe("fetchChatPage", () => {
       }),
     );
     expect(await fetchChatPage("g1", {}, controller.signal)).toEqual({ kind: "aborted" });
+  });
+});
+
+describe("private chat addresses and shapes", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const signal = new AbortController().signal;
+  const page = { messages: [message], hasMore: false, cursor: "k", canSend: true, otherName: "Ravi", otherGone: false };
+  const answer = (json: unknown, status = 200) =>
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status, ok: status < 400, redirected: false, json: async () => json })));
+
+  it("builds the conversation's and the list's addresses, encoding what it is given", () => {
+    expect(directMessagesUrl("g1", "c1")).toBe("/groups/g1/chat/private/c1/messages");
+    expect(directMessagesUrl("g1", "c1", { after: "a_-" })).toBe("/groups/g1/chat/private/c1/messages?after=a_-");
+    expect(directMessagesUrl("g 1", "c/1", { before: "x y" })).toBe("/groups/g%201/chat/private/c%2F1/messages?before=x%20y");
+    expect(privateSummaryUrl("g1")).toBe("/groups/g1/chat/private/summary");
+  });
+
+  it("reads a conversation page, never giving anyone delete-any power, and needs canSend", () => {
+    expect(parseDirectPage(page)).toEqual({ ...page, canDeleteAny: false });
+    expect(parseDirectPage({ ...page, canDeleteAny: true })?.canDeleteAny).toBe(false);
+    expect(parseDirectPage({ ...page, canSend: false })?.canSend).toBe(false);
+    expect(parseDirectPage({ ...page, canSend: "yes" })).toBeNull();
+    expect(parseDirectPage({ messages: [], hasMore: false, cursor: null })).toBeNull();
+    expect(parseDirectPage(null)).toBeNull();
+  });
+
+  it("reads the list's summary and rejects other shapes", () => {
+    const row = { chatId: "c", name: "Ravi", otherGone: false, preview: "hi", lastAt: "2026-11-14T10:00:00.000Z", unread: true };
+    const summary = { chats: [row], unread: { any: true, fromChatKeys: ["k"] } };
+    expect(parsePrivateSummary(summary)).toEqual(summary);
+    expect(parsePrivateSummary({ chats: [], unread: { any: false, fromChatKeys: [] } })).not.toBeNull();
+    expect(parsePrivateSummary({ ...summary, chats: [{ ...row, unread: "yes" }] })).toBeNull();
+    expect(parsePrivateSummary({ ...summary, unread: { any: true } })).toBeNull();
+    expect(parsePrivateSummary({ chats: [] })).toBeNull();
+    expect(parsePrivateSummary(null)).toBeNull();
+  });
+
+  it("fetches each with the same outcomes as the group chat", async () => {
+    answer(page);
+    expect(await fetchDirectPage("g1", "c1", {}, signal)).toEqual({ kind: "ok", page: { ...page, canDeleteAny: false } });
+    answer({}, 404);
+    expect(await fetchDirectPage("g1", "c1", {}, signal)).toEqual({ kind: "gone" });
+    const summary = { chats: [], unread: { any: false, fromChatKeys: [] } };
+    answer(summary);
+    expect(await fetchPrivateSummary("g1", signal)).toEqual({ kind: "ok", page: summary });
+    answer({ nope: true });
+    expect(await fetchPrivateSummary("g1", signal)).toEqual({ kind: "error" });
+    answer({}, 404);
+    expect(await fetchPrivateSummary("g1", signal)).toEqual({ kind: "gone" });
   });
 });

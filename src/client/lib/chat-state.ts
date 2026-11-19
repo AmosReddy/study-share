@@ -250,3 +250,14 @@ export function newestSentAt(items: readonly ChatItem[]): string {
   for (let i = items.length - 1; i >= 0; i -= 1) if (items[i].status === "sent") return items[i].createdAt;
   return "";
 }
+
+/**
+ * Whether the delete button shows on a message. Nobody may delete while the chat is read-only
+ * (`canSend` false). Otherwise it is what the server said for that message, and in a private chat
+ * (`ownDeletable`) also every message of the viewer's own: the server said "no" for them while the
+ * other person was gone, and that must not stay true once the other person is back (the server
+ * checks again when the delete is made).
+ */
+export function canDeleteItem(item: Pick<ChatItem, "mine" | "canDelete">, options: { canSend: boolean; ownDeletable: boolean }): boolean {
+  return options.canSend && (item.canDelete || (options.ownDeletable && item.mine));
+}

@@ -1,4 +1,5 @@
 import type { ChatPage } from "@/shared/chat-types";
+import type { PrivateSummary } from "@/shared/direct-chat-types";
 
 /*
   The chat's polling rules and its one network call. The browser asks for news every 2.5 seconds
@@ -36,6 +37,24 @@ export function idleDelay(idleMs: number): number {
   return POLL_INTERVAL_MS;
 }
 
+/**
+ * The rhythm of the background check for unread private messages that runs on every group page
+ * (the chat's own polling is much faster, and only runs while the chat is open): every 10 s while
+ * the page is in use, every 30 s after two minutes without input, every 60 s after ten, and 20, 40,
+ * then 60 s after failures in a row.
+ */
+export const BACKGROUND_POLL_MS = 10_000;
+export const BACKGROUND_IDLE_SLOW_MS = 30_000;
+export const BACKGROUND_IDLE_SLOWER_MS = 60_000;
+export const BACKGROUND_BACKOFF_MS = [20_000, 40_000, 60_000] as const;
+
+export function nextBackgroundPollDelay(options: { failures: number; idleMs: number }): number {
+  const idle =
+    options.idleMs >= IDLE_SLOWER_AFTER_MS ? BACKGROUND_IDLE_SLOWER_MS : options.idleMs >= IDLE_SLOW_AFTER_MS ? BACKGROUND_IDLE_SLOW_MS : BACKGROUND_POLL_MS;
+  const backoff = options.failures <= 0 ? 0 : BACKGROUND_BACKOFF_MS[Math.min(options.failures, BACKGROUND_BACKOFF_MS.length) - 1];
+  return Math.max(idle, backoff);
+}
+
 /** Wait before the next poll: the slower of the idle interval and the back-off after failures. */
 export function nextPollDelay(options: { failures: number; idleMs: number }): number {
   return Math.max(pollDelay(options.failures), idleDelay(options.idleMs));
@@ -51,11 +70,25 @@ export function pollKind(options: { sinceLatest: number; force: boolean; hasCurs
   return options.sinceLatest + 1 >= LATEST_EVERY ? "latest" : "after";
 }
 
-export function messagesUrl(groupId: string, query: { after?: string; before?: string } = {}): string {
-  const base = `/groups/${encodeURIComponent(groupId)}/chat/messages`;
+/** `base` with at most one cursor in its query. */
+function withCursor(base: string, query: { after?: string; before?: string }): string {
   if (query.after) return `${base}?after=${encodeURIComponent(query.after)}`;
   if (query.before) return `${base}?before=${encodeURIComponent(query.before)}`;
   return base;
+}
+
+export function messagesUrl(groupId: string, query: { after?: string; before?: string } = {}): string {
+  return withCursor(`/groups/${encodeURIComponent(groupId)}/chat/messages`, query);
+}
+
+/** A private conversation's messages route (the same shape of answer, plus whether the person may reply). */
+export function directMessagesUrl(groupId: string, chatId: string, query: { after?: string; before?: string } = {}): string {
+  return withCursor(`/groups/${encodeURIComponent(groupId)}/chat/private/${encodeURIComponent(chatId)}/messages`, query);
+}
+
+/** The route the Private list polls. */
+export function privateSummaryUrl(groupId: string): string {
+  return `/groups/${encodeURIComponent(groupId)}/chat/private/summary`;
 }
 
 /** The page when `value` has the shape of one, else null. */
@@ -77,8 +110,39 @@ export function parseChatPage(value: unknown): ChatPage | null {
   return ok ? (page as ChatPage) : null;
 }
 
-export type FetchOutcome =
-  | { kind: "ok"; page: ChatPage }
+/** A private conversation's page: a chat page that also says whether the person may still reply. Nobody has delete-any power there. */
+export type DirectPollPage = ChatPage & { canSend: boolean };
+
+export function parseDirectPage(value: unknown): DirectPollPage | null {
+  const page = parseChatPage(value);
+  if (!page) return null;
+  const canSend = (value as { canSend?: unknown }).canSend;
+  if (typeof canSend !== "boolean") return null;
+  return { ...page, canDeleteAny: false, canSend };
+}
+
+/** The Private list's summary when `value` has the shape of one, else null. */
+export function parsePrivateSummary(value: unknown): PrivateSummary | null {
+  if (typeof value !== "object" || value === null) return null;
+  const summary = value as Partial<PrivateSummary>;
+  if (!Array.isArray(summary.chats) || typeof summary.unread !== "object" || summary.unread === null) return null;
+  if (typeof summary.unread.any !== "boolean" || !Array.isArray(summary.unread.fromChatKeys)) return null;
+  const ok = summary.chats.every(
+    (c) =>
+      typeof c === "object" &&
+      c !== null &&
+      typeof c.chatId === "string" &&
+      typeof c.name === "string" &&
+      typeof c.otherGone === "boolean" &&
+      typeof c.preview === "string" &&
+      typeof c.lastAt === "string" &&
+      typeof c.unread === "boolean",
+  );
+  return ok ? (summary as PrivateSummary) : null;
+}
+
+export type FetchOutcome<P = ChatPage> =
+  | { kind: "ok"; page: P }
   /** 404: removed from the group, or the group is gone. Stop asking. */
   | { kind: "gone" }
   /** The request was sent on to the log-in page: the session ended. */
@@ -87,13 +151,10 @@ export type FetchOutcome =
   | { kind: "error" }
   | { kind: "aborted" };
 
-export async function fetchChatPage(
-  groupId: string,
-  query: { after?: string; before?: string },
-  signal: AbortSignal,
-): Promise<FetchOutcome> {
+/** One GET of JSON, sorted into the outcomes the polling loop understands. `parse` answers null for a body of the wrong shape. */
+export async function fetchPage<P>(url: string, parse: (value: unknown) => P | null, signal: AbortSignal): Promise<FetchOutcome<P>> {
   try {
-    const response = await fetch(messagesUrl(groupId, query), {
+    const response = await fetch(url, {
       cache: "no-store",
       signal,
       headers: { accept: "application/json" },
@@ -101,9 +162,26 @@ export async function fetchChatPage(
     if (response.status === 404) return { kind: "gone" };
     if (response.redirected) return { kind: "signed-out" };
     if (!response.ok) return { kind: "error" };
-    const page = parseChatPage(await response.json());
+    const page = parse(await response.json());
     return page ? { kind: "ok", page } : { kind: "error" };
   } catch {
     return signal.aborted ? { kind: "aborted" } : { kind: "error" };
   }
+}
+
+export function fetchChatPage(groupId: string, query: { after?: string; before?: string }, signal: AbortSignal): Promise<FetchOutcome> {
+  return fetchPage(messagesUrl(groupId, query), parseChatPage, signal);
+}
+
+export function fetchDirectPage(
+  groupId: string,
+  chatId: string,
+  query: { after?: string; before?: string },
+  signal: AbortSignal,
+): Promise<FetchOutcome<DirectPollPage>> {
+  return fetchPage(directMessagesUrl(groupId, chatId, query), parseDirectPage, signal);
+}
+
+export function fetchPrivateSummary(groupId: string, signal: AbortSignal): Promise<FetchOutcome<PrivateSummary>> {
+  return fetchPage(privateSummaryUrl(groupId), parsePrivateSummary, signal);
 }

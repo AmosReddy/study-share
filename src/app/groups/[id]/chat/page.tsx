@@ -1,10 +1,14 @@
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { ChatPanel } from "@/client/components/chat/chat-panel";
+import { PrivateUnreadBanner } from "@/client/components/chat/private-unread-banner";
+import { ChatSwitch } from "@/client/components/chat/chat-switch";
+import { PrivateUnreadSync } from "@/client/components/chat/private-unread-sync";
 import { Skeleton } from "@/client/components/ui/skeleton";
 import { requireChatDeps } from "@/server/chat/request-deps";
 import { loadChat } from "@/server/chat/use-cases";
 import { deleteMessageAction, sendMessageAction } from "../../chat-actions";
+import { loadPrivateUnread } from "../load-private-unread";
 
 export default function ChatPage({ params }: PageProps<"/groups/[id]/chat">) {
   return (
@@ -17,7 +21,7 @@ export default function ChatPage({ params }: PageProps<"/groups/[id]/chat">) {
 /**
  * The Chat tab. The layout has already checked that the person may see the group; loadChat answers
  * null for anyone who may not, and that is the same not-found page. It renders the newest messages
- * and the client takes over from there (polling). No time is rendered here: the browser formats
+ * and the client takes over from there (polling), under the Group | Private switch. No time is rendered here: the browser formats
  * each message's time in the viewer's own time zone once it has taken over.
  */
 async function Chat({ params }: Pick<PageProps<"/groups/[id]/chat">, "params">) {
@@ -25,7 +29,15 @@ async function Chat({ params }: Pick<PageProps<"/groups/[id]/chat">, "params">) 
   const deps = await requireChatDeps(id);
   const page = await loadChat(deps, id);
   if (!page) notFound();
-  return <ChatPanel groupId={id} initial={page} sendAction={sendMessageAction} deleteAction={deleteMessageAction} />;
+  const unread = await loadPrivateUnread(id);
+  return (
+    <div className="flex flex-col gap-3">
+      <PrivateUnreadSync groupId={id} unread={unread} />
+      <ChatSwitch groupId={id} current="group" unread={unread} />
+      <PrivateUnreadBanner groupId={id} fallback={unread} />
+      <ChatPanel groupId={id} initial={page} sendAction={sendMessageAction} deleteAction={deleteMessageAction} />
+    </div>
+  );
 }
 
 function ChatSkeleton() {

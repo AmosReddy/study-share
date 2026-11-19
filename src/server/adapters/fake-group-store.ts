@@ -45,6 +45,11 @@ export function isFakeGroupLive(groupId: string): boolean {
   return state.groups.has(groupId) && !state.deleted.has(groupId);
 }
 
+/** True when the person is an ACTIVE member of the group (not left, not removed). For the other fake stores. */
+export function isFakeGroupMember(groupId: string, userId: string): boolean {
+  return getState().members.get(groupId)?.get(userId)?.status === "active";
+}
+
 /**
  * TEST ONLY: gives a group its own upload form without a version check or any rule of the editor
  * (the owner's real way is updateFormConfig). The configuration is read the way the database store

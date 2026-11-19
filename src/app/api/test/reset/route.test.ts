@@ -6,6 +6,7 @@ vi.mock("next/server", async (importOriginal) => ({
 }));
 
 import { getFakeAuthStore, resetFakeAuthStore } from "@/server/adapters/fake-auth-provider";
+import { createFakeDirectChatStore, resetFakeDirectChatStore } from "@/server/adapters/fake-direct-chat-store";
 import { createFakeFileStorage, resetFakeFileStorage } from "@/server/adapters/fake-file-storage";
 import { createFakeGroupStore, resetFakeGroupStore } from "@/server/adapters/fake-group-store";
 import { createFakeMessageStore, resetFakeMessageStore } from "@/server/adapters/fake-message-store";
@@ -43,6 +44,7 @@ describe("POST /api/test/reset", () => {
     resetFakeGroupStore();
     resetFakeResourceStore();
     resetFakeMessageStore();
+    resetFakeDirectChatStore();
     resetFakeFileStorage();
   });
   afterEach(() => {
@@ -135,5 +137,33 @@ describe("POST /api/test/reset", () => {
     expect((globalThis as unknown as Record<string, { messages: Map<string, unknown> }>)["__studyShareFakeMessageStore"].messages.size).toBe(1);
     expect((await POST()).status).toBe(204);
     expect((globalThis as unknown as Record<string, { messages: Map<string, unknown> }>)["__studyShareFakeMessageStore"].messages.size).toBe(0);
+  });
+
+  test("in test mode it also clears the private chats, their messages and read positions", async () => {
+    vi.stubEnv("SERVICES_MODE", "fake");
+    const { auth, groups } = await seed();
+    const group = (await groups.listGroupsFor("u1"))[0];
+    const direct = createFakeDirectChatStore(auth);
+    const friend = "66666666-6666-4666-8666-666666666666";
+    const sender = "55555555-5555-4555-8555-555555555555";
+    for (const [id, displayName] of [
+      [sender, "Cy"],
+      [friend, "Di"],
+    ]) {
+      auth.users.set(id, { id, email: `${displayName}@example.test`, password: null, displayName, termsVersion: null, confirmed: true, identities: [] });
+    }
+    // A message needs both people to be active members of the group.
+    expect(await groups.addMember(group.id, sender)).toBe("joined");
+    expect(await groups.addMember(group.id, friend)).toBe("joined");
+    const { chatId } = await direct.openChat(group.id, sender, friend);
+    const sent = await direct.send({ chatId, senderId: sender, clientId: "44444444-4444-4444-8444-444444444444", body: "hello" });
+    await direct.markRead(chatId, friend, sent.message.cursor);
+    const state = () =>
+      (globalThis as unknown as Record<string, { chats: Map<string, unknown>; messages: Map<string, unknown>; reads: Map<string, unknown> }>)[
+        "__studyShareFakeDirectChatStore"
+      ];
+    expect([state().chats.size, state().messages.size, state().reads.size]).toEqual([1, 1, 1]);
+    expect((await POST()).status).toBe(204);
+    expect([state().chats.size, state().messages.size, state().reads.size]).toEqual([0, 0, 0]);
   });
 });

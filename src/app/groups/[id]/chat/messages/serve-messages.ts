@@ -1,6 +1,7 @@
 import "server-only";
 import { connection, type NextRequest } from "next/server";
 import { requireChatDeps } from "@/server/chat/request-deps";
+import { oneCursor } from "@/server/chat/cursor-param";
 import { loadChat } from "@/server/chat/use-cases";
 
 /*
@@ -21,21 +22,8 @@ import { loadChat } from "@/server/chat/use-cases";
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 const TEXT = { ...NO_STORE, "Content-Type": "text/plain; charset=utf-8" } as const;
 
-/** Cursors are base64url text of under 100 characters (see src/server/resource-cursor.ts). */
-const MAX_CURSOR_LENGTH = 100;
-const CURSOR_SHAPE = /^[A-Za-z0-9_-]+$/;
-
 const notFound = () => new Response("Not found", { status: 404, headers: TEXT });
 const badRequest = () => new Response("Bad request", { status: 400, headers: TEXT });
-
-/** One cursor-shaped value, nothing when the parameter is absent, or null when it does not fit. */
-function oneCursor(params: URLSearchParams, name: string): string | undefined | null {
-  const values = params.getAll(name);
-  if (values.length === 0) return undefined;
-  if (values.length > 1) return null;
-  const [value] = values;
-  return value.length >= 1 && value.length <= MAX_CURSOR_LENGTH && CURSOR_SHAPE.test(value) ? value : null;
-}
 
 export async function serveMessages(params: Promise<{ id: string }>, request: Pick<NextRequest, "nextUrl">): Promise<Response> {
   // Route handlers are prerendered at build time unless they wait for a real request first.

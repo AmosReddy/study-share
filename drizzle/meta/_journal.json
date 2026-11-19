@@ -57,6 +57,13 @@
       "when": 1794990681242,
       "tag": "0007_form_config",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795016262674,
+      "tag": "0008_direct_chats",
+      "breakpoints": true
     }
   ]
 }
